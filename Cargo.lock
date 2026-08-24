@@ -92,6 +92,13 @@ name = "jinnd-api"
 version = "0.0.1"
 
 [[package]]
+name = "jinnd-context"
+version = "0.0.1"
+dependencies = [
+ "jinnd-api",
+]
+
+[[package]]
 name = "jinnd-invariants"
 version = "0.0.1"
 dependencies = [

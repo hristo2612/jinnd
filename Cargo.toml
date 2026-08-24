@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/jinnd-adapter",
     "crates/jinnd-api",
+    "crates/jinnd-context",
     "tests/invariants",
 ]
 # Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):
