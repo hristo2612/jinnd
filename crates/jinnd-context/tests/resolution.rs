@@ -248,3 +248,80 @@ fn shared_realm_siblings_stop_at_their_own_boundary() {
     assert_eq!(error.code, ErrorCode::MissingDependency);
     assert_eq!(left.realm_of(key), right.realm_of(key));
 }
+
+/// The frame that introduces the boundary is the caller itself: the walk is that one
+/// frame, and an ancestor provider stays out of reach.
+#[test]
+fn a_caller_that_binds_the_key_itself_is_the_whole_walk() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.key("bar");
+    let root = tree.root();
+    let caller = root
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let visited = RefCell::new(Vec::new());
+
+    let Err(error) = caller.resolve(key, probe_over(&[(root.id(), 7)], &[], &visited)) else {
+        panic!("the caller's own binding must cut it off from the root realm")
+    };
+
+    assert_eq!(error.code, ErrorCode::MissingDependency);
+    assert_eq!(visited.into_inner(), vec![caller.id()]);
+}
+
+/// A descendant may bind a key back to [`Realm::Root`] — a mapping the TS original
+/// cannot express, since there removing isolation means dropping the own key and
+/// inheriting the ancestor's realm.
+///
+/// The boundary rule is applied unchanged (`reflect.ts:92`): the descendant resolves in
+/// the root realm, but the ancestor between it and the root resolves the key
+/// differently, so the walk still stops there. Re-binding to the root realm is
+/// therefore not a way to reach across an isolating ancestor.
+#[test]
+fn rebinding_to_the_root_realm_still_does_not_cross_an_isolating_ancestor() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.key("bar");
+    let root = tree.root();
+    let isolating = root
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let rebound = isolating
+        .derive()
+        .bind_all(&[binding("bar", Realm::Root)])
+        .build();
+    let visited = RefCell::new(Vec::new());
+
+    assert!(rebound.realm_of(key).is_root());
+
+    let Err(error) = rebound.resolve(key, probe_over(&[(root.id(), 7)], &[], &visited)) else {
+        panic!("an isolating ancestor is not crossed, whatever realm the descendant names")
+    };
+
+    assert_eq!(error.code, ErrorCode::MissingDependency);
+    assert_eq!(visited.into_inner(), vec![rebound.id()]);
+}
+
+/// Dropping the binding instead — deriving with no isolation — inherits the ancestor's
+/// realm, which is how the TS original reconnects a consumer.
+#[test]
+fn a_descendant_without_its_own_binding_stays_inside_the_ancestors_realm() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.key("bar");
+    let isolating = tree
+        .root()
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let inherited = isolating.derive().build();
+    let visited = RefCell::new(Vec::new());
+
+    let Ok(resolved) = inherited.resolve(key, probe_over(&[(isolating.id(), 4)], &[], &visited))
+    else {
+        panic!("an inheriting descendant reaches the provider inside its realm")
+    };
+
+    assert_eq!(resolved.provider, isolating.id());
+    assert_eq!(resolved.realm, isolating.realm_of(key));
+}

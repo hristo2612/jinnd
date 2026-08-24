@@ -230,3 +230,112 @@ fn an_intercept_overlay_does_not_move_a_realm_binding() {
     assert_eq!(intercepted.intercept_of(key), Some(&5));
     assert_eq!(isolated.intercept_of(key), None);
 }
+
+/// A context chain is only as deep as the plugin tree that derived it, but freeing one
+/// must not recurse: a stack overflow aborts the process, so it is not a failure any
+/// kernel boundary can contain (R11). Beyond roughly 5k layers a recursive drop
+/// overflows a 2 MiB thread stack.
+#[test]
+fn freeing_a_deep_chain_does_not_recurse() {
+    // Miri interprets every allocation, so it walks a shorter chain: it is checking the
+    // unlink for undefined behaviour, not the host's stack depth.
+    const DEPTH: u32 = if cfg!(miri) { 512 } else { 50_000 };
+
+    let tree = ContextTree::<()>::new();
+    let mut ctx = tree.root();
+    for _ in 0..DEPTH {
+        ctx = ctx.derive().build();
+    }
+
+    assert_eq!(ctx.depth(), DEPTH);
+    assert_eq!(ctx.realm_of(tree.key("bar")), RealmId::ROOT);
+    drop(ctx);
+}
+
+/// Deriving never copies an ancestor's bindings: the child owns only what it bound.
+#[test]
+fn a_derived_layer_owns_only_its_own_bindings() {
+    let tree = ContextTree::<()>::new();
+    let (bar, qux) = (tree.key("bar"), tree.key("qux"));
+
+    let ancestor = tree
+        .root()
+        .derive()
+        .bind_all(&[binding("bar", local("alpha"))])
+        .build();
+    let child = ancestor
+        .derive()
+        .isolate(qux, tree.realm(&local("beta")))
+        .build();
+
+    assert_eq!(child.own_realm(bar), None);
+    assert_eq!(child.own_realm(qux), Some(tree.realm(&local("beta"))));
+    assert_eq!(child.realm_of(bar), tree.realm(&local("alpha")));
+}
+
+/// Interception is a chain of its own: unlike resolution, it is not cut by an
+/// isolation boundary, matching the TS original's separate intercept prototype chain.
+#[test]
+fn an_isolation_boundary_does_not_cut_the_intercept_chain() {
+    let tree = ContextTree::<u32>::new();
+    let key = tree.key("bar");
+
+    let outer = tree.root().derive().intercept(key, 1).build();
+    let isolated = outer
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let inner = isolated.derive().intercept(key, 2).build();
+
+    assert_eq!(
+        inner.intercept_chain(key).copied().collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    assert_eq!(isolated.intercept_of(key), Some(&1));
+}
+
+#[test]
+fn the_root_has_no_ancestors_and_every_handle_names_its_tree() {
+    let tree = ContextTree::<()>::new();
+    let root = tree.root();
+
+    assert_eq!(root.ancestors().count(), 0);
+    assert_eq!(tree.root(), root);
+    assert_eq!(root.derive().build().tree().root(), root);
+}
+
+/// The interners are shared state; concurrent derivation must agree on identities and
+/// hand out distinct context ids.
+#[test]
+fn concurrent_derivation_agrees_on_identities() {
+    use std::collections::HashSet;
+    use std::thread;
+
+    let tree = ContextTree::<()>::new();
+    let ids: HashSet<_> = thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let tree = tree.clone();
+                scope.spawn(move || {
+                    let key = tree.key("bar");
+                    let realm = tree.realm(&local("alpha"));
+                    let ctx = tree.root().derive().isolate(key, realm).build();
+                    (ctx.id(), key, ctx.realm_of(key))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .collect();
+
+    assert_eq!(ids.len(), 8, "each derivation gets a distinct context id");
+    let tree_key = tree.key("bar");
+    assert!(
+        ids.iter()
+            .all(|(_, key, realm)| { *key == tree_key && *realm == tree.realm(&local("alpha")) })
+    );
+}

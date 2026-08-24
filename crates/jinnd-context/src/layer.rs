@@ -63,6 +63,25 @@ impl<I> Layer<I> {
     }
 }
 
+/// Frees the chain iteratively.
+///
+/// A layer owns its parent, so the derived `Drop` would recurse once per layer and
+/// overflow the stack on a deep tree — an abort, which no kernel boundary can contain
+/// (R11). Unlinking each parent before it is freed keeps the cost flat.
+impl<I> Drop for Layer<I> {
+    fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(layer) = next {
+            // Another handle still holds this layer: it owns the rest of the chain and
+            // frees it the same way when its own last reference goes.
+            let Ok(mut layer) = Arc::try_unwrap(layer) else {
+                break;
+            };
+            next = layer.parent.take();
+        }
+    }
+}
+
 /// Iterator over the config overlays for one key, nearest first.
 #[derive(Debug)]
 pub struct InterceptChain<'a, I> {
