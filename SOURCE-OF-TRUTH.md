@@ -232,6 +232,13 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - **2026-08-24** — Green light: `jinnd` repo scaffolded with CI gates from commit
   zero; two-key rule (test-writer ≠ implementer, `tests/invariants/` write-protected
   from implementers); `kernel-dev` employee hired; M0 drafting started (Hristo).
+- **2026-08-24** — Constitution v0.1 round 1: verifier returned NOT-READY with 5
+  blockers (capability closure, signed envelope, ledger receipts/compaction, revert
+  protocol, profile/calculus binding). All 5 applied in rc2; v0.1 scope narrowed:
+  subprocess hosting disabled, no unsigned tier, device-local ledger, no destructive
+  compaction, no time-range revert, local-only profiles, pin-by-hash updates.
+  ⚠️ One Law-1 interpretation flagged for operator ratification: InProc = enumerated,
+  CI-disciplined kernel TCB (01 §Mechanical closure).
 
 ## 10. Sources
 

@@ -1,6 +1,7 @@
 # 02 — The Ledger
 
-**Status: DRAFT v0.1.** Serves Law 2: model-visible means logged.
+**Status: DRAFT v0.1-rc2** (verifier round 1 blocker B3 applied). Serves Law 2:
+model-visible means logged.
 
 ## The invariant
 
@@ -13,44 +14,51 @@ a bug of the highest severity class.
 
 One append-only stream of events, each with: monotonic id, wall + monotonic time,
 **actor** (fiber id + plugin identity + the grant used), **verb** (contract + function
-or lifecycle transition), **payload** (per sensitivity class, see Redaction),
-**causal parent** (the event that triggered this one), and for revertible effects a
-reference to the registered inverse (03).
+or lifecycle transition), **payload** (per sensitivity class, see Redaction), and
+**causal parent** — the event that triggered this one. Root events (operator input,
+timer fire, external arrival) use `causal_parent = null` plus an explicit root-cause
+kind. Revertible effects carry a reference to their registered inverse descriptor (03).
 
 Recorded event families:
 
 1. **Contract calls** — every crossing, both directions (call + result/error).
-2. **Lifecycle** — fiber state transitions, epoch changes, loads/unloads, failures.
-3. **Composition** — profile edits, reconciles, write-backs, grants and revocations,
-   plugin installs/updates with their signatures (05).
-4. **Reverts** — every revert is itself a ledger event chain (03); reverting never
-   erases history.
+2. **Consumption receipts** — every delivery that crosses into a model-visible
+   context (event subscription, ledger read, stream chunk) appends a receipt
+   referencing the exact delivered event ids and payload hashes. Delivery receipts
+   are excluded from the originating subscription's feed — recursion is prevented
+   without creating an off-ledger channel.
+3. **Lifecycle** — fiber state transitions, epoch changes, loads/unloads, failures.
+4. **Composition** — profile edits, reconciles, write-backs, grants and revocations,
+   plugin installs/updates with their signature envelopes (05).
+5. **Reverts** — intent, per-inverse completion, and outcome events (03); reverting
+   never erases history.
 
 ## Properties
 
-- **Append-only.** Nothing is ever updated or deleted in place. Storage: SQLite,
-  single writer (the kernel), WAL mode. Retention/compaction may *summarize* old
-  events but a summarization is itself an event and the pre-image hash is kept.
-- **Causally chained.** Every event names its parent; "why did this happen" is a walk,
-  not a hunt.
+- **Physically append-only in v0.1.** Nothing is updated or deleted in place, ever.
+  Summaries may be appended as *derived indexes*; original events are retained
+  unchanged. Destructive compaction does not exist in v0.1 — introducing it requires
+  a constitutional amendment defining exactly what remains derivable and revertible.
+  Storage: SQLite, single writer (the kernel), WAL mode.
+- **Causally chained.** "Why did this happen" is a walk, not a hunt.
 - **The ledger is the state.** Durable system state (composition, grants, installed
   plugins) is derivable from the ledger; process memory is a cache. This is what makes
   Tier-2 restart (R8) safe.
-- **Readable.** The ledger is itself exposed as a contract (`jinn:ledger@1`, read +
-  subscribe) — the UI's timeline, debugging, and the agent's self-knowledge are
-  ordinary consumers. Ledger reads are logged like any other read (yes, recursively:
-  reads of the ledger appear in the ledger; subscription delivery does not re-log).
+- **Device-local in v0.1.** Each device owns its ledger; there is no cross-device
+  merge. Sync/replication semantics are a v0.2+ amendment.
+- **Readable.** The ledger is exposed as a contract (`jinn:ledger@1`, read +
+  subscribe) — timeline UI, debugging, and agent self-knowledge are ordinary
+  consumers. Model-visible ledger reads produce consumption receipts per family 2.
 
 ## Redaction
 
 Payloads are stored per the contract's sensitivity class: `public` verbatim;
 `personal` verbatim locally, redacted in any export; `secret` (key material, tokens)
 **never stored** — the event records that a secret crossed, its name and hash, never
-its value.
+its value. (Inverse descriptors needing secret pre-state hold opaque keystore
+references, never values — 03.)
 
 ## Open questions for v0.2
 
-- Cross-device ledger sync semantics (small brain / big brain): single-writer per
-  device with merge, or one elected writer?
-- Compaction policy defaults (size- vs age-based) and what the summarization event
-  must preserve.
+- Cross-device ledger sync (deferred cleanly: v0.1 is device-local, no merging).
+- Derived-index formats for fast timeline queries.
