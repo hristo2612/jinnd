@@ -158,3 +158,13 @@ fn a_facade_service_type_names_the_same_slot_as_its_contract() {
     assert_eq!(from_type, tree.key_of::<Bar>());
     assert_ne!(from_type, tree.key_of::<ShadowBar>());
 }
+
+/// A slot's name is always its contract's `NAME`: that name is what a profile's
+/// isolation binding addresses, so the two can never be allowed to disagree.
+#[test]
+fn a_slot_is_always_named_after_its_contract() {
+    let tree = ContextTree::<()>::new();
+
+    assert_eq!(tree.key_of::<Bar>().name(), tree.name(Bar::NAME));
+    assert_eq!(tree.dynamic_key("qux").name(), tree.name("qux"));
+}

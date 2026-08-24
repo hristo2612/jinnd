@@ -37,8 +37,11 @@ pub struct ServiceKey {
 
 impl ServiceKey {
     /// The slot of a statically typed contract.
-    #[must_use]
-    pub fn typed(name: NameId, type_id: TypeId) -> Self {
+    ///
+    /// Crate-private on purpose: a slot's name must always be its contract's `NAME`,
+    /// because that name is what a profile's isolation binding addresses. Only
+    /// [`crate::ContextTree`] mints keys, so the two can never disagree.
+    pub(crate) fn typed(name: NameId, type_id: TypeId) -> Self {
         Self {
             name,
             type_id: Some(type_id),
@@ -46,8 +49,7 @@ impl ServiceKey {
     }
 
     /// The slot of a plugin loaded by name, which has no Rust type at this boundary.
-    #[must_use]
-    pub fn dynamic(name: NameId) -> Self {
+    pub(crate) fn dynamic(name: NameId) -> Self {
         Self {
             name,
             type_id: None,
