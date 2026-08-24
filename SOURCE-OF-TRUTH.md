@@ -261,6 +261,14 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   included; native Rust = kernel implementation only. M1 begins: packet 0 = test
   port (verifier-owned, lands red).
 
+- **2026-08-24** — M1-P1 delivered (jinnd-context, 468 LOC, miri clean) but exposed
+  a P0 suite defect: cases never call the facade, so no packet can green a case
+  without breaking the two-key rule. Implementer correctly BLOCKED instead of
+  cheating. COO adjudication: P1 acceptance amended; M1-P0b (verifier) restores
+  bindability via an adapter seam + green-ratchet + CI split; M1-P1c (kernel-dev)
+  wires context into the adapter. Process note: 'red by design' must mean red
+  through the adapter, never red inside the test body.
+
 ## 10. Sources
 
 - Full audits: `the private audit annex` (TS v4 + paper
