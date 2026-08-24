@@ -62,10 +62,10 @@ fn a_cloned_handle_is_the_same_context_and_a_foreign_tree_is_never_an_ancestor()
 #[test]
 fn an_unbound_key_resolves_in_the_root_realm() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let name = tree.name("bar");
 
-    assert_eq!(tree.root().realm_of(key), RealmId::ROOT);
-    assert_eq!(tree.root().own_realm(key), None);
+    assert_eq!(tree.root().realm_of(name), RealmId::ROOT);
+    assert_eq!(tree.root().own_realm(name), None);
 }
 
 /// TS origin: `packages/core/src/context.ts` `isolate()` — the derived layer holds the
@@ -73,7 +73,7 @@ fn an_unbound_key_resolves_in_the_root_realm() {
 #[test]
 fn descendants_inherit_an_ancestors_realm_binding() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let name = tree.name("bar");
     let alpha = tree.realm(&local("alpha"));
 
     let isolated = tree
@@ -83,17 +83,17 @@ fn descendants_inherit_an_ancestors_realm_binding() {
         .build();
     let nested = isolated.derive().build();
 
-    assert_eq!(isolated.own_realm(key), Some(alpha));
-    assert_eq!(isolated.realm_of(key), alpha);
-    assert_eq!(nested.realm_of(key), alpha);
-    assert_eq!(nested.own_realm(key), None);
-    assert_eq!(tree.root().realm_of(key), RealmId::ROOT);
+    assert_eq!(isolated.own_realm(name), Some(alpha));
+    assert_eq!(isolated.realm_of(name), alpha);
+    assert_eq!(nested.realm_of(name), alpha);
+    assert_eq!(nested.own_realm(name), None);
+    assert_eq!(tree.root().realm_of(name), RealmId::ROOT);
 }
 
 #[test]
 fn the_nearest_binding_wins_over_an_ancestors() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let name = tree.name("bar");
     let beta = tree.realm(&local("beta"));
 
     let inner = tree
@@ -105,7 +105,7 @@ fn the_nearest_binding_wins_over_an_ancestors() {
         .bind_all(&[binding("bar", local("beta"))])
         .build();
 
-    assert_eq!(inner.realm_of(key), beta);
+    assert_eq!(inner.realm_of(name), beta);
 }
 
 /// TS origin: `packages/loader/tests/isolate.spec.ts`, `special case: nested realms` —
@@ -114,7 +114,7 @@ fn the_nearest_binding_wins_over_an_ancestors() {
 #[test]
 fn a_redundant_ancestor_binding_does_not_move_a_nested_consumer() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let name = tree.name("bar");
     let custom = Realm::Shared("custom".into());
 
     let outer = tree.root().derive().build();
@@ -124,7 +124,7 @@ fn a_redundant_ancestor_binding_does_not_move_a_nested_consumer() {
         .build();
     let consumer = inner.derive().build();
 
-    let before = consumer.realm_of(key);
+    let before = consumer.realm_of(name);
     let edited_outer = tree
         .root()
         .derive()
@@ -136,7 +136,7 @@ fn a_redundant_ancestor_binding_does_not_move_a_nested_consumer() {
         .build()
         .derive()
         .build()
-        .realm_of(key);
+        .realm_of(name);
 
     assert_eq!(before, tree.realm(&Realm::Shared("custom".into())));
     assert_eq!(after, before);
@@ -147,7 +147,7 @@ fn a_redundant_ancestor_binding_does_not_move_a_nested_consumer() {
 #[test]
 fn a_shared_realm_joins_sibling_subtrees_that_local_realms_keep_apart() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let name = tree.name("bar");
     let root = tree.root();
 
     let shared_left = root
@@ -167,15 +167,15 @@ fn a_shared_realm_joins_sibling_subtrees_that_local_realms_keep_apart() {
         .bind_all(&[binding("bar", local("two"))])
         .build();
 
-    assert_eq!(shared_left.realm_of(key), shared_right.realm_of(key));
-    assert_ne!(local_left.realm_of(key), local_right.realm_of(key));
-    assert_ne!(shared_left.realm_of(key), root.realm_of(key));
+    assert_eq!(shared_left.realm_of(name), shared_right.realm_of(name));
+    assert_ne!(local_left.realm_of(name), local_right.realm_of(name));
+    assert_ne!(shared_left.realm_of(name), root.realm_of(name));
 }
 
 #[test]
 fn one_derivation_binds_many_keys_and_the_last_binding_of_a_key_wins() {
     let tree = ContextTree::<()>::new();
-    let (bar, qux) = (tree.key("bar"), tree.key("qux"));
+    let (bar, qux) = (tree.name("bar"), tree.name("qux"));
 
     let ctx = tree
         .root()
@@ -194,7 +194,7 @@ fn one_derivation_binds_many_keys_and_the_last_binding_of_a_key_wins() {
 #[test]
 fn intercept_overlays_read_nearest_first_and_stop_at_the_root() {
     let tree = ContextTree::<u32>::new();
-    let (bar, qux) = (tree.key("bar"), tree.key("qux"));
+    let (bar, qux) = (tree.name("bar"), tree.name("qux"));
 
     let outer = tree.root().derive().intercept(bar, 1).build();
     let inner = outer.derive().intercept(bar, 2).intercept(qux, 7).build();
@@ -210,25 +210,25 @@ fn intercept_overlays_read_nearest_first_and_stop_at_the_root() {
         inner.intercept_chain(qux).copied().collect::<Vec<_>>(),
         vec![7]
     );
-    assert_eq!(inner.intercept_chain(tree.key("none")).count(), 0);
+    assert_eq!(inner.intercept_chain(tree.name("none")).count(), 0);
 }
 
 /// Isolation and interception are independent lookups over the same layer chain.
 #[test]
 fn an_intercept_overlay_does_not_move_a_realm_binding() {
     let tree = ContextTree::<u32>::new();
-    let key = tree.key("bar");
+    let name = tree.name("bar");
 
     let isolated = tree
         .root()
         .derive()
         .bind_all(&[binding("bar", local("alpha"))])
         .build();
-    let intercepted = isolated.derive().intercept(key, 5).build();
+    let intercepted = isolated.derive().intercept(name, 5).build();
 
-    assert_eq!(intercepted.realm_of(key), tree.realm(&local("alpha")));
-    assert_eq!(intercepted.intercept_of(key), Some(&5));
-    assert_eq!(isolated.intercept_of(key), None);
+    assert_eq!(intercepted.realm_of(name), tree.realm(&local("alpha")));
+    assert_eq!(intercepted.intercept_of(name), Some(&5));
+    assert_eq!(isolated.intercept_of(name), None);
 }
 
 /// A context chain is only as deep as the plugin tree that derived it, but freeing one
@@ -248,7 +248,7 @@ fn freeing_a_deep_chain_does_not_recurse() {
     }
 
     assert_eq!(ctx.depth(), DEPTH);
-    assert_eq!(ctx.realm_of(tree.key("bar")), RealmId::ROOT);
+    assert_eq!(ctx.realm_of(tree.name("bar")), RealmId::ROOT);
     drop(ctx);
 }
 
@@ -256,7 +256,7 @@ fn freeing_a_deep_chain_does_not_recurse() {
 #[test]
 fn a_derived_layer_owns_only_its_own_bindings() {
     let tree = ContextTree::<()>::new();
-    let (bar, qux) = (tree.key("bar"), tree.key("qux"));
+    let (bar, qux) = (tree.name("bar"), tree.name("qux"));
 
     let ancestor = tree
         .root()
@@ -278,20 +278,20 @@ fn a_derived_layer_owns_only_its_own_bindings() {
 #[test]
 fn an_isolation_boundary_does_not_cut_the_intercept_chain() {
     let tree = ContextTree::<u32>::new();
-    let key = tree.key("bar");
+    let name = tree.name("bar");
 
-    let outer = tree.root().derive().intercept(key, 1).build();
+    let outer = tree.root().derive().intercept(name, 1).build();
     let isolated = outer
         .derive()
         .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
         .build();
-    let inner = isolated.derive().intercept(key, 2).build();
+    let inner = isolated.derive().intercept(name, 2).build();
 
     assert_eq!(
-        inner.intercept_chain(key).copied().collect::<Vec<_>>(),
+        inner.intercept_chain(name).copied().collect::<Vec<_>>(),
         vec![2, 1]
     );
-    assert_eq!(isolated.intercept_of(key), Some(&1));
+    assert_eq!(isolated.intercept_of(name), Some(&1));
 }
 
 #[test]
@@ -317,10 +317,10 @@ fn concurrent_derivation_agrees_on_identities() {
             .map(|_| {
                 let tree = tree.clone();
                 scope.spawn(move || {
-                    let key = tree.key("bar");
+                    let name = tree.name("bar");
                     let realm = tree.realm(&local("alpha"));
-                    let ctx = tree.root().derive().isolate(key, realm).build();
-                    (ctx.id(), key, ctx.realm_of(key))
+                    let ctx = tree.root().derive().isolate(name, realm).build();
+                    (ctx.id(), name, ctx.realm_of(name))
                 })
             })
             .collect();
@@ -333,7 +333,7 @@ fn concurrent_derivation_agrees_on_identities() {
     .collect();
 
     assert_eq!(ids.len(), 8, "each derivation gets a distinct context id");
-    let tree_key = tree.key("bar");
+    let tree_key = tree.name("bar");
     assert!(
         ids.iter()
             .all(|(_, key, realm)| { *key == tree_key && *realm == tree.realm(&local("alpha")) })
