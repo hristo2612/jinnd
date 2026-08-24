@@ -1,0 +1,89 @@
+[package]
+name = "jinnd-invariants"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+jinnd-adapter = { path = "../../crates/jinnd-adapter" }
+jinnd-api = { path = "../../crates/jinnd-api" }
+proptest = "1.11.0"
+tokio = { version = "1.47.1", features = ["macros", "rt"] }
+
+[[test]]
+name = "cordis_fiber"
+path = "cordis_fiber.rs"
+
+[[test]]
+name = "cordis_dispose"
+path = "cordis_dispose.rs"
+
+[[test]]
+name = "cordis_isolate"
+path = "cordis_isolate.rs"
+
+[[test]]
+name = "cordis_events"
+path = "cordis_events.rs"
+
+[[test]]
+name = "cordis_service"
+path = "cordis_service.rs"
+
+[[test]]
+name = "cordis_plugin"
+path = "cordis_plugin.rs"
+
+[[test]]
+name = "cordis_associate"
+path = "cordis_associate.rs"
+
+[[test]]
+name = "cordis_reflect"
+path = "cordis_reflect.rs"
+
+[[test]]
+name = "cordis_logger"
+path = "cordis_logger.rs"
+
+[[test]]
+name = "cordis_handles"
+path = "cordis_handles.rs"
+
+[[test]]
+name = "loader_reconcile"
+path = "loader_reconcile.rs"
+
+[[test]]
+name = "loader_group"
+path = "loader_group.rs"
+
+[[test]]
+name = "loader_isolate"
+path = "loader_isolate.rs"
+
+[[test]]
+name = "invariant_recovery"
+path = "invariant_recovery.rs"
+
+[[test]]
+name = "invariant_ordering"
+path = "invariant_ordering.rs"
+
+[[test]]
+name = "invariant_progress"
+path = "invariant_progress.rs"
+
+[[test]]
+name = "invariant_confluence"
+path = "invariant_confluence.rs"
+
+[[test]]
+name = "hazard_absence"
+path = "hazard_absence.rs"
