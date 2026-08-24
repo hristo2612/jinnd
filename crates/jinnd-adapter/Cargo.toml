@@ -1,5 +1,5 @@
 [package]
-name = "jinnd-api"
+name = "jinnd-adapter"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,3 +7,6 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+jinnd-api = { path = "../jinnd-api" }

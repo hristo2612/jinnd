@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Events;
+const FACADE_GAP_REASON: &str = "the facade has no listener disposal, once-listener, payload filter, or per-mode failure observation contract";
+
 spec_case! {
     /// TS origin: `packages/core/tests/events.spec.ts`, test `ctx.on()`.
     listener_effect_receives_until_disposed,

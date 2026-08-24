@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
+const FACADE_GAP_REASON: &str = "reconcile accepts unresolved PluginRef values and exposes no test fixture registry or persisted entry tree";
+
 spec_case! {
     /// TS origin: `packages/loader/tests/group.spec.ts`, test `Group: basic support / initialize`.
     nested_groups_initialize_all_enabled_children,

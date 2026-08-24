@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Context;
+const FACADE_GAP_REASON: &str = "the facade exposes context ids only, without lineage inspection or typed/dynamic access-check operations";
+
 spec_case! {
     /// TS origin: `packages/core/tests/reflect.spec.ts`, test `Context.is()`; translated to typed context lineage.
     derived_context_retains_kernel_context_identity,
