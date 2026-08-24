@@ -85,3 +85,9 @@ explicitly scope-closed. Never post findings as a comment "for the record" while
 another executor is being launched — route findings through exactly one live
 implementer. If you discover another agent's uncommitted edits in your tree:
 STOP, commit nothing, preserve everything, escalate for an ownership ruling.
+
+**Merges are edits too:** a merge-conflict resolution that touches
+`tests/invariants/` is a verifier-key change like any other — an implementer
+resolving a conflict there must take the verifier's side byte-for-byte or STOP
+and escalate. (Added after merge 36333fe silently deleted a verifier case; caught
+and restored in f400acc.)
