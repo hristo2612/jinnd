@@ -42,7 +42,10 @@ fn derived_context_gets_a_fresh_identity_and_keeps_its_lineage() {
     assert!(!grandchild.is_ancestor_of(&root));
     assert!(!root.is_ancestor_of(&root));
     assert_eq!(
-        grandchild.ancestors().map(|ctx| ctx.id()).collect::<Vec<_>>(),
+        grandchild
+            .ancestors()
+            .map(|ctx| ctx.id())
+            .collect::<Vec<_>>(),
         vec![child.id(), root.id()],
     );
 }
@@ -199,8 +202,14 @@ fn intercept_overlays_read_nearest_first_and_stop_at_the_root() {
     assert_eq!(inner.intercept_of(bar), Some(&2));
     assert_eq!(outer.intercept_of(bar), Some(&1));
     assert_eq!(tree.root().intercept_of(bar), None);
-    assert_eq!(inner.intercept_chain(bar).copied().collect::<Vec<_>>(), vec![2, 1]);
-    assert_eq!(inner.intercept_chain(qux).copied().collect::<Vec<_>>(), vec![7]);
+    assert_eq!(
+        inner.intercept_chain(bar).copied().collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    assert_eq!(
+        inner.intercept_chain(qux).copied().collect::<Vec<_>>(),
+        vec![7]
+    );
     assert_eq!(inner.intercept_chain(tree.key("none")).count(), 0);
 }
 

@@ -88,7 +88,11 @@ fn an_isolation_boundary_hides_an_ancestor_provider() {
     };
 
     assert_eq!(error.code, ErrorCode::MissingDependency);
-    assert!(error.message.contains("bar"), "message names the key: {}", error.message);
+    assert!(
+        error.message.contains("bar"),
+        "message names the key: {}",
+        error.message
+    );
     assert_eq!(error.fiber, None);
     assert_eq!(visited.into_inner(), vec![consumer.id(), isolated.id()]);
 }
@@ -144,13 +148,19 @@ fn a_declared_but_unprovided_key_ends_the_walk_as_inactive() {
     let consumer = root.derive().build();
     let visited = RefCell::new(Vec::new());
 
-    let Err(error) = consumer.resolve(key, probe_over(&[(root.id(), 7)], &[consumer.id()], &visited))
-    else {
+    let Err(error) = consumer.resolve(
+        key,
+        probe_over(&[(root.id(), 7)], &[consumer.id()], &visited),
+    ) else {
         panic!("an inactive declaration must not fall through to an ancestor")
     };
 
     assert_eq!(error.code, ErrorCode::InactiveContext);
-    assert!(error.message.contains("bar"), "message names the key: {}", error.message);
+    assert!(
+        error.message.contains("bar"),
+        "message names the key: {}",
+        error.message
+    );
     assert_eq!(visited.into_inner(), vec![consumer.id()]);
 }
 
@@ -207,7 +217,9 @@ fn the_frame_walk_is_the_in_boundary_chain_nearest_first() {
     assert_eq!(unbounded, vec![outer.id(), root.id()]);
 
     assert_eq!(
-        root.resolution_frames(key).map(|ctx| ctx.id()).collect::<Vec<_>>(),
+        root.resolution_frames(key)
+            .map(|ctx| ctx.id())
+            .collect::<Vec<_>>(),
         vec![root.id()],
     );
 }

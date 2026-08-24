@@ -47,7 +47,10 @@ fn semantically_identical_realms_intern_equal() {
     let tree = ContextTree::<()>::new();
     let alpha = Realm::Local(EntryId("alpha".into()));
 
-    assert_eq!(tree.realm(&alpha), tree.realm(&Realm::Local(EntryId("alpha".into()))));
+    assert_eq!(
+        tree.realm(&alpha),
+        tree.realm(&Realm::Local(EntryId("alpha".into())))
+    );
 }
 
 #[test]
