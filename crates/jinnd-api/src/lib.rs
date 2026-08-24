@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::any::TypeId;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -101,6 +102,13 @@ pub trait ServiceContract: Send + Sync + 'static {
     fn observe(&self) -> Self::Observation;
 }
 
+/// Typed identity for a statically linked service contract (R3).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ServiceType {
+    pub type_id: TypeId,
+    pub name: &'static str,
+}
+
 /// A resolved service paired with caller scope and provider generation (R4).
 #[derive(Debug)]
 pub struct ServiceHandle<S: ServiceContract> {
@@ -114,7 +122,7 @@ pub struct ServiceHandle<S: ServiceContract> {
 /// One dependency generation captured for a single activation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DependencySnapshot {
-    pub service: &'static str,
+    pub service: ServiceType,
     pub provider: FiberId,
     pub generation: Generation,
     pub realm: Realm,
