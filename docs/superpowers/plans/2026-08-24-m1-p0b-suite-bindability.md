@@ -16,6 +16,7 @@
 - Current invariant failures must contain `NO_KERNEL: <subsystem>` from `jinnd-adapter`.
 - `tests/invariants/expected-green.txt` starts empty.
 - Plain tests exclude the invariant package; the invariant job runs the suite through the ratchet.
+- A descendant `IsolationBinding { realm: Realm::Root }` is explicit, not an erase/inherit sentinel; resolution stops at an intervening ancestor whose binding disagrees, per `reflect.ts:80-94`.
 - Conventional commits only; no co-author trailers; zero personal data.
 
 ---
