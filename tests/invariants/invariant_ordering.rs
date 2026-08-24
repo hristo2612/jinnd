@@ -2,6 +2,10 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
+const FACADE_GAP_REASON: &str =
+    "the facade cannot declare dependencies or invoke a dying service from consumer teardown";
+
 spec_case! {
     /// Paper origin: ordering and resolution-coherence theorem; SOURCE-OF-TRUTH §4 invariant I2.
     consumer_can_call_dying_provider_during_its_teardown,

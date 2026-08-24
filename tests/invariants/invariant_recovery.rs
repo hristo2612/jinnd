@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Effects;
+const FACADE_GAP_REASON: &str = "the facade cannot execute forward effects, dispose effect ids, or observe sibling state after failed activation";
+
 spec_case! {
     /// Paper origin: recovery exactness theorem; SOURCE-OF-TRUTH §4 invariant I1.
     failed_mid_load_withdraws_exactly_the_partial_contribution,

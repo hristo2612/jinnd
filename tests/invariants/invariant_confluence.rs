@@ -1,7 +1,5 @@
+use jinnd_api::{Kernel, Profile};
 use proptest::prelude::*;
-
-const NO_KERNEL_REASON: &str =
-    "M1-P0 has no kernel adapter: compare incremental quiescent observation with fresh boot";
 
 #[derive(Clone, Debug)]
 enum HistoryOp {
@@ -57,9 +55,21 @@ proptest! {
         history in prop::collection::vec(history_op(), 1..65),
     ) {
         let checksum = touch_fields(&history);
+        let kernel = jinnd_adapter::kernel();
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
+            prop_assert!(false, "the invariant test runtime must build");
+            return Ok(());
+        };
+        let report = runtime.block_on(kernel.reconcile(Profile::<u8> { entries: Vec::new() }));
+        if let Ok(report) = report {
+            prop_assert!(report.created.is_empty());
+            prop_assert!(report.restarted.is_empty());
+            prop_assert!(report.disposed.is_empty());
+            prop_assert!(report.unchanged.is_empty());
+        }
         prop_assert!(
             false,
-            "{NO_KERNEL_REASON}; generated_history={history:?}; checksum={checksum}"
+            "FACADE_GAP: the facade has no history-operation driver, fresh-boot constructor, or whole-kernel observational-equivalence snapshot; generated_history={history:?}; checksum={checksum}"
         );
     }
 }

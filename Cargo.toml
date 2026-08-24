@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/jinnd-api"]
+members = [
+    "crates/jinnd-adapter",
+    "crates/jinnd-api",
+    "tests/invariants",
+]
 # Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):
 #   crates/jinnd-context   — context tree, isolation, intercept
 #   crates/jinnd-effect    — effect/undo engine

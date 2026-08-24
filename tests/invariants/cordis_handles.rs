@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Services;
+const FACADE_GAP_REASON: &str = "ServiceHandle exposes the service Arc directly and has no brokered call boundary for caller-scope assertions";
+
 spec_case! {
     /// TS origin: `packages/core/tests/shadow.spec.ts`, test `keeps caller metadata separate from the service shadow`; R4 handle equivalent.
     nested_service_handles_keep_caller_and_provider_scopes_distinct,

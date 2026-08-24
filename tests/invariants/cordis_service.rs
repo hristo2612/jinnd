@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Services;
+const FACADE_GAP_REASON: &str = "the facade has no dependency declaration/injection API and cannot withdraw or replace a provider effect";
+
 spec_case! {
     /// TS origin: `packages/core/tests/service.spec.ts`, test `pending inject`.
     injection_waits_for_provider_initialization,

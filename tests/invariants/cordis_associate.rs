@@ -2,6 +2,10 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Services;
+const FACADE_GAP_REASON: &str =
+    "the facade has no typed extension or per-activation dependency-snapshot declaration API";
+
 spec_case! {
     /// TS origin: `packages/core/tests/associate.spec.ts`, test `service injection`; translated to typed nested capabilities.
     nested_service_contract_is_withdrawn_without_parent_loss,

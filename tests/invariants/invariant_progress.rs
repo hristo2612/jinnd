@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
+const FACADE_GAP_REASON: &str = "the facade cannot declare a dependency graph or observe static cycle diagnostics and quiescent inactivity";
+
 spec_case! {
     /// Paper origin: progress theorem; SOURCE-OF-TRUTH §4 invariant I3.
     acyclic_dependency_precedence_always_reaches_quiescence,

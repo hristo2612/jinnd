@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Effects;
+const FACADE_GAP_REASON: &str = "the facade registers an Undo directly and exposes no effect-disposal or async forward-effect API";
+
 spec_case! {
     /// TS origin: `packages/core/tests/dispose.spec.ts`, test `dispose by plugin`.
     dispose_by_plugin_is_visible_and_idempotent,

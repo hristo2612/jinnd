@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
+const FACADE_GAP_REASON: &str = "reconcile has no fixture plugin registry, profile persistence read-back, or entry-to-fiber observation API";
+
 spec_case! {
     /// TS origin: `packages/loader/tests/index.spec.ts`, test `loader initiate`.
     initial_profile_activates_only_enabled_entries,
