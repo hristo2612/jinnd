@@ -19,7 +19,7 @@ identity, version, and origin are all inside the signature.
 [plugin]
 name    = "jinn:todos"        # namespaced identity
 version = "1.4.0"             # semver
-host    = "wasm"              # inproc | wasm | subprocess (R7; see Hosting)
+host    = "wasm"              # wasm | subprocess (R7; subprocess disabled in v0.1)
 entry   = "todos.wasm"        # content-addressed artifact
 
 [provides]
@@ -65,11 +65,12 @@ requests are surfaced by the registry as an anti-pattern.
 ## Hosting (enforcement per mode — normative table in 01 §Mechanical closure)
 
 - `wasm` — wasmtime component; imports are exactly the granted contracts; fuel and
-  memory metering per entry. The only mode for runtime-installed code.
+  memory metering per entry. **The only live plugin host in v0.1 — first-party
+  plugins included.**
 - `subprocess` — **disabled in v0.1** until the mandatory per-platform OS sandbox
   exists (01).
-- `inproc` — kernel TCB, first-party only, enumerated in the profile, CI-disciplined
-  (01). Never available to runtime-installed or agent-generated code.
+- There is no in-process plugin host (01 §Mechanical closure). A manifest declaring
+  any other `host` value is rejected at install.
 
 ## Updates
 

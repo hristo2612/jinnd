@@ -53,7 +53,8 @@ Rules:
   non-secret, allowlisted in the profile itself) and `${platform}` — a closed,
   side-effect-free grammar with no environment access, no general evaluation, no
   ambient authority (R9). Every expression resolution is deterministic from the
-  document alone.
+  document plus the kernel-defined platform constant; no other host state is
+  readable.
 - **No secrets in profiles.** Profiles reference secrets by name; values live in the
   host keystore.
 

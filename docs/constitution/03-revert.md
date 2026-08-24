@@ -9,17 +9,25 @@ All mutation flows through the kernel's effect primitive (R5). A revertible oper
 proceeds in this order, and no other:
 
 1. **Register:** the operation supplies a **serializable inverse descriptor** —
-   captured delta, an **idempotency key**, and an observational witness (what
-   equality relation "restored" is judged under, per the contract) — and the kernel
-   **durably records intent** (ledger event) *before* the forward mutation may commit.
-2. **Act:** the forward operation runs.
-3. **Complete:** the kernel records completion (ledger event).
+   captured delta, an **idempotency key**, and an **executable observational
+   witness** (a check, evaluable by the kernel, that the contract's declared
+   equality relation holds against the pre-state) — and the kernel **durably records
+   intent** (ledger event) *before* the forward mutation may commit.
+2. **Act:** the forward operation runs under **keyed exactly-once semantics**: the
+   provider atomically commits the mutation together with a durable key→outcome
+   record, and a repeated delivery of the same key returns the recorded outcome
+   without applying the mutation again. **A provider that cannot meet this protocol
+   must declare the operation `irreversible`** — there is no third category.
+3. **Complete:** the kernel records completion (ledger event). Inverse completion is
+   recorded **only after the executable witness passes**; a completed-looking inverse
+   whose witness fails is a failed inverse.
 
 Consequences:
 
 - **Crash safety:** recovery replays from the ledger. An intent without a completion
   is resumed *under the same idempotency key*; the kernel never issues an unkeyed
-  retry, so a non-idempotent action can never silently duplicate.
+  retry, and the provider's key→outcome record makes the resume side-effect-free by
+  construction.
 - **Version stability:** the inverse descriptor is self-contained and serializable —
   it remains executable after its originating plugin is unloaded, upgraded, or gone.
   A contract major-version bump must state what happens to outstanding descriptors
@@ -65,11 +73,13 @@ If an inverse fails:
   the kernel never marks the branch disposed or the revert complete while an inverse
   is unresolved. Independent branches continue normally (R11).
 - **Resolution state machine (normative in v0.1):** an unresolved branch is
-  `pending-revert`. The operator (or policy) resolves it by exactly one of:
-  (a) retry with the same key after fixing the environment; (b) invoke a declared
-  compensator; (c) **accept-residue** — an explicit, ledgered declaration that the
-  remaining delta is accepted as-is, which closes the revert as `unclean-accepted`.
-  The kernel never auto-selects (c). UX for this can evolve; the states cannot.
+  `pending-revert`, and **`pending-revert` is not closable by declaration** — there
+  is no accept-residue terminal state. It resolves only by: (a) the same-key inverse
+  succeeding, with its witness passing → `reverted` (satisfies I1); or (b) an
+  operator-confirmed declared compensator running → **`compensated`, never
+  `reverted`** — and unless the compensation satisfies the *original* equivalence
+  witness, the branch stays marked unclean and is never counted as satisfying I1.
+  Anything else remains `pending-revert`, visibly. UX may evolve; the states cannot.
 
 A plugin failing mid-*load* has its partial effects unwound automatically by the same
 protocol (I1 covers failure).

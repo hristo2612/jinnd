@@ -59,17 +59,17 @@ Law 1 is only real where it is mechanically unavailable to cheat:
 - **`subprocess`** — **disabled in v0.1.** The mode may be enabled only after its
   mandatory OS sandbox (per-platform) is implemented and direct host authority is
   mechanically unavailable. Until then the kernel refuses `host = "subprocess"`.
-- **`inproc`** — in-process Rust is *not sandboxable*; pretending otherwise would be
-  a side door. Therefore: **InProc code is part of the kernel's trusted computing
-  base (TCB)**, first-party only, and the constitution treats it honestly as such:
-  (a) the TCB membership list is enumerated, minimized, and visible in every profile;
-  (b) InProc crates live in a CI lane that mechanically forbids direct ambient
-  authority (`std::fs`, `std::net`, `std::process`, FFI) outside granted provider
-  contracts, enforced by deny-lints and import checks; (c) all InProc contract
-  crossings are ledger-visible like everyone else's. ⚠️ **Ratification flag:** this
-  is an interpretation of Law 1 ("our plugins are never special" → "InProc = TCB,
-  enumerated and disciplined, never silently privileged"). The operator must
-  explicitly accept this reading at M0 acceptance.
+- **`inproc` — does not exist. v0.1 has no in-process plugin host.** In-process Rust
+  is not sandboxable, and lint discipline is not mechanical closure; offering an
+  InProc plugin tier would be a side door under Law 1. Therefore: **first-party
+  plugins use the same capability-confined WASM host as everyone else's.** Native
+  Rust inside the kernel is *kernel implementation, not a plugin* — it may implement
+  only the minimal broker/runtime/base-providers named by R10 (fiber runtime, effect
+  engine, registry, event bus, loader, ledger, capability broker, and the base host
+  provider contracts: fs, process, net, keystore), each exposed to plugins solely as
+  contracts and fully ledger-visible. ⚠️ **Ratification flag:** this reverses the
+  earlier "static native first-party plugins" decision (2026-08-23) in favor of an
+  unqualified Law 1. The operator confirms or reverses this at M0 acceptance.
 
 ## Open questions for v0.2
 

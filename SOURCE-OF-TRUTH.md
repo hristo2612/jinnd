@@ -128,11 +128,16 @@ kernel; the kernel appends it to the ledger (SQLite, append-only). Revert is bui
 the ledger + effect inverses. Errors, transitions, write-backs, and provenance are
 ledger events, not a `last_error` string.
 
-**R7 — One contract, three hosting modes.** Plugin backends behind one trait:
-`InProc` (first-party Rust, compiled in), `Wasm` (wasmtime + WIT — mandatory for
-runtime-installed, community, and agent-generated code), `Subprocess` (supervised
-process over IPC — engines/PTYs). Capability grants, metering, and signing are enforced
-per-backend by the kernel. Native dylib loading is banned.
+**R7 — One contract; plugins are always sandboxed hosts.** Plugin backends behind one
+trait: `Wasm` (wasmtime + WIT — the only live host in v0.1, first-party plugins
+included) and `Subprocess` (supervised process over IPC — disabled until its
+mandatory OS sandbox exists). **There is no in-process plugin host**: native Rust is
+kernel implementation, never a plugin — it implements only the broker/runtime and the
+base host-provider contracts (fs, process, net, keystore), exposed to plugins solely
+as contracts. Capability grants, metering, and signing are enforced per-backend by
+the kernel. Native dylib loading is banned. *(Amended 2026-08-24 from "three modes
+incl. InProc" — verifier round 2: lint discipline is not mechanical closure; an
+InProc plugin tier is a Law-1 side door.)*
 
 **R8 — Hot reload has three honest tiers.** Tier 0: config reconcile (most operator
 value, always available). Tier 1: WASM instance swap — old instance stays warm until
@@ -171,8 +176,9 @@ within a major version.
 ├════════════ typed capability contracts (WIT) ══════════════┤
 │ KERNEL (jinnd): fiber runtime · effect/undo engine ·       │
 │ service registry & epochs · event bus · profile loader ·   │
-│ ledger + revert · capability broker · plugin hosts         │
-│ (InProc | Wasm | Subprocess) · HTTP/WS API (axum)          │
+│ ledger + revert · capability broker · base host providers  │
+│ (fs/process/net/keystore, exposed as contracts) · plugin   │
+│ hosts (Wasm | Subprocess) · HTTP/WS API (axum)             │
 ├────────────────────────────────────────────────────────────┤
 │ host OS: macOS launchd · Linux systemd · Android service   │
 └────────────────────────────────────────────────────────────┘
@@ -239,6 +245,14 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   compaction, no time-range revert, local-only profiles, pin-by-hash updates.
   ⚠️ One Law-1 interpretation flagged for operator ratification: InProc = enumerated,
   CI-disciplined kernel TCB (01 §Mechanical closure).
+- **2026-08-24** — Constitution round 2 (RATIFIABLE-WITH-FIXES, 2 blockers): rc3
+  applied. **InProc plugin host removed entirely** — first-party plugins run in the
+  same WASM host as everyone; native Rust = kernel implementation only (R7 amended;
+  supersedes the round-1 TCB interpretation; ⚠️ reverses part of the 2026-08-23
+  two-hosting-modes decision — flagged for operator confirmation at M0 read). Revert
+  hardened to keyed exactly-once provider protocol + executable witnesses;
+  accept-residue terminal state removed (`pending-revert` until reverted or
+  honestly `compensated`).
 
 ## 10. Sources
 
