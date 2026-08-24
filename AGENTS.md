@@ -66,3 +66,12 @@ It is LAW; this file translates it into direct instructions for you.
 - Reference material (read-only, never depend on): audits at
   `the private audit annex`; TS Cordis, the paper, and
   cordis-rs under `the private reference annex`.
+
+## Worktree discipline (added 2026-08-24 after a branch collision)
+
+The primary checkout `~/Projects/jinnd` is shared and its checked-out branch is
+not yours. **Every packet works in its own worktree**:
+`git -C ~/Projects/jinnd worktree add ~/Projects/.worktrees/jinnd-<packet> -b <branch> main`.
+Never `git checkout`/`git switch` in the primary checkout; never commit there
+without `git branch --show-current` proving you are where you think you are.
+Remove your worktree after your branch merges (`git worktree remove`, then prune).
