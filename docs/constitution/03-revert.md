@@ -1,6 +1,6 @@
 # 03 — Revert Semantics
 
-**Status: DRAFT v0.1-rc2** (verifier round 1 blocker B4 applied). Serves Law 3: every
+**Status: RATIFIED v0.1 — 2026-08-24.** Serves Law 3: every
 effect revertible, or explicitly declared irreversible.
 
 ## The protocol (not an aspiration — an executable, crash-safe sequence)

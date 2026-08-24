@@ -20,5 +20,5 @@ rules, and roadmap that govern this repo.
 
 ## Status
 
-Pre-M1. The constitution (M0) is being drafted; no kernel code exists yet — by
+M0 COMPLETE — Constitution v0.1 RATIFIED (2026-08-24). M1 in progress; no kernel code yet — by
 design: the tests and contracts land before the implementation (rule R2).

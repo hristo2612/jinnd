@@ -1,0 +1,37 @@
+# Contract-bundle metadata for jinn:fs@0.1.0 — SKELETON
+
+[contract]
+name    = "jinn:fs"
+version = "0.1.0"
+
+[scope]
+type   = "path-prefix"
+# Decidable subset predicate the kernel evaluates for attenuation (01 §Grants):
+# subset(a, b) := normalize(a) starts-with normalize(b), after symlink and
+# dot-segment resolution. A grant with no scope is the root scope.
+subset = "path-prefix-containment"
+
+[operations.list]
+effect      = "read"
+sensitivity = "personal"
+
+[operations.read]
+effect      = "read"
+sensitivity = "personal"
+
+[operations.write]
+effect      = "revertible"
+sensitivity = "personal"
+# Inverse obligation (03): restore the file's prior content, or prior absence.
+# Witness: post-inverse state observationally equal to pre-state under [equality].
+inverse     = "restore-prior-content-or-absence"
+
+[operations.remove]
+effect      = "irreversible"   # v0.1: no trash; confirmation flow applies (03)
+sensitivity = "personal"
+
+[equality]
+# Observational equivalence: same paths with same byte content and same dir
+# structure under the granted scope. Timestamps and inode identity are NOT
+# observable state.
+relation = "content-tree-under-scope"

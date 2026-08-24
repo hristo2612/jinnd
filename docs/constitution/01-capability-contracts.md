@@ -1,6 +1,6 @@
 # 01 — Capability Contracts
 
-**Status: DRAFT v0.1-rc2** (verifier round 1 blockers B1 applied). Serves Law 1:
+**Status: RATIFIED v0.1 — 2026-08-24.** Serves Law 1:
 everything is a plugin behind a typed capability contract; no side doors.
 
 ## What a contract is
@@ -67,9 +67,10 @@ Law 1 is only real where it is mechanically unavailable to cheat:
   only the minimal broker/runtime/base-providers named by R10 (fiber runtime, effect
   engine, registry, event bus, loader, ledger, capability broker, and the base host
   provider contracts: fs, process, net, keystore), each exposed to plugins solely as
-  contracts and fully ledger-visible. ⚠️ **Ratification flag:** this reverses the
-  earlier "static native first-party plugins" decision (2026-08-23) in favor of an
-  unqualified Law 1. The operator confirms or reverses this at M0 acceptance.
+  contracts and fully ledger-visible. *(Ratification note: this reversed the earlier
+  "static native first-party plugins" decision of 2026-08-23 in favor of an
+  unqualified Law 1 — explicitly confirmed by the operator at M0 acceptance,
+  2026-08-24.)*
 
 ## Open questions for v0.2
 

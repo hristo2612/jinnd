@@ -1,6 +1,6 @@
 # 04 — Profiles
 
-**Status: DRAFT v0.1-rc2** (verifier round 1 blocker B5 applied). Serves Law 4: a
+**Status: RATIFIED v0.1 — 2026-08-24.** Serves Law 4: a
 device is a profile.
 
 ## What a profile is

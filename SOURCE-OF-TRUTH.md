@@ -254,6 +254,13 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   accept-residue terminal state removed (`pending-revert` until reverted or
   honestly `compensated`).
 
+- **2026-08-24** — **Constitution v0.1 RATIFIED** (operator approval, M0 accepted).
+  Verifier trail: round 1 NOT-READY (5 blockers) → round 2 RATIFIABLE-WITH-FIXES
+  (2 blockers, 1 minor) → round 3 RATIFIABLE-AS-IS at HEAD af30693. Operator
+  explicitly confirmed the InProc removal: all plugins WASM-hosted, first-party
+  included; native Rust = kernel implementation only. M1 begins: packet 0 = test
+  port (verifier-owned, lands red).
+
 ## 10. Sources
 
 - Full audits: `the private audit annex` (TS v4 + paper

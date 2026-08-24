@@ -1,6 +1,9 @@
 # The Constitution — Overview
 
-**Status: DRAFT v0.1 — awaiting operator approval (M0 acceptance).**
+**Status: RATIFIED v0.1 — operator approval 2026-08-24 (M0 accepted).** The operator
+also explicitly confirmed the removal of the InProc plugin host (01 §Mechanical
+closure): all plugins, first-party included, run in the sandboxed WASM host; native
+Rust is kernel implementation only.
 
 These five documents ARE jinnOS. Everything else — the kernel implementation, every
 plugin, every profile, every device — is replaceable; these are what persist. They are

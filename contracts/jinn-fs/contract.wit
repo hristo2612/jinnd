@@ -1,0 +1,27 @@
+// jinn:fs@0.1.0 — SKELETON (seeded at M0 ratification; finalized in M1)
+// Base host-provider contract implemented by the kernel (01 §Mechanical closure).
+// Demonstrates the scoped-grant pattern: grants carry a path-prefix scope with a
+// decidable subset predicate (01 §Contract anatomy).
+package jinn:fs@0.1.0;
+
+interface files {
+  record file-meta { path: string, size: u64, modified-ms: u64, is-dir: bool }
+  variant fs-error { not-found, denied, io(string) }
+
+  // effect = read
+  list: func(path: string) -> result<list<file-meta>, fs-error>;
+  read: func(path: string) -> result<list<u8>, fs-error>;
+
+  // effect = revertible: inverse obligation = restore prior content/absence.
+  // Provider implements keyed exactly-once semantics (03 §The protocol).
+  write: func(path: string, bytes: list<u8>, idempotency-key: string)
+    -> result<_, fs-error>;
+
+  // effect = irreversible in v0.1 (no trash abstraction yet): confirmation flow
+  // applies (03 §Irreversible effects).
+  remove: func(path: string, idempotency-key: string) -> result<_, fs-error>;
+}
+
+world fs-provider {
+  export files;
+}

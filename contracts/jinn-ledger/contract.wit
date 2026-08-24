@@ -1,0 +1,29 @@
+// jinn:ledger@0.1.0 — SKELETON (seeded at M0 ratification; finalized in M1)
+// The ledger read/subscribe contract (constitution 02). The kernel is the only
+// writer; this contract is read-only by design.
+package jinn:ledger@0.1.0;
+
+interface reader {
+  record event {
+    id: u64,
+    wall-ms: u64,
+    mono-ns: u64,
+    actor: string,          // fiber id + plugin identity + grant id
+    verb: string,           // contract.function | lifecycle kind
+    payload-hash: string,   // payload stored per sensitivity class (02 §Redaction)
+    causal-parent: option<u64>,  // none => root event (explicit root-cause kind)
+    root-cause: option<string>,
+  }
+
+  // Reads are model-visible: the kernel appends a consumption receipt for every
+  // delivery (02 §What is recorded, family 2).
+  read-range: func(from-id: u64, limit: u32) -> list<event>;
+
+  // TODO(M1): subscription idiom — component-model streams vs poll handle.
+  // Whatever the mechanism, delivery MUST produce consumption receipts and the
+  // receipt stream MUST be excluded from the subscription's own feed.
+}
+
+world ledger-provider {
+  export reader;
+}

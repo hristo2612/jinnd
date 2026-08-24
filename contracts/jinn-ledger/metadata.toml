@@ -1,0 +1,17 @@
+# Contract-bundle metadata for jinn:ledger@0.1.0 — SKELETON
+# Constitution 01 §What a contract is: CI rejects bundles missing any field below.
+
+[contract]
+name    = "jinn:ledger"
+version = "0.1.0"
+
+[operations.read-range]
+effect      = "read"          # read | revertible | irreversible
+sensitivity = "personal"      # payloads may reference personal events
+scope-type  = "none"          # ledger reads are unscoped in v0.1 (whole-ledger grant)
+
+[equality]
+# Observational equivalence for this contract's state (02/03): two ledgers are
+# equal iff they contain the same events by id in the same order. Derived indexes
+# are not part of the observable state.
+relation = "event-sequence-by-id"

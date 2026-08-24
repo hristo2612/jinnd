@@ -1,6 +1,6 @@
 # 02 — The Ledger
 
-**Status: DRAFT v0.1-rc2** (verifier round 1 blocker B3 applied). Serves Law 2:
+**Status: RATIFIED v0.1 — 2026-08-24.** Serves Law 2:
 model-visible means logged.
 
 ## The invariant

@@ -1,6 +1,6 @@
 # 05 — Manifest & Signing
 
-**Status: DRAFT v0.1-rc2** (verifier round 1 blocker B2 applied). Serves Law 5:
+**Status: RATIFIED v0.1 — 2026-08-24.** Serves Law 5:
 plugins are sandboxed and signed; provenance is law.
 
 ## The signed envelope
