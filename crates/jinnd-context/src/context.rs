@@ -69,7 +69,17 @@ impl<I> ContextTree<I> {
         ServiceKey::typed(self.name(S::NAME), TypeId::of::<S>())
     }
 
-    /// The slot of a typed contract named by the facade's [`ServiceType`].
+    /// The slot named by a facade [`ServiceType`], for a caller that holds an erased
+    /// service identity rather than its contract type — a `DependencySnapshot`, say.
+    ///
+    /// The returned slot is exactly the one `service` names. [`ServiceType`]'s
+    /// `type_id` and `name` are set independently by its builder, so a caller can hand
+    /// this method a pair no contract publishes; this crate stores no name-to-type
+    /// mapping and cannot tell. Such a slot is isolated under the name it was given,
+    /// which is the only thing it can get wrong — R3's guarantee that distinct
+    /// contract types never alias survives, because the `TypeId` is part of the slot.
+    /// Prefer [`ContextTree::key_of`] wherever the contract type is in hand: it is
+    /// coherent by construction.
     #[must_use]
     pub fn key_for(&self, service: &ServiceType) -> ServiceKey {
         ServiceKey::typed(self.name(service.name), service.type_id)

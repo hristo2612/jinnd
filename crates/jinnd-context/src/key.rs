@@ -38,9 +38,18 @@ pub struct ServiceKey {
 impl ServiceKey {
     /// The slot of a statically typed contract.
     ///
-    /// Crate-private on purpose: a slot's name must always be its contract's `NAME`,
-    /// because that name is what a profile's isolation binding addresses. Only
-    /// [`crate::ContextTree`] mints keys, so the two can never disagree.
+    /// Crate-private on purpose: the name a slot is minted under is what a profile's
+    /// isolation binding addresses, so callers never assemble the pair themselves.
+    /// [`crate::ContextTree::key_of`] derives both halves from the contract type, so a
+    /// key minted from a type is coherent by construction;
+    /// [`crate::ContextTree::key_for`] instead reflects a facade
+    /// [`jinnd_api::ServiceType`], whose two fields are set independently by whoever
+    /// built it — that value's coherence is the facade's invariant, not one this crate
+    /// can check without a name-to-type registry it deliberately does not own.
+    ///
+    /// R3 holds either way: the `TypeId` is part of the slot, so two contract types
+    /// never alias however they are named. An incoherent [`jinnd_api::ServiceType`]
+    /// costs only its own isolation name.
     pub(crate) fn typed(name: NameId, type_id: TypeId) -> Self {
         Self {
             name,

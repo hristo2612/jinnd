@@ -147,7 +147,7 @@ fn distinct_names_never_share_an_isolation_name() {
 /// name a slot without this crate reaching into the contract type. That is why this
 /// packet needs no `jinnd-api` delta.
 #[test]
-fn a_facade_service_type_names_the_same_slot_as_its_contract() {
+fn a_coherent_facade_service_type_names_the_same_slot_as_its_contract() {
     let tree = ContextTree::<()>::new();
 
     let from_type = tree.key_for(&ServiceType {
@@ -159,12 +159,35 @@ fn a_facade_service_type_names_the_same_slot_as_its_contract() {
     assert_ne!(from_type, tree.key_of::<ShadowBar>());
 }
 
-/// A slot's name is always its contract's `NAME`: that name is what a profile's
-/// isolation binding addresses, so the two can never be allowed to disagree.
+/// Minting from a type or from a string derives the name here, so those two lanes are
+/// coherent by construction: the name a slot carries is the one a profile's isolation
+/// binding addresses.
 #[test]
-fn a_slot_is_always_named_after_its_contract() {
+fn a_slot_minted_from_a_type_or_a_string_is_named_after_it() {
     let tree = ContextTree::<()>::new();
 
     assert_eq!(tree.key_of::<Bar>().name(), tree.name(Bar::NAME));
     assert_eq!(tree.dynamic_key("qux").name(), tree.name("qux"));
+}
+
+/// The one lane this crate cannot make coherent: [`ServiceType`]'s two fields are set
+/// independently by whoever builds the value, and no name-to-type mapping lives here
+/// to catch a pair no contract publishes. Pinned so the guarantee is never overstated
+/// again: such a slot is isolated under the name it was handed — and nothing worse,
+/// because R3's non-aliasing rides on the `TypeId`, not on the name.
+#[test]
+fn a_fabricated_service_type_names_the_slot_it_asked_for_and_still_never_aliases() {
+    let tree = ContextTree::<()>::new();
+
+    let fabricated = tree.key_for(&ServiceType {
+        type_id: TypeId::of::<Bar>(),
+        name: "qux",
+    });
+
+    assert_eq!(fabricated.name(), tree.name("qux"));
+    assert_ne!(fabricated.name(), tree.key_of::<Bar>().name());
+    assert_ne!(fabricated, tree.key_of::<Bar>());
+    assert_ne!(fabricated, tree.key_of::<ShadowBar>());
+    assert_ne!(fabricated, tree.dynamic_key("qux"));
+    assert_eq!(fabricated.type_id(), Some(TypeId::of::<Bar>()));
 }
