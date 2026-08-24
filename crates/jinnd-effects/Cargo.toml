@@ -1,0 +1,16 @@
+[package]
+name = "jinnd-effects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jinnd-api = { path = "../jinnd-api" }
+tokio-util = "0.7.19"
+
+[dev-dependencies]
+tokio = { version = "1.47.1", features = ["macros", "rt"] }
