@@ -1,20 +1,77 @@
 //! Interned identities. The resolution walk compares `u64`s only (R3).
 
+use std::any::TypeId;
 use std::collections::HashMap;
 
 use jinnd_api::Realm;
 
-/// Interned identity of one service key.
+/// Interned identity of one service *name*.
 ///
-/// The key namespace is the contract name ([`jinnd_api::ServiceContract::NAME`]),
-/// shared by the typed lane and the profile's dynamic string lane: a profile's
-/// isolation binding for `"bar"` and a typed resolve of a contract named `"bar"`
-/// address one slot, exactly as the TS original keys isolation by property name.
+/// Names are the profile's vocabulary. The isolation map and the intercept chain are
+/// keyed by name, so a profile binding for `"bar"` isolates a typed contract named
+/// `"bar"` exactly as it isolates a dynamic one — which is how the TS original keys
+/// isolation by property name.
 ///
-/// Interning happens once, at the boundary; callers cache the [`KeyId`] for the
-/// lifetime of an activation and the walk never touches a string.
+/// A name is not a slot: see [`ServiceKey`]. Interning happens once, at the boundary;
+/// callers cache the id for the lifetime of an activation and the walk never touches a
+/// string.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct KeyId(u64);
+pub struct NameId(u64);
+
+/// Identity of one service slot (R3).
+///
+/// The typed lane resolves **by type**: a key carries the `TypeId` of its contract, so
+/// two contract types that publish one name never share a slot. The dynamic lane —
+/// reserved for plugins loaded by name at runtime — carries no type and is identified
+/// by its name alone.
+///
+/// Both lanes expose the same [`ServiceKey::name`], which is what keeps a profile's
+/// name-keyed isolation binding effective against a typed contract.
+///
+/// `Copy` and compared as integers: no string reaches the resolution hot path.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ServiceKey {
+    name: NameId,
+    type_id: Option<TypeId>,
+}
+
+impl ServiceKey {
+    /// The slot of a statically typed contract.
+    #[must_use]
+    pub fn typed(name: NameId, type_id: TypeId) -> Self {
+        Self {
+            name,
+            type_id: Some(type_id),
+        }
+    }
+
+    /// The slot of a plugin loaded by name, which has no Rust type at this boundary.
+    #[must_use]
+    pub fn dynamic(name: NameId) -> Self {
+        Self {
+            name,
+            type_id: None,
+        }
+    }
+
+    /// The name this slot is isolated and intercepted under.
+    #[must_use]
+    pub fn name(self) -> NameId {
+        self.name
+    }
+
+    /// The contract type, or `None` on the dynamic lane.
+    #[must_use]
+    pub fn type_id(self) -> Option<TypeId> {
+        self.type_id
+    }
+
+    /// Whether this slot belongs to the typed lane.
+    #[must_use]
+    pub fn is_typed(self) -> bool {
+        self.type_id.is_some()
+    }
+}
 
 /// Interned identity of one realm.
 ///
@@ -34,29 +91,29 @@ impl RealmId {
     }
 }
 
-/// Interner for service keys. Owned by the tree; never reachable from a walk.
+/// Interner for service names. Owned by the tree; never reachable from a walk.
 #[derive(Debug, Default)]
-pub(crate) struct KeyTable {
-    forward: HashMap<Box<str>, KeyId>,
+pub(crate) struct NameTable {
+    forward: HashMap<Box<str>, NameId>,
     reverse: Vec<Box<str>>,
 }
 
-impl KeyTable {
+impl NameTable {
     /// Returns the id for `name`, assigning one on first sight.
-    pub(crate) fn intern(&mut self, name: &str) -> KeyId {
-        if let Some(key) = self.forward.get(name) {
-            return *key;
+    pub(crate) fn intern(&mut self, name: &str) -> NameId {
+        if let Some(id) = self.forward.get(name) {
+            return *id;
         }
-        let key = KeyId(self.reverse.len() as u64);
+        let id = NameId(self.reverse.len() as u64);
         let owned: Box<str> = Box::from(name);
         self.reverse.push(owned.clone());
-        self.forward.insert(owned, key);
-        key
+        self.forward.insert(owned, id);
+        id
     }
 
-    /// The name `key` was interned from, for diagnostics only.
-    pub(crate) fn name(&self, key: KeyId) -> Option<&str> {
-        self.reverse.get(key.0 as usize).map(AsRef::as_ref)
+    /// The text `id` was interned from, for diagnostics only.
+    pub(crate) fn text(&self, id: NameId) -> Option<&str> {
+        self.reverse.get(id.0 as usize).map(AsRef::as_ref)
     }
 }
 

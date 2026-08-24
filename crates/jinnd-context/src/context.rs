@@ -3,16 +3,18 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use jinnd_api::{ContextId, Realm, ServiceContract};
+use std::any::TypeId;
+
+use jinnd_api::{ContextId, Realm, ServiceContract, ServiceType};
 
 use crate::derive::Derive;
-use crate::key::{KeyId, KeyTable, RealmId, RealmTable};
+use crate::key::{NameId, NameTable, RealmId, RealmTable, ServiceKey};
 use crate::layer::{InterceptChain, Layer};
 
 #[derive(Debug)]
 struct TreeInner<I> {
     next_id: AtomicU64,
-    keys: RwLock<KeyTable>,
+    names: RwLock<NameTable>,
     realms: RwLock<RealmTable>,
     root: Arc<Layer<I>>,
 }
@@ -34,7 +36,7 @@ impl<I> ContextTree<I> {
         Self {
             inner: Arc::new(TreeInner {
                 next_id: AtomicU64::new(1),
-                keys: RwLock::new(KeyTable::default()),
+                names: RwLock::new(NameTable::default()),
                 realms: RwLock::new(RealmTable::new()),
                 root,
             }),
@@ -50,23 +52,39 @@ impl<I> ContextTree<I> {
         }
     }
 
-    /// Interns a service key from the dynamic (profile) lane.
+    /// Interns a service name: the identity the isolation map and intercept chain are
+    /// keyed by, on both lanes.
     #[must_use]
-    pub fn key(&self, name: &str) -> KeyId {
-        write(&self.inner.keys).intern(name)
+    pub fn name(&self, name: &str) -> NameId {
+        write(&self.inner.names).intern(name)
     }
 
-    /// Interns the key of a typed contract; the same slot as [`ContextTree::key`] of
-    /// its `NAME`.
+    /// The slot of a typed contract (R3): its `TypeId` plus its interned `NAME`.
+    ///
+    /// Two contract types publishing one name get distinct keys that share one name,
+    /// so they occupy distinct slots while a profile's name-keyed isolation binding
+    /// still reaches both.
     #[must_use]
-    pub fn key_of<S: ServiceContract>(&self) -> KeyId {
-        self.key(S::NAME)
+    pub fn key_of<S: ServiceContract>(&self) -> ServiceKey {
+        ServiceKey::typed(self.name(S::NAME), TypeId::of::<S>())
     }
 
-    /// The name `key` was interned from, for diagnostics.
+    /// The slot of a typed contract named by the facade's [`ServiceType`].
     #[must_use]
-    pub fn key_name(&self, key: KeyId) -> Option<String> {
-        read(&self.inner.keys).name(key).map(ToOwned::to_owned)
+    pub fn key_for(&self, service: &ServiceType) -> ServiceKey {
+        ServiceKey::typed(self.name(service.name), service.type_id)
+    }
+
+    /// The slot of a plugin loaded by name, which carries no Rust type.
+    #[must_use]
+    pub fn dynamic_key(&self, name: &str) -> ServiceKey {
+        ServiceKey::dynamic(self.name(name))
+    }
+
+    /// The text `id` was interned from, for diagnostics.
+    #[must_use]
+    pub fn name_value(&self, id: NameId) -> Option<String> {
+        read(&self.inner.names).text(id).map(ToOwned::to_owned)
     }
 
     /// Interns a realm. Equal realms intern to one [`RealmId`].
@@ -162,13 +180,13 @@ impl<I> Context<I> {
         Derive::new(self)
     }
 
-    /// The realm this context resolves `key` in: the nearest binding on the layer
+    /// The realm this context resolves `name` in: the nearest binding on the layer
     /// chain, or [`RealmId::ROOT`] when no layer binds it.
     #[must_use]
-    pub fn realm_of(&self, key: KeyId) -> RealmId {
+    pub fn realm_of(&self, name: NameId) -> RealmId {
         let mut layer = self.layer.as_ref();
         loop {
-            if let Some(realm) = layer.own_realm(key) {
+            if let Some(realm) = layer.own_realm(name) {
                 return realm;
             }
             match layer.parent.as_deref() {
@@ -180,23 +198,23 @@ impl<I> Context<I> {
 
     /// The realm binding this context's own layer added, if it added one.
     #[must_use]
-    pub fn own_realm(&self, key: KeyId) -> Option<RealmId> {
-        self.layer.own_realm(key)
+    pub fn own_realm(&self, name: NameId) -> Option<RealmId> {
+        self.layer.own_realm(name)
     }
 
-    /// The config overlay in effect for `key`: the nearest one on the layer chain.
+    /// The config overlay in effect for `name`: the nearest one on the layer chain.
     #[must_use]
-    pub fn intercept_of(&self, key: KeyId) -> Option<&I> {
-        self.intercept_chain(key).next()
+    pub fn intercept_of(&self, name: NameId) -> Option<&I> {
+        self.intercept_chain(name).next()
     }
 
-    /// Every config overlay for `key` on the layer chain, nearest first.
+    /// Every config overlay for `name` on the layer chain, nearest first.
     ///
     /// Interception is right-biased: a fold over this chain must let the first item
     /// win, which is what makes a redundant ancestor overlay inert.
     #[must_use]
-    pub fn intercept_chain(&self, key: KeyId) -> InterceptChain<'_, I> {
-        InterceptChain::new(self.layer.as_ref(), key)
+    pub fn intercept_chain(&self, name: NameId) -> InterceptChain<'_, I> {
+        InterceptChain::new(self.layer.as_ref(), name)
     }
 
     pub(crate) fn allocate_id(&self) -> ContextId {
@@ -214,8 +232,8 @@ impl<I> Context<I> {
         }
     }
 
-    pub(crate) fn key_name(&self, key: KeyId) -> Option<String> {
-        read(&self.tree.keys).name(key).map(ToOwned::to_owned)
+    pub(crate) fn name_text(&self, name: NameId) -> Option<String> {
+        read(&self.tree.names).text(name).map(ToOwned::to_owned)
     }
 }
 

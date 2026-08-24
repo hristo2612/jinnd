@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use jinnd_api::ContextId;
 
-use crate::key::{KeyId, RealmId};
+use crate::key::{NameId, RealmId};
 
 /// A layer holds the bindings one derivation added, and a pointer to its parent.
 ///
@@ -17,8 +17,8 @@ pub(crate) struct Layer<I> {
     pub(crate) id: ContextId,
     pub(crate) depth: u32,
     pub(crate) parent: Option<Arc<Layer<I>>>,
-    isolation: Box<[(KeyId, RealmId)]>,
-    intercept: Box<[(KeyId, I)]>,
+    isolation: Box<[(NameId, RealmId)]>,
+    intercept: Box<[(NameId, I)]>,
 }
 
 impl<I> Layer<I> {
@@ -29,8 +29,8 @@ impl<I> Layer<I> {
     pub(crate) fn new(
         id: ContextId,
         parent: Option<Arc<Layer<I>>>,
-        mut isolation: Vec<(KeyId, RealmId)>,
-        mut intercept: Vec<(KeyId, I)>,
+        mut isolation: Vec<(NameId, RealmId)>,
+        mut intercept: Vec<(NameId, I)>,
     ) -> Self {
         let depth = parent.as_ref().map_or(0, |parent| parent.depth + 1);
         isolation.sort_unstable_by_key(|(key, _)| *key);
@@ -45,7 +45,7 @@ impl<I> Layer<I> {
     }
 
     /// The realm this layer itself binds `key` to, if it binds it at all.
-    pub(crate) fn own_realm(&self, key: KeyId) -> Option<RealmId> {
+    pub(crate) fn own_realm(&self, key: NameId) -> Option<RealmId> {
         self.isolation
             .binary_search_by_key(&key, |(bound, _)| *bound)
             .ok()
@@ -54,7 +54,7 @@ impl<I> Layer<I> {
     }
 
     /// The config overlay this layer itself carries for `key`, if any.
-    pub(crate) fn own_intercept(&self, key: KeyId) -> Option<&I> {
+    pub(crate) fn own_intercept(&self, key: NameId) -> Option<&I> {
         self.intercept
             .binary_search_by_key(&key, |(bound, _)| *bound)
             .ok()
@@ -86,11 +86,11 @@ impl<I> Drop for Layer<I> {
 #[derive(Debug)]
 pub struct InterceptChain<'a, I> {
     layer: Option<&'a Layer<I>>,
-    key: KeyId,
+    key: NameId,
 }
 
 impl<'a, I> InterceptChain<'a, I> {
-    pub(crate) fn new(layer: &'a Layer<I>, key: KeyId) -> Self {
+    pub(crate) fn new(layer: &'a Layer<I>, key: NameId) -> Self {
         Self {
             layer: Some(layer),
             key,

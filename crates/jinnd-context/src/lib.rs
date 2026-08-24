@@ -6,8 +6,8 @@
 //! is O(1) in the size of the tree. Each layer carries at most two kinds of own
 //! binding:
 //!
-//! * the **isolation map** — service key to realm, deciding which slot a key resolves
-//!   in;
+//! * the **isolation map** — service *name* to realm, deciding which realm a name
+//!   resolves in;
 //! * the **intercept chain** — per-subtree config overlays, read nearest-first
 //!   (right-biased, as the paper's metadata monoid requires).
 //!
@@ -33,6 +33,6 @@ mod resolve;
 
 pub use context::{Context, ContextTree};
 pub use derive::Derive;
-pub use key::{KeyId, RealmId};
+pub use key::{NameId, RealmId, ServiceKey};
 pub use layer::InterceptChain;
 pub use resolve::{Probe, ResolutionFrames, Resolved};
