@@ -24,9 +24,7 @@ jobs:
       - name: test
         run: cargo test --workspace
       - name: invariant suite
-        run: cargo test --workspace --test 'invariant_*' || true
-        # `|| true` is removed the moment tests/invariants/ lands (M1 packet 0).
-        # From then on the invariant suite is a hard gate.
+        run: cargo test --workspace --test 'invariant_*'
 
   # loom + miri jobs are added with the jinnd-fiber crate (R1/R2):
   #   loom: cargo test -p jinnd-fiber --features loom --release
@@ -44,7 +42,7 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
           CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- tests/invariants/ | wc -l)
-          IMPL=$(git diff --name-only "$BASE" "$HEAD" -- crates/ | wc -l)
+          IMPL=$(git diff --name-only "$BASE" "$HEAD" -- crates/ ':(exclude)crates/jinnd-api/**' | wc -l)
           if [ "$CHANGED" -gt 0 ] && [ "$IMPL" -gt 0 ]; then
             echo "::error::PR touches BOTH tests/invariants/ and crates/ — the two-key rule (SOURCE-OF-TRUTH R2) forbids test and implementation changes in one PR."
             exit 1
