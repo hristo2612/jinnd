@@ -1,0 +1,58 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      - name: invariant suite
+        run: cargo test --workspace --test 'invariant_*' || true
+        # `|| true` is removed the moment tests/invariants/ lands (M1 packet 0).
+        # From then on the invariant suite is a hard gate.
+
+  # loom + miri jobs are added with the jinnd-fiber crate (R1/R2):
+  #   loom: cargo test -p jinnd-fiber --features loom --release
+  #   miri: cargo +nightly miri test -p jinnd-effect -p jinnd-context
+
+  test-protection:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: two-key rule — tests/invariants is verifier-owned
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- tests/invariants/ | wc -l)
+          IMPL=$(git diff --name-only "$BASE" "$HEAD" -- crates/ | wc -l)
+          if [ "$CHANGED" -gt 0 ] && [ "$IMPL" -gt 0 ]; then
+            echo "::error::PR touches BOTH tests/invariants/ and crates/ — the two-key rule (SOURCE-OF-TRUTH R2) forbids test and implementation changes in one PR."
+            exit 1
+          fi
+          if [ "$CHANGED" -gt 0 ]; then
+            LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+            echo "$LABELS" | grep -q "verifier-approved" || {
+              echo "::error::tests/invariants/ changed without the 'verifier-approved' label."
+              exit 1
+            }
+          fi

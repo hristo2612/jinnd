@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = []
+# Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):
+#   crates/jinnd-context   — context tree, isolation, intercept
+#   crates/jinnd-effect    — effect/undo engine
+#   crates/jinnd-fiber     — fiber lifecycle (R1: tokio supervisor tasks; loom-tested)
+#   crates/jinnd-registry  — services, epochs, availability gating
+#   crates/jinnd-events    — event bus
+#   crates/jinnd-loader    — profiles, reconcile, write-back
+#   crates/jinnd-ledger    — append-only ledger + revert
+#   crates/jinnd-macros    — #[derive(Plugin)], #[inject]
+#   crates/jinnd           — the daemon binary (hosts, capability broker, axum API)
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
