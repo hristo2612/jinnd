@@ -8,6 +8,77 @@ license.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+proptest = "1.11.0"
+
 [[test]]
 name = "cordis_fiber"
 path = "../../tests/invariants/cordis_fiber.rs"
+
+[[test]]
+name = "cordis_dispose"
+path = "../../tests/invariants/cordis_dispose.rs"
+
+[[test]]
+name = "cordis_isolate"
+path = "../../tests/invariants/cordis_isolate.rs"
+
+[[test]]
+name = "cordis_events"
+path = "../../tests/invariants/cordis_events.rs"
+
+[[test]]
+name = "cordis_service"
+path = "../../tests/invariants/cordis_service.rs"
+
+[[test]]
+name = "cordis_plugin"
+path = "../../tests/invariants/cordis_plugin.rs"
+
+[[test]]
+name = "cordis_associate"
+path = "../../tests/invariants/cordis_associate.rs"
+
+[[test]]
+name = "cordis_reflect"
+path = "../../tests/invariants/cordis_reflect.rs"
+
+[[test]]
+name = "cordis_logger"
+path = "../../tests/invariants/cordis_logger.rs"
+
+[[test]]
+name = "cordis_handles"
+path = "../../tests/invariants/cordis_handles.rs"
+
+[[test]]
+name = "loader_reconcile"
+path = "../../tests/invariants/loader_reconcile.rs"
+
+[[test]]
+name = "loader_group"
+path = "../../tests/invariants/loader_group.rs"
+
+[[test]]
+name = "loader_isolate"
+path = "../../tests/invariants/loader_isolate.rs"
+
+[[test]]
+name = "invariant_recovery"
+path = "../../tests/invariants/invariant_recovery.rs"
+
+[[test]]
+name = "invariant_ordering"
+path = "../../tests/invariants/invariant_ordering.rs"
+
+[[test]]
+name = "invariant_progress"
+path = "../../tests/invariants/invariant_progress.rs"
+
+[[test]]
+name = "invariant_confluence"
+path = "../../tests/invariants/invariant_confluence.rs"
+
+[[test]]
+name = "hazard_absence"
+path = "../../tests/invariants/hazard_absence.rs"

@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports, unused_macros)]
 
 use jinnd_api::FiberState;
 
@@ -24,8 +24,10 @@ pub struct SpecCase<'a> {
 #[track_caller]
 pub fn pending(case: &SpecCase<'_>) -> ! {
     assert!(
-        case.origin.ends_with(".spec.ts"),
-        "TS origin must name a spec file"
+        case.origin.ends_with(".spec.ts")
+            || case.origin.starts_with("paper:")
+            || case.origin.starts_with("rule:"),
+        "origin must name a TS spec, paper theorem, or numbered rule"
     );
     assert!(!case.test_name.is_empty(), "TS test name must be recorded");
     assert!(
@@ -44,3 +46,30 @@ pub fn pending(case: &SpecCase<'_>) -> ! {
         case.states,
     )
 }
+
+macro_rules! spec_case {
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        origin: $origin:literal,
+        test: $test_name:literal,
+        setup: [$($setup:literal),* $(,)?],
+        actions: [$($action:literal),+ $(,)?],
+        expected: [$($expected:literal),+ $(,)?]
+    ) => {
+        $(#[$meta])*
+        #[test]
+        fn $name() {
+            $crate::support::pending(&$crate::support::SpecCase {
+                origin: $origin,
+                test_name: $test_name,
+                setup: &[$($setup),*],
+                actions: &[$($action),+],
+                expected: &[$($expected),+],
+                states: &[],
+            });
+        }
+    };
+}
+
+pub(crate) use spec_case;
