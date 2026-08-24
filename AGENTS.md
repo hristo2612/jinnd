@@ -75,3 +75,13 @@ not yours. **Every packet works in its own worktree**:
 Never `git checkout`/`git switch` in the primary checkout; never commit there
 without `git branch --show-current` proving you are where you think you are.
 Remove your worktree after your branch merges (`git worktree remove`, then prune).
+
+## One packet, one live implement session (added 2026-08-24 after a double dispatch)
+
+A Todo comment is itself a dispatch signal: any live session attached to that Todo
+may act on it. Before a workflow run (or a new delegation) starts implementing a
+packet, every previously delegated session on that Todo must be stopped or
+explicitly scope-closed. Never post findings as a comment "for the record" while
+another executor is being launched — route findings through exactly one live
+implementer. If you discover another agent's uncommitted edits in your tree:
+STOP, commit nothing, preserve everything, escalate for an ownership ruling.
