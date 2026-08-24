@@ -20,7 +20,11 @@ async fn a_panicking_inverse_is_contained_and_the_rest_still_run() {
 
     assert_eq!(trace.entries(), vec!["top", "bad", "bottom"]);
     assert_eq!(
-        report.labels().collect::<Vec<_>>(),
+        report
+            .effects
+            .iter()
+            .map(|effect| effect.label.as_str())
+            .collect::<Vec<_>>(),
         vec!["top", "bad", "bottom"]
     );
     assert_eq!(

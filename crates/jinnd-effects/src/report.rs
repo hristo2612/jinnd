@@ -64,9 +64,4 @@ impl ReplayReport {
             .iter()
             .filter(|effect| !effect.outcome.is_done())
     }
-
-    /// The withdrawn labels in replay order.
-    pub fn labels(&self) -> impl Iterator<Item = &str> {
-        self.effects.iter().map(|effect| effect.label.as_str())
-    }
 }

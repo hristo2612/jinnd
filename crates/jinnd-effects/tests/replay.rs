@@ -3,7 +3,7 @@
 mod support;
 
 use jinnd_api::{EffectDescriptor, ErrorCode};
-use jinnd_effects::{Disposer, EffectScope, UndoOutcome};
+use jinnd_effects::{EffectScope, UndoOutcome};
 use support::{Trace, recorded, recorded_async, registered};
 
 /// Cordis origin: `packages/core/src/fiber.ts`, `effect()` — disposers are collected
@@ -20,7 +20,11 @@ async fn inverses_replay_in_strict_reverse_registration_order() {
 
     assert_eq!(trace.entries(), vec!["third", "second", "first"]);
     assert_eq!(
-        report.labels().collect::<Vec<_>>(),
+        report
+            .effects
+            .iter()
+            .map(|effect| effect.label.as_str())
+            .collect::<Vec<_>>(),
         vec!["third", "second", "first"]
     );
     assert!(report.is_clean());
@@ -113,11 +117,18 @@ async fn a_replayed_scope_refuses_new_effects() {
     let root = scope.register("late", recorded(&trace, "late"));
     let child = scope.register_child(parent, "late-child", recorded(&trace, "late-child"));
 
-    assert_eq!(root.err().map(|error| error.code), Some(ErrorCode::InactiveContext));
-    assert_eq!(child.err().map(|error| error.code), Some(ErrorCode::InactiveContext));
-    assert!(
-        trace.entries().is_empty(),
-        "a refused registration runs no inverse"
+    assert_eq!(
+        root.err().map(|error| error.code),
+        Some(ErrorCode::InactiveContext)
+    );
+    assert_eq!(
+        child.err().map(|error| error.code),
+        Some(ErrorCode::InactiveContext)
+    );
+    assert_eq!(
+        trace.entries(),
+        vec!["parent"],
+        "a refused registration runs no inverse of its own"
     );
 }
 
@@ -131,7 +142,10 @@ fn nesting_under_an_unknown_effect_is_refused() {
 
     let refused = scope.register_child(foreign, "child", recorded(&trace, "child"));
 
-    assert_eq!(refused.err().map(|error| error.code), Some(ErrorCode::EffectFailed));
+    assert_eq!(
+        refused.err().map(|error| error.code),
+        Some(ErrorCode::EffectFailed)
+    );
     assert_eq!(scope.tree().len(), 1);
     assert_ne!(parent, foreign, "effect identity is unique across scopes");
 }

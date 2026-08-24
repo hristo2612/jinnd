@@ -34,10 +34,13 @@
 #![forbid(unsafe_code)]
 
 mod contain;
+mod disposer;
 mod report;
 mod scope;
+mod tree;
 mod undo;
 
+pub use disposer::Disposer;
 pub use report::{EffectReport, ReplayReport, UndoOutcome};
-pub use scope::{Disposer, EffectScope};
-pub use undo::{FutureUndo, StepwiseUndo, SyncUndo, UndoStep, step};
+pub use scope::EffectScope;
+pub use undo::{FutureUndo, StepwiseUndo, UndoStep, step};

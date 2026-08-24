@@ -1,0 +1,98 @@
+//! The record forest behind a scope, and the two walks over it.
+//!
+//! Every walk here is a loop. A record owns its children, so anything recursive —
+//! including the destructor Rust would derive — overflows the stack on a deeply
+//! nested tree, and a stack overflow aborts the process rather than failing locally
+//! (R11).
+
+use std::mem;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use jinnd_api::{EffectDescriptor, EffectId};
+
+use crate::disposer::Disposer;
+
+/// Effect identity is process-wide, so an [`EffectId`] means the same effect wherever
+/// it is quoted — a report, a ledger entry, or another scope's records.
+static NEXT_EFFECT: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_id() -> EffectId {
+    EffectId(NEXT_EFFECT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// One applied effect: what it was called, how to withdraw it, and what was applied
+/// underneath it.
+pub(crate) struct Record {
+    pub(crate) id: EffectId,
+    pub(crate) label: String,
+    pub(crate) disposer: Disposer,
+    pub(crate) children: Vec<Record>,
+}
+
+/// The live record `id` names.
+pub(crate) fn find(roots: &mut [Record], id: EffectId) -> Option<&mut Record> {
+    let mut stack: Vec<&mut Record> = roots.iter_mut().collect();
+    while let Some(record) = stack.pop() {
+        if record.id == id {
+            return Some(record);
+        }
+        stack.extend(record.children.iter_mut());
+    }
+    None
+}
+
+/// Flattens a forest into replay order: children before the effect they nested under,
+/// last registration first.
+///
+/// Pre-order in registration order, reversed, is exactly that order. Every returned
+/// record is childless, so dropping the result does not recurse either.
+pub(crate) fn flatten(roots: Vec<Record>) -> Vec<Record> {
+    let mut stack: Vec<Record> = roots.into_iter().rev().collect();
+    let mut order = Vec::new();
+    while let Some(mut record) = stack.pop() {
+        let children = mem::take(&mut record.children);
+        order.push(record);
+        stack.extend(children.into_iter().rev());
+    }
+    order.reverse();
+    order
+}
+
+/// Publishes a forest as facade descriptors, in registration order.
+pub(crate) fn describe(roots: &[Record]) -> Vec<EffectDescriptor> {
+    let mut nodes: Vec<(&Record, Option<usize>)> = Vec::new();
+    let mut stack: Vec<(&Record, Option<usize>)> =
+        roots.iter().rev().map(|record| (record, None)).collect();
+    while let Some((record, parent)) = stack.pop() {
+        let index = nodes.len();
+        nodes.push((record, parent));
+        stack.extend(
+            record
+                .children
+                .iter()
+                .rev()
+                .map(|child| (child, Some(index))),
+        );
+    }
+
+    // A child always holds a higher index than its parent, so building from the back
+    // finishes a descriptor's children before the descriptor itself.
+    let mut built: Vec<Vec<EffectDescriptor>> = vec![Vec::new(); nodes.len()];
+    let mut roots = Vec::new();
+    for index in (0..nodes.len()).rev() {
+        let (record, parent) = nodes[index];
+        let mut children = mem::take(&mut built[index]);
+        children.reverse();
+        let descriptor = EffectDescriptor {
+            id: record.id,
+            label: record.label.clone(),
+            children,
+        };
+        match parent {
+            Some(parent) => built[parent].push(descriptor),
+            None => roots.push(descriptor),
+        }
+    }
+    roots.reverse();
+    roots
+}

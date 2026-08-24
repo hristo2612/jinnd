@@ -1,41 +1,16 @@
-//! The disposer forms an effect can register.
-//!
-//! One inverse, three shapes — the same three the paradigm's `effect()` accepts
-//! (audit §"Reversible effects"): a synchronous call, an awaited future, and an
-//! ordered sequence of steps with a cancellation point between them.
+//! The inverse behind a disposer, and the steps a stepwise one replays.
 
 use std::future::Future;
 
 use jinnd_api::{KernelError, KernelFuture, Undo};
 use tokio_util::sync::CancellationToken;
 
-/// An inverse that completes in one synchronous call.
-pub struct SyncUndo<F>(F);
-
-impl<F> SyncUndo<F>
-where
-    F: FnOnce() -> Result<(), KernelError> + Send + 'static,
-{
-    /// Registers `undo` as the inverse of the effect being applied.
-    pub fn new(undo: F) -> Self {
-        Self(undo)
-    }
-}
-
-impl<F> Undo for SyncUndo<F>
-where
-    F: FnOnce() -> Result<(), KernelError> + Send + 'static,
-{
-    fn undo(self: Box<Self>) -> KernelFuture<'static, ()> {
-        Box::pin(async move { (self.0)() })
-    }
-}
-
-/// An inverse that awaits.
+/// The [`Undo`] every whole disposer is built from.
 ///
 /// The closure runs when the inverse is replayed, not when it is registered: an
 /// inverse never starts work at registration time (R9 — no side-effectful
-/// construction).
+/// construction). A synchronous inverse is the same thing returning a ready future,
+/// so the engine has one adapter to reason about rather than two (R10).
 pub struct FutureUndo<F>(F);
 
 impl<F, Fut> FutureUndo<F>
@@ -67,15 +42,15 @@ pub fn step<F>(undo: F) -> UndoStep
 where
     F: FnOnce() -> Result<(), KernelError> + Send + 'static,
 {
-    Box::new(move || Box::pin(async move { undo() }))
+    Box::new(move || Box::pin(std::future::ready(undo())))
 }
 
 /// An ordered sequence of inverse steps with a cancellation point between steps.
 ///
 /// The engine checks `cancel` before each step and stops there, reporting how far it
-/// got, so a withdrawal that is interrupted is never mistaken for a complete one. The
-/// token is the seam the fiber engine fills in: it hands a token whose cancellation is
-/// epoch-checked, and this crate keeps that knowledge out of the effect tree (R10).
+/// got, so a withdrawal that was interrupted is never mistaken for a complete one.
+/// The token is the seam the fiber engine fills in: it hands over a token whose
+/// cancellation is epoch-checked, and that knowledge stays out of this crate (R10).
 pub struct StepwiseUndo {
     steps: Vec<UndoStep>,
     cancel: CancellationToken,
