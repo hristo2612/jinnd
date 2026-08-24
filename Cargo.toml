@@ -7,6 +7,7 @@ members = [
     "tests/invariants",
 ]
 # Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):
+#   crates/jinnd-context   — context tree, isolation, intercept
 #   crates/jinnd-effect    — effect/undo engine
 #   crates/jinnd-fiber     — fiber lifecycle (R1: tokio supervisor tasks; loom-tested)
 #   crates/jinnd-registry  — services, epochs, availability gating
