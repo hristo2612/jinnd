@@ -1,10 +1,66 @@
 mod support;
 
+use std::sync::Arc;
+
+use jinnd_api::{ErrorCode, IsolationBinding, Kernel, Realm, ServiceContract};
 use support::spec_case;
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Context;
 const FACADE_GAP_REASON: &str =
     "the facade cannot withdraw a provided service effect or observe isolation-aware event routing";
+
+#[derive(Debug)]
+struct RootVisible(u8);
+
+impl ServiceContract for RootVisible {
+    type Observation = u8;
+
+    const NAME: &'static str = "jinn.test/root-visible";
+
+    fn observe(&self) -> Self::Observation {
+        self.0
+    }
+}
+
+/// Suite ruling derived from `packages/core/src/reflect.ts:80-94`, especially the
+/// disagreeing-realm stop at line 92: an explicit descendant `Realm::Root` binding
+/// is a real frozen-layer binding, not an erase/inherit sentinel. It therefore does
+/// not reach across an intervening ancestor whose binding selects another realm.
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_root_binding_does_not_erase_an_ancestor_isolation_boundary() {
+    let kernel = jinnd_adapter::kernel();
+    let root = kernel.root_context();
+    let isolated = kernel.derive_context(
+        root,
+        vec![IsolationBinding {
+            service: RootVisible::NAME.to_owned(),
+            realm: Realm::Shared("isolated".to_owned()),
+        }],
+    );
+    let rebound_to_root = kernel.derive_context(
+        isolated,
+        vec![IsolationBinding {
+            service: RootVisible::NAME.to_owned(),
+            realm: Realm::Root,
+        }],
+    );
+
+    let installed = kernel
+        .provide(root, Realm::Root, Arc::new(RootVisible(7)))
+        .await;
+    assert!(
+        installed.is_ok(),
+        "the root provider should be installed: {installed:?}"
+    );
+
+    let error = match kernel.resolve::<RootVisible>(rebound_to_root) {
+        Err(error) => error,
+        Ok(handle) => {
+            panic!("the isolation mismatch must stop the walk before the root provider: {handle:?}")
+        }
+    };
+    assert_eq!(error.code, ErrorCode::MissingDependency);
+}
 
 spec_case! {
     /// TS origin: `packages/core/tests/isolate.spec.ts`, test `isolated context`.
