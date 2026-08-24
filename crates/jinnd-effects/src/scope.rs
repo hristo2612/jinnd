@@ -204,10 +204,14 @@ mod tests {
 
     /// A tree deep enough that a recursive destructor would abort the process. Built
     /// here rather than through `register_child`, which walks the tree per call.
+    ///
+    /// Under miri the same walk is exercised at a depth that interprets in seconds
+    /// rather than minutes; the stack-overflow teeth live in the native run.
     #[test]
     fn a_deeply_nested_tree_is_discarded_without_recursing() {
+        let depth = if cfg!(miri) { 1_000 } else { 100_000 };
         let mut record = leaf();
-        for _ in 0..100_000 {
+        for _ in 0..depth {
             let mut parent = leaf();
             parent.children.push(record);
             record = parent;
