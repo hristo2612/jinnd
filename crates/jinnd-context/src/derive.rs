@@ -5,7 +5,7 @@ use std::sync::Arc;
 use jinnd_api::IsolationBinding;
 
 use crate::context::Context;
-use crate::key::{KeyId, RealmId};
+use crate::key::{NameId, RealmId};
 use crate::layer::Layer;
 
 /// Builder for one derived context: collects the bindings of a single frozen layer.
@@ -15,8 +15,8 @@ use crate::layer::Layer;
 #[derive(Debug)]
 pub struct Derive<'a, I> {
     parent: &'a Context<I>,
-    isolation: Vec<(KeyId, RealmId)>,
-    intercept: Vec<(KeyId, I)>,
+    isolation: Vec<(NameId, RealmId)>,
+    intercept: Vec<(NameId, I)>,
 }
 
 impl<'a, I> Derive<'a, I> {
@@ -32,9 +32,9 @@ impl<'a, I> Derive<'a, I> {
     #[must_use]
     pub fn bind(self, binding: &IsolationBinding) -> Self {
         let tree = self.parent.tree();
-        let key = tree.key(&binding.service);
+        let name = tree.name(&binding.service);
         let realm = tree.realm(&binding.realm);
-        self.isolate(key, realm)
+        self.isolate(name, realm)
     }
 
     /// Maps several services to realms in one derivation.
@@ -45,14 +45,14 @@ impl<'a, I> Derive<'a, I> {
 
     /// Maps one already-interned service key to a realm.
     #[must_use]
-    pub fn isolate(mut self, key: KeyId, realm: RealmId) -> Self {
+    pub fn isolate(mut self, key: NameId, realm: RealmId) -> Self {
         replace_or_push(&mut self.isolation, key, realm);
         self
     }
 
     /// Adds a config overlay for `key` over the derived subtree.
     #[must_use]
-    pub fn intercept(mut self, key: KeyId, value: I) -> Self {
+    pub fn intercept(mut self, key: NameId, value: I) -> Self {
         replace_or_push(&mut self.intercept, key, value);
         self
     }
@@ -73,7 +73,7 @@ impl<'a, I> Derive<'a, I> {
 
 /// Binding a key twice in one derivation keeps the last value, matching the TS
 /// original's dict assignment.
-fn replace_or_push<V>(entries: &mut Vec<(KeyId, V)>, key: KeyId, value: V) {
+fn replace_or_push<V>(entries: &mut Vec<(NameId, V)>, key: NameId, value: V) {
     match entries.iter_mut().find(|(bound, _)| *bound == key) {
         Some(entry) => entry.1 = value,
         None => entries.push((key, value)),

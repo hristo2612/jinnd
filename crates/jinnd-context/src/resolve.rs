@@ -9,7 +9,7 @@
 use jinnd_api::{ContextId, ErrorCode, KernelError};
 
 use crate::context::Context;
-use crate::key::{KeyId, RealmId};
+use crate::key::{NameId, RealmId, ServiceKey};
 
 /// What a caller's probe found at one frame of the walk.
 ///
@@ -35,6 +35,7 @@ pub enum Probe<T> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Resolved<T> {
     pub value: T,
+    pub key: ServiceKey,
     pub caller: ContextId,
     pub provider: ContextId,
     pub realm: RealmId,
@@ -47,8 +48,19 @@ pub struct Resolved<T> {
 #[derive(Debug)]
 pub struct ResolutionFrames<I> {
     cursor: Option<Context<I>>,
-    key: KeyId,
+    name: NameId,
     realm: RealmId,
+}
+
+impl<I> ResolutionFrames<I> {
+    /// The realm every frame of this walk resolves the key in.
+    ///
+    /// Computed once when the walk is built, so a resolution ascends the layer chain
+    /// for the realm exactly once rather than once per query of it.
+    #[must_use]
+    pub fn realm(&self) -> RealmId {
+        self.realm
+    }
 }
 
 impl<I> Iterator for ResolutionFrames<I> {
@@ -58,19 +70,23 @@ impl<I> Iterator for ResolutionFrames<I> {
         let current = self.cursor.take()?;
         self.cursor = current
             .parent()
-            .filter(|parent| parent.realm_of(self.key) == self.realm);
+            .filter(|parent| parent.realm_of(self.name) == self.realm);
         Some(current)
     }
 }
 
 impl<I> Context<I> {
     /// The frames [`Context::resolve`] would consult for `key`, nearest first.
+    ///
+    /// Which frames those are depends only on the key's *name*: isolation is
+    /// name-keyed, so the two lanes walk the same chain.
     #[must_use]
-    pub fn resolution_frames(&self, key: KeyId) -> ResolutionFrames<I> {
+    pub fn resolution_frames(&self, key: ServiceKey) -> ResolutionFrames<I> {
+        let name = key.name();
         ResolutionFrames {
             cursor: Some(self.clone()),
-            key,
-            realm: self.realm_of(key),
+            name,
+            realm: self.realm_of(name),
         }
     }
 
@@ -82,16 +98,18 @@ impl<I> Context<I> {
     /// `probe` never runs under one (R1).
     pub fn resolve<T>(
         &self,
-        key: KeyId,
+        key: ServiceKey,
         mut probe: impl FnMut(&Context<I>) -> Probe<T>,
     ) -> Result<Resolved<T>, KernelError> {
         let caller = self.id();
-        let realm = self.realm_of(key);
-        for frame in self.resolution_frames(key) {
+        let frames = self.resolution_frames(key);
+        let realm = frames.realm();
+        for frame in frames {
             match probe(&frame) {
                 Probe::Provided(value) => {
                     return Ok(Resolved {
                         value,
+                        key,
                         caller,
                         provider: frame.id(),
                         realm,
@@ -114,10 +132,10 @@ impl<I> Context<I> {
         ))
     }
 
-    fn error(&self, code: ErrorCode, key: KeyId, template: &str) -> KernelError {
+    fn error(&self, code: ErrorCode, key: ServiceKey, template: &str) -> KernelError {
         let name = self
-            .key_name(key)
-            .unwrap_or_else(|| format!("<key {key:?}>"));
+            .name_text(key.name())
+            .unwrap_or_else(|| format!("<name {:?}>", key.name()));
         KernelError {
             code,
             message: template.replace("{key}", &format!("\"{name}\"")),

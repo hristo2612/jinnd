@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 
 use jinnd_api::{ErrorCode, IsolationBinding, Realm};
-use jinnd_context::{Context, ContextTree, Probe};
+use jinnd_context::{Context, ContextTree, Probe, RealmId};
 
 fn binding(service: &str, realm: Realm) -> IsolationBinding {
     IsolationBinding {
@@ -36,7 +36,7 @@ fn probe_over<'a>(
 #[test]
 fn a_provider_in_the_calling_context_is_charged_to_the_caller() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let ctx = tree.root().derive().build();
     let visited = RefCell::new(Vec::new());
 
@@ -47,14 +47,14 @@ fn a_provider_in_the_calling_context_is_charged_to_the_caller() {
     assert_eq!(resolved.value, 41);
     assert_eq!(resolved.caller, ctx.id());
     assert_eq!(resolved.provider, ctx.id());
-    assert_eq!(resolved.realm, ctx.realm_of(key));
+    assert_eq!(resolved.realm, ctx.realm_of(key.name()));
     assert_eq!(visited.into_inner(), vec![ctx.id()]);
 }
 
 #[test]
 fn the_walk_ascends_to_an_ancestor_provider_in_the_same_realm() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let root = tree.root();
     let consumer = root.derive().build().derive().build();
     let visited = RefCell::new(Vec::new());
@@ -74,7 +74,7 @@ fn the_walk_ascends_to_an_ancestor_provider_in_the_same_realm() {
 #[test]
 fn an_isolation_boundary_hides_an_ancestor_provider() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let root = tree.root();
     let isolated = root
         .derive()
@@ -100,7 +100,7 @@ fn an_isolation_boundary_hides_an_ancestor_provider() {
 #[test]
 fn a_provider_inside_the_isolated_subtree_is_reachable() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let isolated = tree
         .root()
         .derive()
@@ -123,7 +123,7 @@ fn a_provider_inside_the_isolated_subtree_is_reachable() {
 #[test]
 fn an_unrelated_isolation_binding_does_not_narrow_the_walk() {
     let tree = ContextTree::<()>::new();
-    let bar = tree.key("bar");
+    let bar = tree.dynamic_key("bar");
     let root = tree.root();
     let consumer = root
         .derive()
@@ -143,7 +143,7 @@ fn an_unrelated_isolation_binding_does_not_narrow_the_walk() {
 #[test]
 fn a_declared_but_unprovided_key_ends_the_walk_as_inactive() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let root = tree.root();
     let consumer = root.derive().build();
     let visited = RefCell::new(Vec::new());
@@ -169,7 +169,7 @@ fn a_declared_but_unprovided_key_ends_the_walk_as_inactive() {
 #[test]
 fn a_frame_that_provides_and_declares_the_key_resolves_it() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let consumer = tree.root().derive().build();
     let visited = RefCell::new(Vec::new());
 
@@ -186,7 +186,7 @@ fn a_frame_that_provides_and_declares_the_key_resolves_it() {
 #[test]
 fn a_key_no_frame_holds_ends_the_walk_at_the_root() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let consumer = tree.root().derive().build();
     let visited = RefCell::new(Vec::new());
 
@@ -201,7 +201,7 @@ fn a_key_no_frame_holds_ends_the_walk_at_the_root() {
 #[test]
 fn the_frame_walk_is_the_in_boundary_chain_nearest_first() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let root = tree.root();
     let outer = root.derive().build();
     let isolated = outer
@@ -229,7 +229,7 @@ fn the_frame_walk_is_the_in_boundary_chain_nearest_first() {
 #[test]
 fn shared_realm_siblings_stop_at_their_own_boundary() {
     let tree = ContextTree::<()>::new();
-    let key = tree.key("bar");
+    let key = tree.dynamic_key("bar");
     let root = tree.root();
     let left = root
         .derive()
@@ -246,5 +246,154 @@ fn shared_realm_siblings_stop_at_their_own_boundary() {
     };
 
     assert_eq!(error.code, ErrorCode::MissingDependency);
-    assert_eq!(left.realm_of(key), right.realm_of(key));
+    assert_eq!(left.realm_of(key.name()), right.realm_of(key.name()));
+}
+
+/// The frame that introduces the boundary is the caller itself: the walk is that one
+/// frame, and an ancestor provider stays out of reach.
+#[test]
+fn a_caller_that_binds_the_key_itself_is_the_whole_walk() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.dynamic_key("bar");
+    let root = tree.root();
+    let caller = root
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let visited = RefCell::new(Vec::new());
+
+    let Err(error) = caller.resolve(key, probe_over(&[(root.id(), 7)], &[], &visited)) else {
+        panic!("the caller's own binding must cut it off from the root realm")
+    };
+
+    assert_eq!(error.code, ErrorCode::MissingDependency);
+    assert_eq!(visited.into_inner(), vec![caller.id()]);
+}
+
+/// A descendant may bind a key back to [`Realm::Root`] — a mapping the TS original
+/// cannot express, since there removing isolation means dropping the own key and
+/// inheriting the ancestor's realm.
+///
+/// The boundary rule is applied unchanged (`reflect.ts:92`): the descendant resolves in
+/// the root realm, but the ancestor between it and the root resolves the key
+/// differently, so the walk still stops there. Re-binding to the root realm is
+/// therefore not a way to reach across an isolating ancestor.
+#[test]
+fn rebinding_to_the_root_realm_still_does_not_cross_an_isolating_ancestor() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.dynamic_key("bar");
+    let root = tree.root();
+    let isolating = root
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let rebound = isolating
+        .derive()
+        .bind_all(&[binding("bar", Realm::Root)])
+        .build();
+    let visited = RefCell::new(Vec::new());
+
+    assert!(rebound.realm_of(key.name()).is_root());
+
+    let Err(error) = rebound.resolve(key, probe_over(&[(root.id(), 7)], &[], &visited)) else {
+        panic!("an isolating ancestor is not crossed, whatever realm the descendant names")
+    };
+
+    assert_eq!(error.code, ErrorCode::MissingDependency);
+    assert_eq!(visited.into_inner(), vec![rebound.id()]);
+}
+
+/// Dropping the binding instead — deriving with no isolation — inherits the ancestor's
+/// realm, which is how the TS original reconnects a consumer.
+#[test]
+fn a_descendant_without_its_own_binding_stays_inside_the_ancestors_realm() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.dynamic_key("bar");
+    let isolating = tree
+        .root()
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let inherited = isolating.derive().build();
+    let visited = RefCell::new(Vec::new());
+
+    let Ok(resolved) = inherited.resolve(key, probe_over(&[(isolating.id(), 4)], &[], &visited))
+    else {
+        panic!("an inheriting descendant reaches the provider inside its realm")
+    };
+
+    assert_eq!(resolved.provider, isolating.id());
+    assert_eq!(resolved.realm, isolating.realm_of(key.name()));
+}
+
+/// A contract whose name a profile can also address through the dynamic lane.
+struct Bar(u8);
+
+impl jinnd_api::ServiceContract for Bar {
+    type Observation = u8;
+
+    const NAME: &'static str = "bar";
+
+    fn observe(&self) -> u8 {
+        self.0
+    }
+}
+
+/// R3: the walk's output names the slot it resolved, so the registry receives the
+/// typed identity rather than inferring it from the caller's turn.
+#[test]
+fn a_resolution_carries_the_slot_it_resolved() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.key_of::<Bar>();
+    let ctx = tree.root().derive().build();
+    let visited = RefCell::new(Vec::new());
+
+    let Ok(resolved) = ctx.resolve(key, probe_over(&[(ctx.id(), 7)], &[], &visited)) else {
+        panic!("a provider in the calling context must resolve")
+    };
+
+    assert_eq!(resolved.key, key);
+    assert_ne!(resolved.key, tree.dynamic_key("bar"));
+}
+
+/// A profile binds isolation by string only, so a dynamic binding must stop the walk
+/// for the typed contract of that name exactly as it does for the dynamic key.
+#[test]
+fn a_dynamic_isolation_binding_bounds_the_typed_walk_of_that_name() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.key_of::<Bar>();
+    let root = tree.root();
+    let isolated = root
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let consumer = isolated.derive().build();
+    let visited = RefCell::new(Vec::new());
+
+    let outcome = consumer.resolve(key, probe_over(&[(root.id(), 5)], &[], &visited));
+
+    assert!(outcome.is_err(), "the root provider is across the boundary");
+    assert_eq!(visited.into_inner(), vec![consumer.id(), isolated.id()]);
+}
+
+/// The walk fixes its realm once, when it is built: every frame is compared against
+/// that one realm, so a resolution ascends the layer chain for the realm exactly once.
+#[test]
+fn a_walk_reports_the_one_realm_it_was_built_for() {
+    let tree = ContextTree::<()>::new();
+    let key = tree.key_of::<Bar>();
+    let realm = tree.realm(&Realm::Shared("beta".into()));
+    let isolated = tree
+        .root()
+        .derive()
+        .bind_all(&[binding("bar", Realm::Shared("beta".into()))])
+        .build();
+    let consumer = isolated.derive().build();
+
+    assert_eq!(consumer.resolution_frames(key).realm(), realm);
+    assert_eq!(
+        consumer.resolution_frames(key).realm(),
+        consumer.realm_of(key.name())
+    );
+    assert_eq!(tree.root().resolution_frames(key).realm(), RealmId::ROOT);
 }
