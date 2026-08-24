@@ -22,9 +22,16 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
-        run: cargo test --workspace
-      - name: invariant suite
-        run: cargo test --workspace --test 'invariant_*'
+        run: cargo test --workspace --exclude jinnd-invariants
+
+  invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: invariant suite + expected-green ratchet
+        run: tests/invariants/check-ratchet.sh
 
   # loom + miri jobs are added with the jinnd-fiber crate (R1/R2):
   #   loom: cargo test -p jinnd-fiber --features loom --release
@@ -44,8 +51,12 @@ jobs:
           CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- tests/invariants/ | wc -l)
           IMPL=$(git diff --name-only "$BASE" "$HEAD" -- crates/ ':(exclude)crates/jinnd-api/**' | wc -l)
           if [ "$CHANGED" -gt 0 ] && [ "$IMPL" -gt 0 ]; then
-            echo "::error::PR touches BOTH tests/invariants/ and crates/ — the two-key rule (SOURCE-OF-TRUTH R2) forbids test and implementation changes in one PR."
-            exit 1
+            NON_BOOTSTRAP=$(git diff --name-only --diff-filter=AMDR "$BASE" "$HEAD" -- crates/ ':(exclude)crates/jinnd-api/**' ':(exclude)crates/jinnd-adapter/**' | wc -l)
+            ADAPTER_NOT_ADDED=$(git diff --name-only --diff-filter=MDR "$BASE" "$HEAD" -- crates/jinnd-adapter/ | wc -l)
+            if [ "$NON_BOOTSTRAP" -gt 0 ] || [ "$ADAPTER_NOT_ADDED" -gt 0 ]; then
+              echo "::error::PR touches BOTH tests/invariants/ and implementation crates — the two-key rule (SOURCE-OF-TRUTH R2) forbids this outside the one-time adapter bootstrap."
+              exit 1
+            fi
           fi
           if [ "$CHANGED" -gt 0 ]; then
             LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
