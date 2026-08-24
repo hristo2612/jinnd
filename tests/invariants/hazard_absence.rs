@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Events;
+const FACADE_GAP_REASON: &str = "the facade cannot observe event continuation, async-bail classification, plugin retries, config evaluation, or host loading";
+
 spec_case! {
     /// TS origin: `packages/core/tests/events.spec.ts`, test `ctx.emit()`; corrected by SOURCE-OF-TRUTH R9.
     emit_error_does_not_abort_remaining_listeners,

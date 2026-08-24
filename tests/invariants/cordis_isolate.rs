@@ -2,6 +2,10 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Context;
+const FACADE_GAP_REASON: &str =
+    "the facade cannot withdraw a provided service effect or observe isolation-aware event routing";
+
 spec_case! {
     /// TS origin: `packages/core/tests/isolate.spec.ts`, test `isolated context`.
     isolated_contexts_resolve_independent_service_slots,

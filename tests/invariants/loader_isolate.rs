@@ -2,6 +2,9 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
+const FACADE_GAP_REASON: &str = "reconcile has no fixture plugin registry or entry-to-fiber/provider-generation observation API";
+
 spec_case! {
     /// TS origin: `packages/loader/tests/isolate.spec.ts`, test `Service Isolation: basic / initiate`.
     loader_isolation_fixture_initially_connects_root_provider_and_consumer,

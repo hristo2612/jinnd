@@ -1,9 +1,19 @@
 #![allow(dead_code, unused_imports, unused_macros)]
 
-use jinnd_api::FiberState;
+use jinnd_api::{
+    ContextId, DispatchMode, ErrorCode, Event, EventListener, FiberId, FiberState, Kernel,
+    KernelFuture, Profile, ServiceContract,
+};
 
-pub const NO_KERNEL_REASON: &str =
-    "M1-P0 defines the contract only; bind this case to the kernel implementation";
+#[derive(Clone, Copy, Debug)]
+pub enum Subsystem {
+    Context,
+    Fiber,
+    Services,
+    Effects,
+    Events,
+    Loader,
+}
 
 #[derive(Debug)]
 pub struct StateAt {
@@ -21,8 +31,36 @@ pub struct SpecCase<'a> {
     pub states: &'a [StateAt],
 }
 
-#[track_caller]
-pub fn pending(case: &SpecCase<'_>) -> ! {
+#[derive(Debug)]
+struct FixtureService;
+
+impl ServiceContract for FixtureService {
+    type Observation = ();
+
+    const NAME: &'static str = "jinn.test/fixture-service";
+
+    fn observe(&self) {}
+}
+
+#[derive(Clone, Debug)]
+struct FixtureEvent;
+
+impl Event for FixtureEvent {
+    type Output = ();
+
+    const MODE: DispatchMode = DispatchMode::Emit;
+}
+
+#[derive(Debug)]
+struct FixtureListener;
+
+impl EventListener<FixtureEvent> for FixtureListener {
+    fn call<'a>(&'a self, _caller: ContextId, _event: FixtureEvent) -> KernelFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn validate(case: &SpecCase<'_>) {
     assert!(
         case.origin.ends_with(".spec.ts")
             || case.origin.starts_with("paper:")
@@ -30,6 +68,7 @@ pub fn pending(case: &SpecCase<'_>) -> ! {
         "origin must name a TS spec, paper theorem, or numbered rule"
     );
     assert!(!case.test_name.is_empty(), "TS test name must be recorded");
+    assert!(!case.setup.is_empty(), "ported case must define its setup");
     assert!(
         !case.actions.is_empty(),
         "ported case must exercise an action"
@@ -38,12 +77,99 @@ pub fn pending(case: &SpecCase<'_>) -> ! {
         !case.expected.is_empty(),
         "ported case must encode an observable result"
     );
-    todo!(
-        "{NO_KERNEL_REASON}: {} :: {}; expected={:?}; states={:?}",
-        case.origin,
-        case.test_name,
-        case.expected,
-        case.states,
+    assert!(
+        case.states
+            .windows(2)
+            .all(|pair| pair[0].millis <= pair[1].millis),
+        "state checkpoints must be chronological"
+    );
+    assert!(
+        case.states.iter().all(|state| matches!(
+            state.state,
+            FiberState::Pending
+                | FiberState::Loading
+                | FiberState::Active
+                | FiberState::Failed
+                | FiberState::Unloading
+                | FiberState::Disposed
+        )),
+        "state checkpoints must use facade states"
+    );
+}
+
+/// Drives the closest facade subsystem before recording why the full cited behavior
+/// cannot yet be observed through `jinnd-api`.
+pub async fn facade_gap(case: &SpecCase<'_>, subsystem: Subsystem, reason: &str) -> ! {
+    validate(case);
+    assert!(!reason.is_empty(), "facade gaps require a concrete reason");
+
+    let kernel = jinnd_adapter::kernel();
+    match subsystem {
+        Subsystem::Context => {
+            let root = kernel.root_context();
+            let child = kernel.derive_context(root, Vec::new());
+            assert_ne!(
+                child, root,
+                "a derived facade context needs its own identity"
+            );
+        }
+        Subsystem::Fiber => {
+            let state = kernel.state(FiberId(0));
+            assert!(
+                matches!(
+                    state,
+                    FiberState::Pending
+                        | FiberState::Loading
+                        | FiberState::Active
+                        | FiberState::Failed
+                        | FiberState::Unloading
+                        | FiberState::Disposed
+                ),
+                "the facade returned an unknown fiber state"
+            );
+        }
+        Subsystem::Services => match kernel.resolve::<FixtureService>(ContextId(0)) {
+            Ok(handle) => assert_eq!(handle.caller, ContextId(0)),
+            Err(error) => assert!(matches!(
+                error.code,
+                ErrorCode::InactiveContext | ErrorCode::MissingDependency
+            )),
+        },
+        Subsystem::Effects => {
+            let tree = kernel.effect_tree(FiberId(0));
+            assert!(
+                tree.iter().all(|effect| !effect.label.is_empty()),
+                "published effect labels must be non-empty"
+            );
+        }
+        Subsystem::Events => match kernel.listen(ContextId(0), FixtureListener) {
+            Ok(effect) => assert_ne!(effect.0, u64::MAX),
+            Err(error) => assert!(matches!(
+                error.code,
+                ErrorCode::InactiveContext | ErrorCode::MissingDependency
+            )),
+        },
+        Subsystem::Loader => {
+            let report = kernel
+                .reconcile(Profile::<u8> {
+                    entries: Vec::new(),
+                })
+                .await;
+            match report {
+                Ok(report) => {
+                    assert!(report.created.is_empty());
+                    assert!(report.restarted.is_empty());
+                    assert!(report.disposed.is_empty());
+                    assert!(report.unchanged.is_empty());
+                }
+                Err(error) => assert_eq!(error.code, ErrorCode::InvalidProfile),
+            }
+        }
+    }
+
+    panic!(
+        "FACADE_GAP: {reason}; case={} :: {}",
+        case.origin, case.test_name
     )
 }
 
@@ -58,16 +184,21 @@ macro_rules! spec_case {
         expected: [$($expected:literal),+ $(,)?]
     ) => {
         $(#[$meta])*
-        #[test]
-        fn $name() {
-            $crate::support::pending(&$crate::support::SpecCase {
-                origin: $origin,
-                test_name: $test_name,
-                setup: &[$($setup),*],
-                actions: &[$($action),+],
-                expected: &[$($expected),+],
-                states: &[],
-            });
+        #[tokio::test(flavor = "current_thread")]
+        async fn $name() {
+            $crate::support::facade_gap(
+                &$crate::support::SpecCase {
+                    origin: $origin,
+                    test_name: $test_name,
+                    setup: &[$($setup),*],
+                    actions: &[$($action),+],
+                    expected: &[$($expected),+],
+                    states: &[],
+                },
+                $crate::SUBSYSTEM,
+                $crate::FACADE_GAP_REASON,
+            )
+            .await;
         }
     };
 }

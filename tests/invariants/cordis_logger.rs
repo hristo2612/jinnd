@@ -2,6 +2,10 @@ mod support;
 
 use support::spec_case;
 
+const SUBSYSTEM: support::Subsystem = support::Subsystem::Context;
+const FACADE_GAP_REASON: &str =
+    "the facade exposes no logger, bounded-buffer, exporter, or intercept-name observation surface";
+
 spec_case! {
     /// TS origin: `packages/core/tests/logger.spec.ts`, test `keeps the bounded buffer in place and chronological`.
     ledger_diagnostic_buffer_is_stable_bounded_and_chronological,
