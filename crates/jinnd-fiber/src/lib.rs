@@ -53,6 +53,8 @@ mod contain;
 #[cfg(not(feature = "loom"))]
 mod fiber;
 #[cfg(not(feature = "loom"))]
+mod landing;
+#[cfg(not(feature = "loom"))]
 mod readiness;
 #[cfg(not(feature = "loom"))]
 mod record;
