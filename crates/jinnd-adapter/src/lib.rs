@@ -127,9 +127,11 @@ impl Adapter {
                 Ok(effect)
             }
             // A registration whose undo cannot be held is not allowed to
-            // outlive this call (R5): withdraw it before reporting.
+            // outlive this call (R5): withdraw it before reporting. The
+            // removal can drop the final listener handle, whose destructor is
+            // plugin code — contained, like everywhere else (R11).
             Err(error) => {
-                registration.remove();
+                let _ = panic::catch_unwind(AssertUnwindSafe(|| registration.remove()));
                 Err(error)
             }
         }
@@ -324,10 +326,18 @@ impl Kernel for Adapter {
     }
 
     fn unlisten(&self, effect: EffectId) -> Result<(), KernelError> {
-        // Idempotent: an unknown, already-withdrawn, or once-consumed effect id
-        // is a no-op, matching the removal semantics the undo itself has.
-        if let Some(registration) = lock(&self.listeners).remove(&effect) {
-            registration.remove();
+        // Idempotent: an unknown, already-withdrawn, or non-listener effect id
+        // is a no-op. A live record is withdrawn for real (R5): its inverse
+        // runs and the record leaves the tree, exactly as a replay would do it.
+        if lock(&self.listeners).remove(&effect).is_none() {
+            return Ok(());
+        }
+        let detached = lock(&self.kernel_scope).detach(effect);
+        if let Some(detached) = detached {
+            // Driven with every lock released: the inverse can reach a final
+            // listener handle's plugin-authored destructor (R1); the
+            // withdrawal machinery contains whatever it does (R11).
+            detached.withdraw_now();
         }
         Ok(())
     }

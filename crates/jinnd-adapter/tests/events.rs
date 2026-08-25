@@ -212,6 +212,64 @@ async fn an_unminted_context_is_refused_everywhere() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn unlisten_withdraws_the_live_effect_record() {
+    let kernel = jinnd_adapter::kernel();
+    let log: Log = Log::default();
+    let Ok(effect) = kernel.listen(ROOT, counting(&log, "call")) else {
+        panic!("the listener registers")
+    };
+    assert!(
+        kernel
+            .effect_tree(jinnd_adapter::KERNEL_SCOPE)
+            .iter()
+            .any(|entry| entry.id == effect)
+    );
+
+    let Ok(()) = kernel.unlisten(effect) else {
+        panic!("withdrawal is clean")
+    };
+
+    // Withdrawal is a real effect withdrawal (R5): the inverse ran AND the
+    // record left the tree — the tree publishes exactly what is still live.
+    assert!(
+        !kernel
+            .effect_tree(jinnd_adapter::KERNEL_SCOPE)
+            .iter()
+            .any(|entry| entry.id == effect),
+        "a withdrawn listener effect must leave the tree"
+    );
+    let Ok(_) = kernel.dispatch(ROOT, Ping).await else {
+        panic!("the post-withdrawal dispatch settles")
+    };
+    assert!(recorded(&log).is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlistening_a_consumed_once_effect_still_clears_its_record() {
+    let kernel = jinnd_adapter::kernel();
+    let log: Log = Log::default();
+    let Ok(effect) = kernel.listen_once(ROOT, counting(&log, "once")) else {
+        panic!("the once-listener registers")
+    };
+    let Ok(_) = kernel.dispatch(ROOT, Ping).await else {
+        panic!("the consuming dispatch settles")
+    };
+
+    let Ok(()) = kernel.unlisten(effect) else {
+        panic!("withdrawing a consumed once-listener is a no-op for delivery")
+    };
+
+    assert!(
+        !kernel
+            .effect_tree(jinnd_adapter::KERNEL_SCOPE)
+            .iter()
+            .any(|entry| entry.id == effect),
+        "the consumed registration's record is withdrawn with its effect"
+    );
+    assert_eq!(recorded(&log), vec!["once"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_listener_registration_is_a_visible_effect() {
     let kernel = jinnd_adapter::kernel();
     let Ok(effect) = kernel.listen(ROOT, FnListener(|_, Ping| boxed(async { Ok(()) }))) else {
