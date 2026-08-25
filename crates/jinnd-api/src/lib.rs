@@ -391,6 +391,9 @@ pub trait Kernel: Send + Sync + 'static {
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] on duplicate registration.
+    /// [`ErrorCode::PluginFailed`] when the plugin's dependency declaration
+    /// panics: the declaration is plugin-owned code, its panic is contained at
+    /// this boundary, and the package never registers (R11).
     fn register_package<C, P, F>(&self, package: &str, build: F) -> Result<EffectId, KernelError>
     where
         C: Clone + Debug + PartialEq + Send + Sync + 'static,

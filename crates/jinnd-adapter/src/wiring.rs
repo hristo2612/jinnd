@@ -22,19 +22,24 @@ impl<P: PluginContract> Rebind for FacadeBody<P> {
 }
 
 /// A lane for plugin entries built by `build` from an entry's config payload.
+///
+/// # Errors
+///
+/// [`jinnd_api::ErrorCode::PluginFailed`] when the plugin's dependency
+/// declaration panics — the lane is never built (R11).
 pub(crate) fn plugin_lane<C, P, F>(
     fibers: SharedFibers,
     registry: Registry,
     build: F,
-) -> PackageLane
+) -> Result<PackageLane, KernelError>
 where
     C: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
     P: PluginContract,
     F: Fn(C) -> Result<(P, P::Config), KernelError> + Send + Sync + 'static,
 {
     let build = Arc::new(build);
-    PackageLane {
-        injects: declared::<P>(),
+    Ok(PackageLane {
+        injects: declared::<P>()?,
         provides: None,
         spawn: Box::new(move |request: SpawnRequest<'_>| {
             let config = config_of::<C>(request.config)?;
@@ -53,7 +58,7 @@ where
             };
             Ok(spawned(&fibers, body, request, restate))
         }),
-    }
+    })
 }
 
 /// A lane for provider entries: each activation provides `S`, built by
@@ -90,10 +95,16 @@ where
     }
 }
 
-/// The dependency declaration of `P`, gathered with its panic contained: a
-/// throwing declaration must fail its own spawn, nothing else (R11).
-fn declared<P: PluginContract>() -> Vec<ServiceType> {
-    std::panic::catch_unwind(P::Dependencies::declare).unwrap_or_default()
+/// The dependency declaration of `P`, gathered with its panic contained: the
+/// declaration is plugin-owned code, so its panic is answered as this plugin's
+/// failure — never as an empty declaration — and refuses the operation that
+/// needed it, nothing else (R11; the M1-P4 spawn-boundary pattern).
+fn declared<P: PluginContract>() -> Result<Vec<ServiceType>, KernelError> {
+    std::panic::catch_unwind(P::Dependencies::declare).map_err(|_| KernelError {
+        code: jinnd_api::ErrorCode::PluginFailed,
+        message: "the dependency declaration panicked".to_owned(),
+        fiber: None,
+    })
 }
 
 /// Spawns `body` gated on the loader's signal, records it in the shared fiber

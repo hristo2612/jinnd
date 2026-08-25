@@ -432,7 +432,7 @@ impl Kernel for Adapter {
         P: PluginContract,
         F: Fn(C) -> Result<(P, P::Config), KernelError> + Send + Sync + 'static,
     {
-        let lane = wiring::plugin_lane(Arc::clone(&self.fibers), self.registry.clone(), build);
+        let lane = wiring::plugin_lane(Arc::clone(&self.fibers), self.registry.clone(), build)?;
         self.register_lane_effect::<C>(package, lane)
     }
 
