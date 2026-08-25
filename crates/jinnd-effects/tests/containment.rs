@@ -4,7 +4,7 @@ mod support;
 
 use jinnd_api::{ErrorCode, KernelError};
 use jinnd_effects::{Disposer, EffectScope, UndoOutcome};
-use support::{Trace, error, failing, panicking, recorded, registered};
+use support::{Trace, error, failing, panicking, panicking_destructor, recorded, registered};
 
 /// R11: a panicking inverse is contained here. R9: it is not `emit`-style
 /// abort-on-first-error — every remaining inverse still runs.
@@ -111,4 +111,25 @@ async fn a_non_string_panic_payload_is_still_reported() {
         ))
     );
     assert!(trace.entries().is_empty());
+}
+
+/// An inverse can also panic after it has returned: its own destructor is
+/// plugin-authored code too, and a withdrawal that ends in a panic is not `Done`.
+#[tokio::test]
+async fn a_destructor_panic_after_a_completed_inverse_is_reported_not_swallowed() {
+    let trace = Trace::new();
+    let mut scope = EffectScope::new();
+    registered(scope.register("bottom", recorded(&trace, "bottom")));
+    registered(scope.register("dirty", panicking_destructor(&trace, "dirty")));
+
+    let report = scope.replay().await;
+
+    assert_eq!(trace.entries(), vec!["dirty", "bottom"]);
+    assert_eq!(
+        report.effects.first().map(|effect| effect.outcome.clone()),
+        Some(UndoOutcome::Panicked(
+            "dirty left a panicking destructor".to_owned()
+        ))
+    );
+    assert!(!report.is_clean());
 }

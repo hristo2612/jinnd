@@ -3,7 +3,7 @@
 mod support;
 
 use jinnd_effects::{Disposer, EffectScope, UndoOutcome, step};
-use support::{Trace, error, recorded, registered};
+use support::{Trace, error, recorded, registered, step_with_panicking_destructor};
 use tokio_util::sync::CancellationToken;
 
 fn recording_step(trace: &Trace, label: &'static str) -> jinnd_effects::UndoStep {
@@ -171,4 +171,64 @@ async fn a_panicking_step_stops_its_own_sequence_and_is_contained() {
             "step two could not be undone".to_owned()
         ))
     );
+}
+
+/// A sequence that stops early drops the steps it never ran, and those closures are
+/// plugin-authored too. R11: their destructors cannot unwind past this crate.
+#[tokio::test]
+async fn a_panicking_destructor_on_an_unrun_step_is_contained() {
+    let trace = Trace::new();
+    let mut scope = EffectScope::new();
+    registered(scope.register("bottom", recorded(&trace, "bottom")));
+    let failing_step = {
+        let trace = trace.clone();
+        step(move || {
+            trace.push("one");
+            Err(error("one"))
+        })
+    };
+    registered(scope.register(
+        "stepwise",
+        Disposer::stepwise(
+            vec![failing_step, step_with_panicking_destructor("unrun")],
+            CancellationToken::new(),
+        ),
+    ));
+
+    let report = scope.replay().await;
+
+    assert_eq!(trace.entries(), vec!["one", "bottom"]);
+    assert_eq!(
+        report.effects.first().map(|effect| effect.outcome.clone()),
+        Some(UndoOutcome::Panicked(
+            "unrun left a panicking destructor".to_owned()
+        ))
+    );
+    assert_eq!(report.effects.len(), 2);
+}
+
+/// The same holds at the cancellation point: the steps a cancelled sequence never
+/// reaches are discarded inside the containment, not outside it.
+#[tokio::test]
+async fn a_panicking_destructor_on_a_cancelled_step_is_contained() {
+    let trace = Trace::new();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let mut scope = EffectScope::new();
+    registered(scope.register("bottom", recorded(&trace, "bottom")));
+    registered(scope.register(
+        "stepwise",
+        Disposer::stepwise(vec![step_with_panicking_destructor("unreached")], cancel),
+    ));
+
+    let report = scope.replay().await;
+
+    assert_eq!(trace.entries(), vec!["bottom"]);
+    assert_eq!(
+        report.effects.first().map(|effect| effect.outcome.clone()),
+        Some(UndoOutcome::Panicked(
+            "unreached left a panicking destructor".to_owned()
+        ))
+    );
+    assert_eq!(report.effects.len(), 2);
 }

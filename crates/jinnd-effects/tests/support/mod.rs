@@ -2,7 +2,10 @@
 
 #![allow(dead_code)]
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 use jinnd_api::{EffectId, ErrorCode, KernelError};
 use jinnd_effects::Disposer;
@@ -81,4 +84,79 @@ pub fn registered(result: Result<EffectId, KernelError>) -> EffectId {
         Ok(id) => id,
         Err(error) => panic!("registration must succeed here: {error:?}"),
     }
+}
+
+/// An inverse that never completes.
+pub fn stuck() -> Disposer {
+    Disposer::future(std::future::pending::<Result<(), KernelError>>)
+}
+
+/// An inverse whose future panics from its own destructor.
+///
+/// `ready` picks the boundary under test: an inverse that ran to completion and then
+/// panicked while being dropped, or one still in flight when the replay was dropped.
+pub struct PanicOnDrop {
+    label: &'static str,
+    ready: bool,
+    trace: Trace,
+}
+
+impl Future for PanicOnDrop {
+    type Output = Result<(), KernelError>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.ready {
+            return Poll::Pending;
+        }
+        self.trace.push(self.label);
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        panic!("{} left a panicking destructor", self.label);
+    }
+}
+
+/// An inverse that runs to completion and then panics while its future is dropped.
+pub fn panicking_destructor(trace: &Trace, label: &'static str) -> Disposer {
+    let trace = trace.clone();
+    Disposer::future(move || PanicOnDrop {
+        label,
+        ready: true,
+        trace,
+    })
+}
+
+/// An inverse that never completes and panics while its future is dropped.
+pub fn stuck_panicking_destructor(trace: &Trace, label: &'static str) -> Disposer {
+    let trace = trace.clone();
+    Disposer::future(move || PanicOnDrop {
+        label,
+        ready: false,
+        trace,
+    })
+}
+
+/// Polls `future` once, requiring it to still be pending afterwards.
+pub fn poll_pending<F: Future>(future: Pin<&mut F>) {
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(
+        future.poll(&mut cx).is_pending(),
+        "this future must still be pending here"
+    );
+}
+
+/// A step whose closure panics from its own destructor if the step never runs.
+pub fn step_with_panicking_destructor(label: &'static str) -> jinnd_effects::UndoStep {
+    let guard = PanicOnDrop {
+        label,
+        ready: true,
+        trace: Trace::new(),
+    };
+    jinnd_effects::step(move || {
+        let _ = &guard;
+        Ok(())
+    })
 }
