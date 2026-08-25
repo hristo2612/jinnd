@@ -1,9 +1,12 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jinnd_api::{ErrorCode, IsolationBinding, Kernel, Realm, ServiceContract};
-use support::spec_case;
+use jinnd_api::{
+    ContextId, DispatchMode, ErrorCode, Event, IsolationBinding, Kernel, Realm, ServiceContract,
+};
+use support::{Listener, expect_ok, ready, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Context;
 const FACADE_GAP_REASON: &str =
@@ -19,6 +22,32 @@ impl ServiceContract for RootVisible {
 
     fn observe(&self) -> Self::Observation {
         self.0
+    }
+}
+
+#[derive(Debug)]
+struct IsolatedEventSource;
+
+impl ServiceContract for IsolatedEventSource {
+    type Observation = ();
+
+    const NAME: &'static str = "jinn.test/isolated-event-source";
+
+    fn observe(&self) {}
+}
+
+#[derive(Clone, Debug)]
+struct IsolatedEvent {
+    target: ContextId,
+}
+
+impl Event for IsolatedEvent {
+    type Output = ();
+
+    const MODE: DispatchMode = DispatchMode::Emit;
+
+    fn selects(&self, listener: ContextId) -> bool {
+        listener == self.target
     }
 }
 
@@ -89,5 +118,73 @@ spec_case! {
     test: "isolated event",
     setup: ["root and isolated child register listeners", "service is provided inside isolated child"],
     actions: ["service emits a typed payload scoped to its caller context"],
-    expected: ["child listener receives one event", "root listener receives none"]
+    expected: ["child listener receives one event", "root listener receives none"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let root = kernel.root_context();
+        let realm = Realm::Shared("isolated-event".to_owned());
+        let child = kernel.derive_context(
+            root,
+            vec![IsolationBinding {
+                service: IsolatedEventSource::NAME.to_owned(),
+                realm: realm.clone(),
+            }],
+        );
+        expect_ok(
+            kernel
+                .provide(child, realm, Arc::new(IsolatedEventSource))
+                .await,
+            "the isolated event source should be provided",
+        );
+        let source = expect_ok(
+            kernel.resolve::<IsolatedEventSource>(child),
+            "the isolated child should resolve its source",
+        );
+        assert_eq!(source.caller, child);
+        let root_error = match kernel.resolve::<IsolatedEventSource>(root) {
+            Ok(_) => panic!("the root must not resolve the child's isolated source"),
+            Err(error) => error,
+        };
+        assert_eq!(root_error.code, ErrorCode::MissingDependency);
+
+        let root_calls = Arc::new(AtomicUsize::new(0));
+        let root_listener_calls = Arc::clone(&root_calls);
+        expect_ok(
+            kernel.listen(
+                root,
+                Listener(move |_caller, _event: IsolatedEvent| {
+                    root_listener_calls.fetch_add(1, Ordering::SeqCst);
+                    ready(Ok(()))
+                }),
+            ),
+            "the root listener should register",
+        );
+        let child_calls = Arc::new(AtomicUsize::new(0));
+        let child_listener_calls = Arc::clone(&child_calls);
+        expect_ok(
+            kernel.listen(
+                child,
+                Listener(move |_caller, _event: IsolatedEvent| {
+                    child_listener_calls.fetch_add(1, Ordering::SeqCst);
+                    ready(Ok(()))
+                }),
+            ),
+            "the child listener should register",
+        );
+
+        let report = expect_ok(
+            kernel
+                .dispatch_report(
+                    source.caller,
+                    IsolatedEvent {
+                        target: source.caller,
+                    },
+                )
+                .await,
+            "the isolated event should settle",
+        );
+        assert!(report.failures.is_empty());
+        assert_eq!(child_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(root_calls.load(Ordering::SeqCst), 0);
+    }
 }

@@ -1,12 +1,15 @@
 //! The live effect tree and its last-in-first-out teardown.
 
+use std::future::Future;
 use std::mem;
+use std::pin::Pin;
+use std::task::{Context, Waker};
 
 use jinnd_api::{EffectDescriptor, EffectId, ErrorCode, KernelError};
 
 use crate::disposer::Disposer;
 use crate::report::{EffectReport, ReplayReport};
-use crate::tree::{Record, describe, find, flatten, next_id, take_next};
+use crate::tree::{Record, describe, find, flatten, next_id, take, take_next};
 use crate::withdrawal::Withdrawal;
 
 /// One scope's live effect tree.
@@ -129,6 +132,24 @@ impl EffectScope {
         }
     }
 
+    /// Detaches one live effect, with its whole subtree, for immediate
+    /// withdrawal.
+    ///
+    /// The records leave this scope's tree at once — bookkeeping only, no
+    /// inverse runs here — and the returned handle owes their withdrawal.
+    /// Callers drive it with [`Detached::withdraw_now`] **after** releasing
+    /// whatever guards this scope: an inverse can reach plugin code (a final
+    /// listener handle's destructor, say), and no lock is held across plugin
+    /// code (R1).
+    ///
+    /// `None` when `id` names no live effect here; detaching is idempotent.
+    pub fn detach(&mut self, id: EffectId) -> Option<Detached> {
+        let record = take(&mut self.roots, id)?;
+        Some(Detached {
+            records: flatten(vec![record]),
+        })
+    }
+
     fn record(&self, label: impl Into<String>, disposer: Disposer) -> Result<Record, KernelError> {
         if self.replayed {
             return Err(error(
@@ -148,6 +169,48 @@ impl EffectScope {
 impl Default for EffectScope {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// One effect subtree detached from its scope, owing its inverses.
+///
+/// Like a scope, this is the record of what must be undone, not a guard that
+/// undoes it: dropping it discards the inverses without running them.
+#[must_use = "a detached effect's inverses run only through withdraw_now"]
+pub struct Detached {
+    /// Replay order: children before the effect they nested under; childless.
+    records: Vec<Record>,
+}
+
+impl Detached {
+    /// Withdraws every detached record now, children before the effect they
+    /// nested under, and reports what each inverse did.
+    ///
+    /// This is the synchronous withdrawal point `unlisten`-shaped callers
+    /// need: every inverse is driven in place and must finish without waiting.
+    /// One that yields was consumed when it started and is reported
+    /// [`Interrupted`](crate::UndoOutcome::Interrupted) — nothing here blocks
+    /// (R1). Failures and panics are contained and recorded exactly as a
+    /// replay records them (R9, R11).
+    pub fn withdraw_now(self) -> ReplayReport {
+        let mut effects = Vec::new();
+        for record in self.records {
+            let mut withdrawal = Withdrawal::new(&mut effects, record);
+            let mut cx = Context::from_waker(Waker::noop());
+            if Pin::new(&mut withdrawal).poll(&mut cx).is_pending() {
+                // Dropping the in-flight withdrawal records it Interrupted.
+                drop(withdrawal);
+            }
+        }
+        ReplayReport { effects }
+    }
+}
+
+impl std::fmt::Debug for Detached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Detached")
+            .field("records", &self.records.len())
+            .finish()
     }
 }
 

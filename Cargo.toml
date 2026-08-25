@@ -5,6 +5,7 @@ members = [
     "crates/jinnd-api",
     "crates/jinnd-context",
     "crates/jinnd-effects",
+    "crates/jinnd-events",
     "crates/jinnd-fiber",
     "crates/jinnd-registry",
     "tests/invariants",

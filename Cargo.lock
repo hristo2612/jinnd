@@ -145,6 +145,7 @@ dependencies = [
  "jinnd-api",
  "jinnd-context",
  "jinnd-effects",
+ "jinnd-events",
  "jinnd-fiber",
  "jinnd-registry",
  "tokio",
@@ -168,6 +169,15 @@ dependencies = [
  "jinnd-api",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "jinnd-events"
+version = "0.0.1"
+dependencies = [
+ "jinnd-api",
+ "loom",
+ "tokio",
 ]
 
 [[package]]

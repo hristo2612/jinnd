@@ -12,6 +12,7 @@ workspace = true
 jinnd-api = { path = "../jinnd-api" }
 jinnd-context = { path = "../jinnd-context" }
 jinnd-effects = { path = "../jinnd-effects" }
+jinnd-events = { path = "../jinnd-events" }
 jinnd-fiber = { path = "../jinnd-fiber" }
 jinnd-registry = { path = "../jinnd-registry" }
 tokio = { version = "1.47.1", features = ["macros", "rt", "sync"] }

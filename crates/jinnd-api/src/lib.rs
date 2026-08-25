@@ -183,10 +183,53 @@ pub enum DispatchMode {
 }
 
 /// A typed event and its declared dispatch mode.
+///
+/// The three provided methods are the payload's side of dispatch, all defaulted
+/// so an event declares only what its mode uses (authorized M1-P5 additive
+/// delta; R3, R12).
 pub trait Event: Clone + Debug + Send + Sync + 'static {
     type Output: Debug + Send + Sync + 'static;
 
     const MODE: DispatchMode;
+
+    /// Inverted routing (LAW §3): the payload selects its listeners by
+    /// interrogating each listener's registration context. Listeners never
+    /// filter the payload. Default: every listener is selected.
+    fn selects(&self, listener: ContextId) -> bool {
+        let _ = listener;
+        true
+    }
+
+    /// Bail dispatch: whether a resolved output is decisive. The kernel awaits
+    /// every listener result and asks only then — a pending async result is
+    /// never treated as bailed (R9). Default: every resolved output is decisive.
+    fn decisive(&self, output: &Self::Output) -> bool {
+        let _ = output;
+        true
+    }
+
+    /// Waterfall dispatch: fold one listener's output into the payload before
+    /// the next listener sees it. Returns whether the walk continues; `false`
+    /// declines the rest of the chain. Default: drop the output, continue.
+    fn absorb(&mut self, output: Self::Output) -> bool {
+        let _ = output;
+        true
+    }
+}
+
+/// Every listener outcome of one dispatch, per the event's declared mode.
+///
+/// R9 mechanically: a failing listener never aborts a collecting walk; its
+/// contained failure is observed here, after every listener settled.
+#[derive(Debug)]
+pub struct DispatchReport<E: Event> {
+    /// The payload after the walk. Waterfall reads its accumulator from here.
+    pub event: E,
+    /// Resolved outputs in registration order. Emit ignores outputs; bail
+    /// carries the decisive output alone; waterfall folds outputs into `event`.
+    pub outputs: Vec<E::Output>,
+    /// Contained listener failures, in the order they were observed.
+    pub failures: Vec<KernelError>,
 }
 
 /// One typed event listener.
@@ -287,7 +330,29 @@ pub trait Kernel: Send + Sync + 'static {
         listener: L,
     ) -> Result<EffectId, KernelError>;
 
+    /// Registers a listener delivered at most once, then withdrawn by the
+    /// kernel itself (authorized M1-P5 additive delta).
+    fn listen_once<E: Event, L: EventListener<E>>(
+        &self,
+        context: ContextId,
+        listener: L,
+    ) -> Result<EffectId, KernelError>;
+
+    /// Withdraws one listener registration by the effect `listen` returned.
+    /// Idempotent: withdrawing a listener that is already gone is a no-op
+    /// (authorized M1-P5 additive delta).
+    fn unlisten(&self, effect: EffectId) -> Result<(), KernelError>;
+
     fn dispatch<E: Event>(&self, context: ContextId, event: E) -> KernelFuture<'_, Vec<E::Output>>;
+
+    /// Dispatches with per-listener failure observation: every listener
+    /// settles and every contained failure is reported, whatever the mode
+    /// (R9; authorized M1-P5 additive delta).
+    fn dispatch_report<E: Event>(
+        &self,
+        context: ContextId,
+        event: E,
+    ) -> KernelFuture<'_, DispatchReport<E>>;
 
     fn reconcile<C: Clone + Debug + Send + Sync + 'static>(
         &self,

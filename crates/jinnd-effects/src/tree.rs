@@ -41,6 +41,20 @@ pub(crate) fn find(roots: &mut [Record], id: EffectId) -> Option<&mut Record> {
     None
 }
 
+/// Removes the live record `id` names, with its whole subtree, from the forest.
+pub(crate) fn take(roots: &mut Vec<Record>, id: EffectId) -> Option<Record> {
+    let mut stack: Vec<&mut Vec<Record>> = vec![roots];
+    while let Some(level) = stack.pop() {
+        if let Some(index) = level.iter().position(|record| record.id == id) {
+            return Some(level.remove(index));
+        }
+        for record in level.iter_mut() {
+            stack.push(&mut record.children);
+        }
+    }
+    None
+}
+
 /// Flattens a forest into replay order: children before the effect they nested under,
 /// last registration first.
 ///

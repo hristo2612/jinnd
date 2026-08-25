@@ -1,0 +1,23 @@
+[package]
+name = "jinnd-events"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Model checking only: swaps the listener table's primitives for loom's and drops
+# the tokio-facing dispatch layers from the build. Off by default, never a
+# runtime dependency.
+loom = ["dep:loom"]
+
+[dependencies]
+jinnd-api = { path = "../jinnd-api" }
+loom = { version = "0.7.2", optional = true }
+tokio = { version = "1.47.1", features = ["rt"] }
+
+[dev-dependencies]
+tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }

@@ -3,9 +3,9 @@
 //! **This is the conformance-harness lane** (SOURCE-OF-TRUTH decision log,
 //! 2026-08-25): the in-proc, statically-typed [`Kernel`] exists so the
 //! verifier-owned invariant suite can drive kernel semantics. It is never a
-//! plugin host and never ships in the daemon binary (Law 1). Wired as of M1-P4:
-//! context, effects, fiber, and registry. Events and the profile loader keep
-//! their `NO_KERNEL` stubs until their packets land.
+//! plugin host and never ships in the daemon binary (Law 1). Wired as of M1-P5:
+//! context, effects, fiber, registry, and events. The profile loader keeps its
+//! `NO_KERNEL` stub until its packet lands.
 //!
 //! Harness conventions, stated once:
 //!
@@ -26,12 +26,14 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{
-    ContextId, EffectDescriptor, EffectId, ErrorCode, Event, EventListener, FiberId, FiberState,
-    Inject, IsolationBinding, Kernel, KernelError, KernelFuture, PluginContract, Profile, Realm,
-    ReconcileReport, ServiceContract, ServiceHandle, Transition, TransitionCause, Undo,
+    ContextId, DispatchReport, EffectDescriptor, EffectId, ErrorCode, Event, EventListener,
+    FiberId, FiberState, Inject, IsolationBinding, Kernel, KernelError, KernelFuture,
+    PluginContract, Profile, Realm, ReconcileReport, ServiceContract, ServiceHandle, Transition,
+    TransitionCause, Undo,
 };
 use jinnd_context::{Context, ContextTree};
 use jinnd_effects::{Disposer, EffectScope};
+use jinnd_events::{EventBus, Registration};
 use jinnd_fiber::Fiber;
 use jinnd_registry::{Injection, Registry, Vitality};
 
@@ -51,6 +53,11 @@ struct Adapter {
     contexts: Mutex<HashMap<ContextId, Context<()>>>,
     fibers: Mutex<HashMap<FiberId, Arc<FiberEntry>>>,
     registry: Registry,
+    events: EventBus,
+    /// Removal handles for live listener effects, so `unlisten` can withdraw
+    /// one registration by its effect id; removal stays idempotent with the
+    /// same undo held by the kernel scope.
+    listeners: Mutex<HashMap<EffectId, Registration>>,
     kernel_scope: Mutex<EffectScope>,
     /// The kernel pseudo-fiber's vitality: always Active, never reported away.
     kernel_vitality: Vitality,
@@ -70,6 +77,8 @@ pub fn kernel() -> impl Kernel {
         contexts,
         fibers: Mutex::new(HashMap::new()),
         registry,
+        events: EventBus::new(),
+        listeners: Mutex::new(HashMap::new()),
         kernel_scope: Mutex::new(EffectScope::new()),
         kernel_vitality,
     }
@@ -92,6 +101,50 @@ impl Adapter {
                 "this kernel spawned no such fiber",
             )
         })
+    }
+
+    /// Registers a listener as an effect on the kernel scope (R5): the bus
+    /// registration is the forward action, its idempotent removal is the undo.
+    fn register_listener<E: Event, L: EventListener<E>>(
+        &self,
+        context: ContextId,
+        listener: L,
+        once: bool,
+    ) -> Result<EffectId, KernelError> {
+        self.context(context)?;
+        let registration = self.events.listen(context, listener, once);
+        let undo = registration.clone();
+        let registered = lock(&self.kernel_scope).register(
+            format!("listen {}", std::any::type_name::<E>()),
+            Disposer::sync(move || {
+                undo.remove();
+                Ok(())
+            }),
+        );
+        match registered {
+            Ok(effect) => {
+                lock(&self.listeners).insert(effect, registration);
+                Ok(effect)
+            }
+            // A registration whose undo cannot be held is not allowed to
+            // outlive this call (R5): withdraw it before reporting. The
+            // removal can drop the final listener handle, whose destructor is
+            // plugin code — contained, like everywhere else (R11).
+            Err(error) => {
+                let _ = panic::catch_unwind(AssertUnwindSafe(|| registration.remove()));
+                Err(error)
+            }
+        }
+    }
+
+    /// Validates the caller and runs one full mode walk on the bus.
+    async fn report<E: Event>(
+        &self,
+        context: ContextId,
+        event: E,
+    ) -> Result<DispatchReport<E>, KernelError> {
+        self.context(context)?;
+        Ok(self.events.dispatch(context, event).await)
     }
 }
 
@@ -258,18 +311,56 @@ impl Kernel for Adapter {
 
     fn listen<E: Event, L: EventListener<E>>(
         &self,
-        _context: ContextId,
-        _listener: L,
+        context: ContextId,
+        listener: L,
     ) -> Result<EffectId, KernelError> {
-        todo!("NO_KERNEL: events")
+        self.register_listener(context, listener, false)
     }
 
-    fn dispatch<E: Event>(
+    fn listen_once<E: Event, L: EventListener<E>>(
         &self,
-        _context: ContextId,
-        _event: E,
-    ) -> KernelFuture<'_, Vec<E::Output>> {
-        todo!("NO_KERNEL: events")
+        context: ContextId,
+        listener: L,
+    ) -> Result<EffectId, KernelError> {
+        self.register_listener(context, listener, true)
+    }
+
+    fn unlisten(&self, effect: EffectId) -> Result<(), KernelError> {
+        // Idempotent: an unknown, already-withdrawn, or non-listener effect id
+        // is a no-op. A live record is withdrawn for real (R5): its inverse
+        // runs and the record leaves the tree, exactly as a replay would do it.
+        if lock(&self.listeners).remove(&effect).is_none() {
+            return Ok(());
+        }
+        let detached = lock(&self.kernel_scope).detach(effect);
+        if let Some(detached) = detached {
+            // Driven with every lock released: the inverse can reach a final
+            // listener handle's plugin-authored destructor (R1); the
+            // withdrawal machinery contains whatever it does (R11).
+            detached.withdraw_now();
+        }
+        Ok(())
+    }
+
+    fn dispatch<E: Event>(&self, context: ContextId, event: E) -> KernelFuture<'_, Vec<E::Output>> {
+        Box::pin(async move {
+            let report = self.report(context, event).await?;
+            // Every listener has settled by now: a failure is reported after
+            // the walk, never by aborting it (R9). The aggregate stays
+            // observable through `dispatch_report`.
+            match report.failures.into_iter().next() {
+                None => Ok(report.outputs),
+                Some(failure) => Err(failure),
+            }
+        })
+    }
+
+    fn dispatch_report<E: Event>(
+        &self,
+        context: ContextId,
+        event: E,
+    ) -> KernelFuture<'_, DispatchReport<E>> {
+        Box::pin(async move { self.report(context, event).await })
     }
 
     fn reconcile<C: Clone + Debug + Send + Sync + 'static>(

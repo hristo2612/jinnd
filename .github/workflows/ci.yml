@@ -45,6 +45,8 @@ jobs:
         run: cargo test -p jinnd-fiber --features loom --release
       - name: loom models — the registry's lease/slot interleavings (I2, R9)
         run: cargo test -p jinnd-registry --features loom --release
+      - name: loom models — the event bus's once-claim and snapshot (R1, R9)
+        run: cargo test -p jinnd-events --features loom --release
 
   miri:
     if: github.event_name == 'push'
@@ -58,7 +60,7 @@ jobs:
       - name: miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
-        run: cargo +nightly miri test -p jinnd-context -p jinnd-effects -p jinnd-fiber -p jinnd-registry
+        run: cargo +nightly miri test -p jinnd-context -p jinnd-effects -p jinnd-events -p jinnd-fiber -p jinnd-registry
 
   test-protection:
     runs-on: ubuntu-latest
