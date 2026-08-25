@@ -3,9 +3,8 @@
 //! **This is the conformance-harness lane** (SOURCE-OF-TRUTH decision log,
 //! 2026-08-25): the in-proc, statically-typed [`Kernel`] exists so the
 //! verifier-owned invariant suite can drive kernel semantics. It is never a
-//! plugin host and never ships in the daemon binary (Law 1). Wired as of M1-P5:
-//! context, effects, fiber, registry, and events. The profile loader keeps its
-//! `NO_KERNEL` stub until its packet lands.
+//! plugin host and never ships in the daemon binary (Law 1). Wired as of M1-P6:
+//! context, effects, fiber, registry, events, and the profile loader.
 //!
 //! Harness conventions, stated once:
 //!
@@ -19,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 mod body;
+mod wiring;
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -26,15 +26,16 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{
-    ContextId, DispatchReport, EffectDescriptor, EffectId, ErrorCode, Event, EventListener,
-    FiberId, FiberState, Inject, IsolationBinding, Kernel, KernelError, KernelFuture,
-    PluginContract, Profile, Realm, ReconcileReport, ServiceContract, ServiceHandle, Transition,
-    TransitionCause, Undo,
+    ContextId, DispatchReport, EffectDescriptor, EffectId, EntryId, ErrorCode, Event,
+    EventListener, FiberId, FiberState, Inject, IsolationBinding, Kernel, KernelError,
+    KernelFuture, PluginContract, Profile, Realm, ReconcileReport, ServiceContract, ServiceHandle,
+    Transition, TransitionCause, Undo,
 };
 use jinnd_context::{Context, ContextTree};
 use jinnd_effects::{Disposer, EffectScope};
 use jinnd_events::{EventBus, Registration};
 use jinnd_fiber::Fiber;
+use jinnd_loader::Loader;
 use jinnd_registry::{Injection, Registry, Vitality};
 
 use crate::body::FacadeBody;
@@ -43,16 +44,20 @@ use crate::body::FacadeBody;
 pub const KERNEL_SCOPE: FiberId = FiberId(0);
 
 /// One spawned fiber and the body whose config the facade may re-state.
-struct FiberEntry {
-    fiber: Fiber,
-    body: Arc<dyn std::any::Any + Send + Sync>,
+pub(crate) struct FiberEntry {
+    pub(crate) fiber: Fiber,
+    pub(crate) body: Arc<dyn std::any::Any + Send + Sync>,
 }
+
+/// The fiber map, shared with loader-lane spawners (uids are never reused, R3).
+pub(crate) type SharedFibers = Arc<Mutex<HashMap<FiberId, Arc<FiberEntry>>>>;
 
 struct Adapter {
     root: Context<()>,
-    contexts: Mutex<HashMap<ContextId, Context<()>>>,
-    fibers: Mutex<HashMap<FiberId, Arc<FiberEntry>>>,
+    contexts: Arc<Mutex<HashMap<ContextId, Context<()>>>>,
+    fibers: SharedFibers,
     registry: Registry,
+    loader: Arc<Loader>,
     events: EventBus,
     /// Removal handles for live listener effects, so `unlisten` can withdraw
     /// one registration by its effect id; removal stays idempotent with the
@@ -69,14 +74,25 @@ struct Adapter {
 pub fn kernel() -> impl Kernel {
     let tree: ContextTree = ContextTree::new();
     let root = tree.root();
-    let contexts = Mutex::new(HashMap::from([(root.id(), root.clone())]));
+    let contexts = Arc::new(Mutex::new(HashMap::from([(root.id(), root.clone())])));
     let registry = Registry::new();
     let kernel_vitality = registry.vitality(true);
+    // Every context the loader mints joins the facade's map, so entry context
+    // ids stay first-class facade citizens.
+    let minted = Arc::clone(&contexts);
+    let loader = Arc::new(Loader::new(
+        root.clone(),
+        registry.clone(),
+        move |context| {
+            lock(&minted).insert(context.id(), context);
+        },
+    ));
     Adapter {
         root,
         contexts,
-        fibers: Mutex::new(HashMap::new()),
+        fibers: Arc::new(Mutex::new(HashMap::new())),
         registry,
+        loader,
         events: EventBus::new(),
         listeners: Mutex::new(HashMap::new()),
         kernel_scope: Mutex::new(EffectScope::new()),
@@ -137,6 +153,32 @@ impl Adapter {
         }
     }
 
+    /// Registers a loader lane as a kernel-scope effect (R5): withdrawing the
+    /// effect unregisters the package.
+    fn register_lane_effect<C: 'static>(
+        &self,
+        package: &str,
+        lane: jinnd_loader::PackageLane,
+    ) -> Result<EffectId, KernelError> {
+        use std::any::TypeId;
+        self.loader
+            .register_lane(package, TypeId::of::<C>(), lane)?;
+        let loader = Arc::clone(&self.loader);
+        let name = package.to_owned();
+        let registered = lock(&self.kernel_scope).register(
+            format!("package {package}"),
+            Disposer::sync(move || {
+                loader.unregister_lane(&name, TypeId::of::<C>());
+                Ok(())
+            }),
+        );
+        if registered.is_err() {
+            // A lane whose undo cannot be held may not outlive this call (R5).
+            self.loader.unregister_lane(package, TypeId::of::<C>());
+        }
+        registered
+    }
+
     /// Validates the caller and runs one full mode walk on the bus.
     async fn report<E: Event>(
         &self,
@@ -188,13 +230,7 @@ impl Kernel for Adapter {
             // declared service has an Active, checked provider, and any provider
             // change moves the epoch and forces a clean reload (R9).
             let readiness = self.registry.readiness(&at, Injection { services });
-            let body = Arc::new(FacadeBody::new(
-                plugin,
-                context,
-                at,
-                self.registry.clone(),
-                config,
-            ));
+            let body = Arc::new(FacadeBody::new(plugin, at, self.registry.clone(), config));
             let fiber = Fiber::spawn(
                 Arc::clone(&body) as Arc<dyn jinnd_fiber::FiberBody>,
                 readiness,
@@ -255,11 +291,28 @@ impl Kernel for Adapter {
 
     fn wait_for_quiescence(&self) -> KernelFuture<'_, ()> {
         Box::pin(async move {
-            let entries: Vec<Arc<FiberEntry>> = lock(&self.fibers).values().cloned().collect();
-            for entry in entries {
-                entry.fiber.quiesce().await;
+            // Quiesce passes until two consecutive passes observe the same
+            // states: cross-fiber propagation (a provider activating waking a
+            // consumer) settles between passes. Termination is I3's promise
+            // for acyclic dependency precedence.
+            let mut previous: Option<Vec<(FiberId, FiberState)>> = None;
+            loop {
+                let entries: Vec<Arc<FiberEntry>> = lock(&self.fibers).values().cloned().collect();
+                for entry in &entries {
+                    entry.fiber.quiesce().await;
+                }
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                let mut snapshot: Vec<(FiberId, FiberState)> = entries
+                    .iter()
+                    .map(|entry| (entry.fiber.id(), entry.fiber.state()))
+                    .collect();
+                snapshot.sort_by_key(|(id, _)| *id);
+                if previous.as_ref() == Some(&snapshot) {
+                    return Ok(());
+                }
+                previous = Some(snapshot);
             }
-            Ok(())
         })
     }
 
@@ -363,22 +416,73 @@ impl Kernel for Adapter {
         Box::pin(async move { self.report(context, event).await })
     }
 
-    fn reconcile<C: Clone + Debug + Send + Sync + 'static>(
+    fn reconcile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
         &self,
-        _profile: Profile<C>,
+        profile: Profile<C>,
     ) -> KernelFuture<'_, ReconcileReport> {
-        todo!("NO_KERNEL: loader")
+        Box::pin(async move { self.loader.reconcile(profile).await })
+    }
+
+    fn register_package<C, P, F>(&self, package: &str, build: F) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        P: PluginContract,
+        F: Fn(C) -> Result<(P, P::Config), KernelError> + Send + Sync + 'static,
+    {
+        let lane = wiring::plugin_lane(Arc::clone(&self.fibers), self.registry.clone(), build);
+        self.register_lane_effect::<C>(package, lane)
+    }
+
+    fn register_provider_package<C, S, F>(
+        &self,
+        package: &str,
+        provide: F,
+    ) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        S: ServiceContract,
+        F: Fn(C) -> Result<Arc<S>, KernelError> + Send + Sync + 'static,
+    {
+        let lane = wiring::provider_lane(Arc::clone(&self.fibers), self.registry.clone(), provide);
+        self.register_lane_effect::<C>(package, lane)
+    }
+
+    fn entry_fiber(&self, entry: &EntryId) -> Option<FiberId> {
+        self.loader.entry_fiber(entry)
+    }
+
+    fn update_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+        entry: &EntryId,
+        config: C,
+    ) -> KernelFuture<'_, ()> {
+        let entry = entry.clone();
+        Box::pin(async move { self.loader.update_entry(&entry, config).await })
+    }
+
+    fn dispose_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+        entry: &EntryId,
+    ) -> KernelFuture<'_, ()> {
+        let entry = entry.clone();
+        Box::pin(async move { self.loader.dispose_entry::<C>(&entry).await })
+    }
+
+    fn persisted_profile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+    ) -> Option<Profile<C>> {
+        self.loader.persisted::<C>()
     }
 }
 
 /// Lock helper recovering from poisoning (R11): the maps and the kernel scope
 /// hold valid data whatever thread panicked while touching them. No guard taken
 /// here is ever held across an `await` or a call into plugin code (R1).
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-fn error(code: ErrorCode, message: &str) -> KernelError {
+pub(crate) fn error(code: ErrorCode, message: &str) -> KernelError {
     KernelError {
         code,
         message: message.to_owned(),

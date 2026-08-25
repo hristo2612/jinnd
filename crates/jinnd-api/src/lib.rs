@@ -370,8 +370,77 @@ pub trait Kernel: Send + Sync + 'static {
         event: E,
     ) -> KernelFuture<'_, DispatchReport<E>>;
 
-    fn reconcile<C: Clone + Debug + Send + Sync + 'static>(
+    /// Reconciles the runtime onto `profile` by entry id: only affected fibers
+    /// move, and the profile becomes the committed document of record. The
+    /// `PartialEq` bound is what reconcile-by-id compares configs with
+    /// (authorized M1-P6 delta; R3).
+    fn reconcile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
         &self,
         profile: Profile<C>,
     ) -> KernelFuture<'_, ReconcileReport>;
+
+    /// Registers the constructor for profile entries referencing `package`
+    /// (R3's string-keyed lane for dynamically loaded plugins). `build` maps an
+    /// entry's config payload to the plugin instance and its typed config.
+    ///
+    /// The registration is an effect on the kernel scope (R5): withdrawing the
+    /// returned effect unregisters the package. Registering a package twice is
+    /// refused — replacement is never silent (R9). (Authorized M1-P6 additive
+    /// delta.)
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] on duplicate registration.
+    fn register_package<C, P, F>(&self, package: &str, build: F) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        P: PluginContract,
+        F: Fn(C) -> Result<(P, P::Config), KernelError> + Send + Sync + 'static;
+
+    /// Registers a provider package: each activation of such an entry provides
+    /// `S` — built from the entry's config by `provide` — in the realm the
+    /// entry's context resolves `S` in, charged to the entry's fiber and
+    /// withdrawn with it (R5, I2). (Authorized M1-P6 additive delta.)
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] on duplicate registration.
+    fn register_provider_package<C, S, F>(
+        &self,
+        package: &str,
+        provide: F,
+    ) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        S: ServiceContract,
+        F: Fn(C) -> Result<Arc<S>, KernelError> + Send + Sync + 'static;
+
+    /// The fiber currently hosting `entry`, if any (authorized M1-P6 additive
+    /// delta: entry-to-fiber observation).
+    fn entry_fiber(&self, entry: &EntryId) -> Option<FiberId>;
+
+    /// A runtime-originated config change: writes back to the committed
+    /// document atomically, then reloads the entry's fiber observing the new
+    /// config (LAW §3 bidirectional persistence; authorized M1-P6 additive
+    /// delta).
+    fn update_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+        entry: &EntryId,
+        config: C,
+    ) -> KernelFuture<'_, ()>;
+
+    /// A runtime-originated disposal: persists the entry as disabled with its
+    /// config retained, then disposes its fiber (authorized M1-P6 additive
+    /// delta).
+    fn dispose_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+        entry: &EntryId,
+    ) -> KernelFuture<'_, ()>;
+
+    /// The committed document as persisted, `None` before the first reconcile
+    /// or under a foreign config type (authorized M1-P6 additive delta:
+    /// persistence read-back).
+    fn persisted_profile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+    ) -> Option<Profile<C>>;
 }
