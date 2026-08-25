@@ -50,13 +50,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
       - uses: Swatinem/rust-cache@v2
+      - name: install miri
+        run: rustup component add miri --toolchain nightly
       - name: miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
-        run: cargo miri test -p jinnd-context -p jinnd-effects -p jinnd-fiber
+        run: cargo +nightly miri test -p jinnd-context -p jinnd-effects -p jinnd-fiber
 
   test-protection:
     runs-on: ubuntu-latest
