@@ -69,7 +69,10 @@ fn a_malformed_entry_survives_write_back_verbatim() {
     // Write-back re-emits what it did not understand, in place: a save never
     // erases a faulted entry (v0.1: no destructive compaction).
     let rendered = document.render();
-    assert!(rendered.contains("\"id\": 7"), "verbatim entry kept: {rendered}");
+    assert!(
+        rendered.contains("\"id\": 7"),
+        "verbatim entry kept: {rendered}"
+    );
     let again = Document::parse(&rendered).grab();
     assert_eq!(document, again);
 }

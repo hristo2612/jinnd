@@ -38,13 +38,15 @@ pub(crate) struct State {
     pub(crate) entries: HashMap<EntryId, EntryRuntime>,
 }
 
-/// Amends one entry of the committed document in place and returns the new
+/// Computes one entry's amended committed document without committing it:
+/// the caller persists the amended profile first, then commits it (LAW §3 —
+/// the document of record moves before the runtime). Also returns the new
 /// spec `Arc` for the runtime.
-pub(crate) fn amend_committed<C: LaneConfig>(
-    state: &mut State,
+pub(crate) fn amended<C: LaneConfig>(
+    state: &State,
     entry: &EntryId,
     change: impl FnOnce(&mut ProfileEntry<C>),
-) -> Result<Arc<dyn Any + Send + Sync>, KernelError> {
+) -> Result<(Profile<C>, Arc<dyn Any + Send + Sync>), KernelError> {
     let committed = state
         .committed
         .as_ref()
@@ -58,8 +60,7 @@ pub(crate) fn amend_committed<C: LaneConfig>(
         .ok_or_else(|| error(ErrorCode::InvalidProfile, "no such entry"))?;
     change(persisted);
     let spec = Arc::new(persisted.clone()) as Arc<dyn Any + Send + Sync>;
-    state.committed = Some(Arc::new(profile) as Arc<dyn Any + Send + Sync>);
-    Ok(spec)
+    Ok((profile, spec))
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

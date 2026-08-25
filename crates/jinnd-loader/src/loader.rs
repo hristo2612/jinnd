@@ -14,7 +14,7 @@ use jinnd_registry::Registry;
 use tokio_util::sync::CancellationToken;
 
 use crate::lanes::PackageLane;
-use crate::state::{State, amend_committed, error, lock};
+use crate::state::{State, amended, error, lock};
 
 /// A config type usable at the loader's typed boundary (R3): profile config
 /// payloads are plain data, never behavior (R9), compared in their canonical
@@ -29,6 +29,8 @@ pub struct Loader {
     pub(crate) on_context: Box<dyn Fn(Context<()>) + Send + Sync>,
     pub(crate) lanes: Mutex<HashMap<(String, TypeId), Arc<PackageLane>>>,
     pub(crate) state: Mutex<State>,
+    /// The attached write-back store, if any (see [`Loader::attach_store`]).
+    pub(crate) persist: Mutex<Option<Arc<crate::persist::Persistence>>>,
     /// Serializes reconcile/update/dispose. Held across plan application —
     /// loader operations are never reachable from plugin code, so no lock is
     /// ever held across a call into a plugin (R1).
@@ -50,6 +52,7 @@ impl Loader {
             on_context: Box::new(on_context),
             lanes: Mutex::new(HashMap::new()),
             state: Mutex::new(State::default()),
+            persist: Mutex::new(None),
             gate: tokio::sync::Mutex::new(()),
         }
     }
@@ -105,8 +108,9 @@ impl Loader {
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] when `C` differs from the config type the
-    /// loader is already committed to. Per-entry problems are not errors: they
-    /// are contained faults in the report (R11).
+    /// loader is already committed to, or when the attached store cannot
+    /// write the document back — nothing is committed then. Per-entry
+    /// problems are not errors: they are contained faults in the report (R11).
     pub async fn reconcile_with<C: LaneConfig>(
         &self,
         profile: Profile<C>,
@@ -115,10 +119,13 @@ impl Loader {
         let _gate = self.gate.lock().await;
         let old = self.applied::<C>()?;
         let plan = crate::diff::plan(old.as_ref(), &profile);
+        let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
+        // The document of record moves to disk before the runtime (LAW §3).
+        self.persist(&committed).await?;
         {
             let mut state = lock(&self.state);
             state.config_type = Some(TypeId::of::<C>());
-            state.committed = Some(Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>);
+            state.committed = Some(committed);
         }
         let report = self.apply(plan, &profile, &cancel).await;
         self.settle().await;
@@ -126,28 +133,33 @@ impl Loader {
     }
 
     /// A runtime-originated config change: writes back to the committed
-    /// document first, then reloads the entry's fiber with the new config.
+    /// document first — through the attached store when one is present — then
+    /// reloads the entry's fiber with the new config.
     ///
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] for an unknown entry or a foreign config
-    /// type; whatever the lane answers for an unstatable payload.
+    /// type; whatever the attached store answers for a failed write-back
+    /// (nothing is committed then); whatever the lane answers for an
+    /// unstatable payload.
     pub async fn update_entry<C: LaneConfig>(
         &self,
         entry: &EntryId,
         config: C,
     ) -> Result<(), KernelError> {
         let _gate = self.gate.lock().await;
+        let committed = self.amend::<C>(entry, |persisted| {
+            persisted.config = config.clone();
+        })?;
+        self.persist(&committed.profile).await?;
         let handle = {
             let mut state = lock(&self.state);
-            let spec = amend_committed::<C>(&mut state, entry, |persisted| {
-                persisted.config = config.clone();
-            })?;
+            state.committed = Some(committed.profile);
             let runtime = state
                 .entries
                 .get_mut(entry)
                 .ok_or_else(|| error(ErrorCode::InvalidProfile, "the entry has no runtime"))?;
-            runtime.spec = spec;
+            runtime.spec = committed.spec;
             runtime.live.as_ref().map(|live| Arc::clone(&live.handle))
         };
         if let Some(handle) = handle {
@@ -159,24 +171,28 @@ impl Loader {
     }
 
     /// A runtime-originated disposal: persists the entry as disabled (config
-    /// retained), then disposes its fiber.
+    /// retained) — through the attached store when one is present — then
+    /// disposes its fiber.
     ///
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] for an unknown entry or a foreign config
-    /// type.
+    /// type; whatever the attached store answers for a failed write-back
+    /// (nothing is committed then).
     pub async fn dispose_entry<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
         let _gate = self.gate.lock().await;
+        let committed = self.amend::<C>(entry, |persisted| {
+            persisted.disabled = true;
+        })?;
+        self.persist(&committed.profile).await?;
         let live = {
             let mut state = lock(&self.state);
-            let spec = amend_committed::<C>(&mut state, entry, |persisted| {
-                persisted.disabled = true;
-            })?;
+            state.committed = Some(committed.profile);
             let runtime = state
                 .entries
                 .get_mut(entry)
                 .ok_or_else(|| error(ErrorCode::InvalidProfile, "the entry has no runtime"))?;
-            runtime.spec = spec;
+            runtime.spec = committed.spec;
             runtime.context = None;
             runtime.live.take()
         };
@@ -184,6 +200,24 @@ impl Loader {
             live.handle.dispose().await?;
         }
         Ok(())
+    }
+
+    /// Computes one amended committed document, validating the entry has a
+    /// runtime, without committing anything yet.
+    fn amend<C: LaneConfig>(
+        &self,
+        entry: &EntryId,
+        change: impl FnOnce(&mut ProfileEntry<C>),
+    ) -> Result<Amended, KernelError> {
+        let state = lock(&self.state);
+        if !state.entries.contains_key(entry) {
+            return Err(error(ErrorCode::InvalidProfile, "the entry has no runtime"));
+        }
+        let (profile, spec) = amended::<C>(&state, entry, change)?;
+        Ok(Amended {
+            profile: Arc::new(profile) as Arc<dyn Any + Send + Sync>,
+            spec,
+        })
     }
 
     /// The fiber currently hosting `entry`, if any.
@@ -246,4 +280,11 @@ impl Loader {
         }
         Ok(Some(Profile { entries }))
     }
+}
+
+/// One amended committed document, computed but not yet committed: it is
+/// persisted first, committed second (LAW §3).
+struct Amended {
+    profile: Arc<dyn Any + Send + Sync>,
+    spec: Arc<dyn Any + Send + Sync>,
 }

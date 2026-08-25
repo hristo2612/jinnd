@@ -15,6 +15,7 @@ mod document;
 pub mod host;
 mod lanes;
 mod loader;
+mod persist;
 mod proxy;
 mod state;
 mod store;
