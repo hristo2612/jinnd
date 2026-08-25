@@ -32,31 +32,49 @@ impl Loader {
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry or a
-    /// foreign config type; whatever the lane answers for a rejected or
+    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
+    /// foreign config type, an operation already in flight for this entry or
+    /// the document, a call from within a fiber's teardown context, or —
+    /// when the entry is live — any tracked fiber's withdrawal replay in
+    /// flight: the amendment would await the fiber, so it is refused
+    /// retryably at the conflict point, never parked, from any task
+    /// (R1, M1-P6b); whatever the lane answers for a rejected or
     /// unstatable payload; whatever the attached store answers for a failed
     /// write-back. After any error exactly one of three states holds: both
     /// views at the prior state (the usual case — a staged config is
-    /// withdrawn), both at the new state, or a recorded [`Loader::entry_faults`]
-    /// divergence when the withdrawal itself failed (LAW §3: never dropped).
+    /// withdrawn), both at the new state, or a recorded
+    /// [`Loader::entry_faults`] divergence when the withdrawal itself failed
+    /// (LAW §3: never dropped).
     pub async fn update_entry<C: LaneConfig>(
         &self,
         entry: &EntryId,
         config: C,
     ) -> Result<(), KernelError> {
-        let _gate = self.gate.lock().await;
-        let amendment = self.amended::<C>(entry, |persisted| persisted.config = config.clone())?;
+        crate::gate::refuse_teardown_context("the amendment")?;
+        let _engaged = self.gate.engage_entry(entry)?;
+        // Validation and the prior-config snapshot; the engagement keeps this
+        // entry's slice of the document stable for the operation's span.
+        let staged = self.amended::<C>(entry, |persisted| persisted.config = config.clone())?;
         let handle = self.live_handle(entry);
+        // A live entry's amendment will await its fiber, so it never begins
+        // amid a withdrawal (round-4 law); the check precedes the restate —
+        // the first side effect — so a refusal commits nothing anywhere.
+        if handle.is_some() {
+            self.refuse_amid_withdrawal("the amendment")?;
+        }
         // The runtime is offered the change first: a rejection commits
-        // nothing anywhere.
+        // nothing anywhere. No lock or permit is held here (R1).
         if let Some(handle) = &handle {
             handle.restate(&config)?;
         }
         // The document follows; a failed write-back withdraws the staged
         // config so both views stay at the prior state.
-        if let Err(fault) = self.persist(&amendment.committed).await {
+        if let Err(fault) = self
+            .persist_amendment::<C>(entry, |persisted| persisted.config = config.clone())
+            .await
+        {
             let withdrawal = match &handle {
-                Some(handle) => handle.restate(&amendment.previous),
+                Some(handle) => handle.restate(&staged.previous),
                 None => Ok(()),
             };
             // A failed withdrawal is a divergence, recorded and loud: the
@@ -64,18 +82,18 @@ impl Loader {
             if let Err(withdrawal) = withdrawal {
                 return Err(self.record_divergence(
                     entry,
-                    amendment.spec,
+                    staged.spec,
                     &format!(
                         "the two views diverged: the runtime staged {config:?}, the document \
                          holds {:?} (write-back failed: {}; withdrawal failed: {})",
-                        amendment.previous, fault.message, withdrawal.message
+                        staged.previous, fault.message, withdrawal.message
                     ),
                 ));
             }
             return Err(fault);
         }
-        self.commit(entry, amendment)?;
         // Both views committed: the fiber reloads to observe the config.
+        // Only the engagement marker is held across the reload (R1).
         if let Some(handle) = handle {
             handle.restart(TransitionCause::ConfigChanged);
             handle.quiesce().await?;
@@ -83,60 +101,96 @@ impl Loader {
         Ok(())
     }
 
+    /// Persists and commits one amendment under the persist permit. The
+    /// amended document is re-derived from the committed one *inside* the
+    /// permit, so a sibling entry's amendment committed meanwhile is never
+    /// overwritten; the permit's span runs no plugin-facing code (R1).
+    async fn persist_amendment<C: LaneConfig>(
+        &self,
+        entry: &EntryId,
+        change: impl FnOnce(&mut ProfileEntry<C>),
+    ) -> Result<(), KernelError> {
+        let _permit = self.gate.persist_permit().await?;
+        let amendment = self.amended::<C>(entry, change)?;
+        self.persist(&amendment.committed).await?;
+        self.commit(entry, amendment)
+    }
+
     /// A runtime-originated disposal: the entry's fiber is withdrawn first,
     /// then the document persists the entry as disabled, config retained.
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry or a
-    /// foreign config type; whatever the handle answers for a failed disposal
-    /// (nothing is persisted or committed then). Disposal is irreversible at
-    /// runtime, so a failed write-back is retried once; failing again, the
-    /// divergence — runtime disposed, document enabled — is recorded in
-    /// [`Loader::entry_faults`] and returned, so the next reconcile of the
-    /// document reconverges the two views (LAW §3: never swallowed).
+    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
+    /// foreign config type, an operation already in flight for this entry or
+    /// the document, a call from within a fiber's teardown context, or —
+    /// when the entry is live — any tracked fiber's withdrawal replay in
+    /// flight (refused retryably at the conflict point, never parked, from
+    /// any task; R1, M1-P6b); whatever the handle
+    /// answers for a failed disposal (nothing is persisted or committed
+    /// then). Disposal is irreversible at runtime, so a failed write-back is
+    /// retried once; failing again, the divergence — runtime disposed,
+    /// document enabled — is recorded in [`Loader::entry_faults`] and
+    /// returned, so the next reconcile of the document reconverges the two
+    /// views (LAW §3: never swallowed).
     pub async fn dispose_entry<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
-        let _gate = self.gate.lock().await;
-        let amendment = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
+        crate::gate::refuse_teardown_context("the disposal")?;
+        let _engaged = self.gate.engage_entry(entry)?;
+        // Validation and the reality snapshot for a recorded divergence.
+        let staged = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
         let handle = self.live_handle(entry);
-        // The runtime moves first: a refused disposal commits nothing.
+        // A live entry's disposal awaits its fiber's withdrawal: it never
+        // begins amid another one already in flight (round-4 law).
+        if handle.is_some() {
+            self.refuse_amid_withdrawal("the disposal")?;
+        }
+        // The runtime moves first: a refused disposal commits nothing. The
+        // teardown replays plugin-owned inverses on the fiber's own task with
+        // only the engagement marker held — a teardown calling back into the
+        // loader is refused honestly, never deadlocked (R1, M1-P6b).
         if let Some(handle) = &handle {
             handle.dispose().await?;
         }
+        if let Err(fault) = self.persist_disposal::<C>(entry).await {
+            return Err(self.record_divergence(
+                entry,
+                staged.spec,
+                &format!(
+                    "the two views diverged: the runtime is disposed, the document stays \
+                     enabled (write-back failed: {})",
+                    fault.message
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The disposal's write-back and commit, under the persist permit (no
+    /// plugin-facing code in its span; R1). The amended document is
+    /// re-derived inside the permit, so amendments another task landed
+    /// meanwhile are never overwritten. The disposal cannot be taken back, so
+    /// a failed write-back is retried once — and the applied view moves to
+    /// the disposed reality whatever the write-back said.
+    async fn persist_disposal<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
+        let _permit = self.gate.persist_permit().await?;
+        let amendment = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
         let mut persisted = self.persist(&amendment.committed).await;
         if persisted.is_err() {
-            // The disposal cannot be taken back: the write-back is retried
-            // before the divergence is recorded.
             persisted = self.persist(&amendment.committed).await;
         }
-        let fault = {
-            let mut state = lock(&self.state);
+        let mut state = lock(&self.state);
+        {
             let runtime = state
                 .entries
                 .get_mut(entry)
                 .ok_or_else(|| error(ErrorCode::InvalidProfile, "the entry has no runtime"))?;
-            // The fiber is disposed whatever the write-back said: the applied
-            // view reflects that reality either way.
             runtime.context = None;
             runtime.live = None;
             runtime.spec = Arc::clone(&amendment.spec);
-            match persisted {
-                Ok(()) => {
-                    state.committed = Some(amendment.committed);
-                    return Ok(());
-                }
-                Err(fault) => fault,
-            }
-        };
-        Err(self.record_divergence(
-            entry,
-            amendment.spec,
-            &format!(
-                "the two views diverged: the runtime is disposed, the document stays \
-                 enabled (write-back failed: {})",
-                fault.message
-            ),
-        ))
+        }
+        persisted?;
+        state.committed = Some(amendment.committed);
+        Ok(())
     }
 
     /// Records one entry's divergence between the two views: the applied spec

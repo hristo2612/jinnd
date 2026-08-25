@@ -45,6 +45,7 @@ mod models;
 mod plan;
 mod steering;
 mod sync;
+mod withdrawal;
 
 #[cfg(not(feature = "loom"))]
 mod body;
@@ -63,6 +64,8 @@ mod shared;
 #[cfg(not(feature = "loom"))]
 mod supervisor;
 #[cfg(not(feature = "loom"))]
+mod teardown;
+#[cfg(not(feature = "loom"))]
 mod uid;
 
 #[cfg(not(feature = "loom"))]
@@ -73,3 +76,5 @@ pub use fiber::Fiber;
 pub use readiness::{ReadinessSignal, ReadinessSource, Signal, WatchReadiness};
 #[cfg(not(feature = "loom"))]
 pub use record::FiberRecord;
+#[cfg(not(feature = "loom"))]
+pub use teardown::in_teardown;

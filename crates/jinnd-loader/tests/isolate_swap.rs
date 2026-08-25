@@ -2,6 +2,8 @@
 //! moved realm reloads exactly the fibers whose epoch changed (LAW §3 epoch
 //! gating; R9 no silent replacement).
 
+#![cfg(not(feature = "loom"))]
+
 mod common;
 
 use common::Grab;

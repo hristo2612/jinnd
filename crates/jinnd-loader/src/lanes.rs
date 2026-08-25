@@ -67,6 +67,14 @@ pub trait EntryHandle: Send + Sync {
     /// The fiber's last committed state.
     fn state(&self) -> FiberState;
 
+    /// True while the fiber is replaying its withdrawal — plugin-owned
+    /// inverses executing, on unload, disposal, and failure cleanup alike.
+    ///
+    /// The contract is causal (M1-P6b): the answer must already be `true` for
+    /// any code the replay reaches, on the fiber's task or on tasks it
+    /// spawned — the loader's conflict refusal is built on exactly this.
+    fn withdrawing(&self) -> bool;
+
     /// Asks for a full clean reload, stating why.
     fn restart(&self, cause: TransitionCause);
 

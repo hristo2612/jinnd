@@ -217,6 +217,7 @@ dependencies = [
  "jinnd-effects",
  "jinnd-fiber",
  "jinnd-registry",
+ "loom",
  "serde",
  "serde_json",
  "tokio",

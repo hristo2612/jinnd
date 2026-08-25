@@ -1,6 +1,8 @@
 //! End-to-end loader behavior over real fibers: reconcile-by-id, bidirectional
 //! persistence, contained per-entry faults (R1, R5, R11; I1/I4 seeds).
 
+#![cfg(not(feature = "loom"))]
+
 mod common;
 
 use common::Grab;

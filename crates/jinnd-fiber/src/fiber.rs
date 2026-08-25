@@ -88,6 +88,18 @@ impl Fiber {
         self.shared.wake.notify_one();
     }
 
+    /// True while the fiber is replaying its withdrawal — plugin-owned
+    /// inverses executing, on unload, disposal, and a failed activation's
+    /// cleanup alike (M1-P6b).
+    ///
+    /// Task-agnostic, unlike [`crate::in_teardown`]: any code the replay
+    /// reaches — spawned tasks included — happens-after the bit was raised,
+    /// so a conflict check made from within the replay always observes it.
+    #[must_use]
+    pub fn withdrawing(&self) -> bool {
+        self.shared.withdrawal.active()
+    }
+
     /// Resolves once the fiber has settled with nothing left to do, having re-read
     /// every input after this call.
     pub async fn quiesce(&self) {

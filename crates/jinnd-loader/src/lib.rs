@@ -13,9 +13,12 @@ mod amend;
 mod apply;
 mod diff;
 mod document;
+mod gate;
 pub mod host;
 mod lanes;
 mod loader;
+#[cfg(all(test, feature = "loom"))]
+mod models;
 mod proxy;
 mod state;
 mod store;

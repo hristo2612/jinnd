@@ -198,6 +198,14 @@ impl Cell {
     }
 
     /// Replays this activation's scope and starts the next one from an empty tree.
+    ///
+    /// The replay runs inside the teardown context marker: plugin-owned
+    /// inverses execute on this fiber's task, and anything they call can
+    /// consult [`crate::in_teardown`] to refuse work that must not wait on a
+    /// teardown in flight (R1, M1-P6b). The task-agnostic half is the
+    /// withdrawal cell, raised for exactly the replay's span: work an inverse
+    /// spawns onto another task escapes the marker but happens-after the
+    /// raise, so [`crate::Fiber::withdrawing`] still answers it truthfully.
     async fn withdraw(&mut self) -> ReplayReport {
         let cancel = CancellationToken::new();
         let report = {
@@ -207,8 +215,9 @@ impl Cell {
                 scope,
                 ..
             } = self;
+            let _span = shared.withdrawal.begin();
             let work = scope.replay();
-            land(work, signal.as_mut(), shared, &cancel).await
+            crate::teardown::marked(land(work, signal.as_mut(), shared, &cancel)).await
         };
         self.scope = EffectScope::new();
         self.shared.replayed(report.clone());

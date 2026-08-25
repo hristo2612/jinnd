@@ -1,6 +1,8 @@
 //! Realm isolation through the loader: relevance is decided by epoch identity,
 //! never by loader guessing (LAW §3 epoch gating; R9 no silent replacement).
 
+#![cfg(not(feature = "loom"))]
+
 mod common;
 
 use common::Grab;

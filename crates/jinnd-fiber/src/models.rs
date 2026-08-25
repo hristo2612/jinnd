@@ -252,3 +252,29 @@ fn an_epoch_change_absorbed_mid_flight_raises_cancellation_exactly_then() {
         );
     });
 }
+
+/// The withdrawal cell's causal guarantee (M1-P6b): a conflict check reached
+/// from within the replay span — here, from a task the replay spawned —
+/// always observes the bit raised, because the spawn happens-after the
+/// `SeqCst` store that began the span. A checker outside the span may see
+/// either value; the model asserts only the causal edge the loader builds
+/// its refusal on, and that the span's end lowers the bit again.
+#[test]
+fn a_task_spawned_by_the_withdrawal_replay_observes_the_bit() {
+    loom::model(|| {
+        let cell = Arc::new(crate::withdrawal::WithdrawalCell::new());
+        let span = cell.begin();
+        let observer = {
+            let cell = Arc::clone(&cell);
+            // What an inverse spawns mid-replay: strictly after `begin`.
+            thread::spawn(move || cell.active())
+        };
+        let observed = observer.join().unwrap_or_else(|_| unreachable!());
+        assert!(
+            observed,
+            "a task spawned inside the replay span saw no withdrawal"
+        );
+        drop(span);
+        assert!(!cell.active(), "the span's end must lower the bit");
+    });
+}
