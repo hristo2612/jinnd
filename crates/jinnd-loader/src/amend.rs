@@ -33,10 +33,11 @@ impl Loader {
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
-    /// foreign config type, or an operation already in flight for this entry
-    /// or the document — which is what a plugin-facing callback re-entering
-    /// the loader observes, from any task: refused honestly, never
-    /// deadlocked (R1); whatever the lane answers for a rejected or
+    /// foreign config type, an operation already in flight for this entry or
+    /// the document, or a call from within a fiber's teardown context — the
+    /// profile is never amendable from teardown, so a re-entrant callback is
+    /// refused honestly, never deadlocked, from any task (R1, M1-P6b);
+    /// whatever the lane answers for a rejected or
     /// unstatable payload; whatever the attached store answers for a failed
     /// write-back. After any error exactly one of three states holds: both
     /// views at the prior state (the usual case — a staged config is
@@ -48,6 +49,7 @@ impl Loader {
         entry: &EntryId,
         config: C,
     ) -> Result<(), KernelError> {
+        crate::gate::refuse_teardown_context("the amendment")?;
         let _engaged = self.gate.engage_entry(entry)?;
         // Validation and the prior-config snapshot; the engagement keeps this
         // entry's slice of the document stable for the operation's span.
@@ -113,9 +115,10 @@ impl Loader {
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
-    /// foreign config type, or an operation already in flight for this entry
-    /// or the document (a callback re-entering the loader is refused
-    /// honestly, never deadlocked, from any task; R1); whatever the handle
+    /// foreign config type, an operation already in flight for this entry or
+    /// the document, or a call from within a fiber's teardown context (a
+    /// re-entrant callback is refused honestly, never deadlocked, from any
+    /// task; R1, M1-P6b); whatever the handle
     /// answers for a failed disposal (nothing is persisted or committed
     /// then). Disposal is irreversible at runtime, so a failed write-back is
     /// retried once; failing again, the divergence — runtime disposed,
@@ -123,6 +126,7 @@ impl Loader {
     /// returned, so the next reconcile of the document reconverges the two
     /// views (LAW §3: never swallowed).
     pub async fn dispose_entry<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
+        crate::gate::refuse_teardown_context("the disposal")?;
         let _engaged = self.gate.engage_entry(entry)?;
         // Validation and the reality snapshot for a recorded divergence.
         let staged = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
@@ -130,7 +134,7 @@ impl Loader {
         // The runtime moves first: a refused disposal commits nothing. The
         // teardown replays plugin-owned inverses on the fiber's own task with
         // only the engagement marker held — a teardown calling back into the
-        // loader is refused or served, never deadlocked (R1, M1-P6b).
+        // loader is refused honestly, never deadlocked (R1, M1-P6b).
         if let Some(handle) = &handle {
             handle.dispose().await?;
         }
@@ -150,7 +154,7 @@ impl Loader {
 
     /// The disposal's write-back and commit, under the persist permit (no
     /// plugin-facing code in its span; R1). The amended document is
-    /// re-derived inside the permit, so amendments a teardown callback landed
+    /// re-derived inside the permit, so amendments another task landed
     /// meanwhile are never overwritten. The disposal cannot be taken back, so
     /// a failed write-back is retried once — and the applied view moves to
     /// the disposed reality whatever the write-back said.

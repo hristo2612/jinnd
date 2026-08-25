@@ -1,8 +1,10 @@
-//! M1-P6b rework regression: plugin-owned teardown runs on the fiber's own
-//! task, not the disposing operation's. A teardown that calls back into the
-//! loader must never deadlock the disposal (R1): its own entry's amendment is
-//! refused honestly, a sibling's is served — and the served amendment survives
-//! the disposal's own write-back of the document of record.
+//! M1-P6b regression (round-1 pin, round-3 law): plugin-owned teardown runs
+//! on the fiber's own task, not the disposing operation's. Any loader
+//! amendment invoked from within a teardown context is REFUSED, honestly and
+//! always — its own entry's and a sibling's alike. Teardown is the wrong time
+//! to reshape the profile: I2 entitles a dying plugin to call the services it
+//! leases, never to amend the document, and admitting any amendment from
+//! teardown reopens the re-entrant deadlock class (R1).
 
 #![cfg(not(feature = "loom"))]
 
@@ -23,9 +25,9 @@ use jinnd_loader::{EntryHandle, Loader, PackageLane, SpawnRequest};
 use common::{Grab, entry, fixture, id, profile};
 
 /// What each of the teardown's re-entrant loader calls observed.
-type Observed = Arc<Mutex<Vec<String>>>;
+pub type Observed = Arc<Mutex<Vec<String>>>;
 
-fn describe(label: &str, result: &Result<(), KernelError>) -> String {
+pub fn describe(label: &str, result: &Result<(), KernelError>) -> String {
     match result {
         Ok(()) => format!("{label}: succeeded"),
         Err(error) => format!("{label}: refused: {}", error.message),
@@ -141,7 +143,7 @@ fn reenter_fixture() -> (Arc<Loader>, Observed, common::Log) {
 }
 
 #[tokio::test]
-async fn teardown_reentering_the_loader_is_answered_never_deadlocked() {
+async fn teardown_reentering_the_loader_is_refused_never_deadlocked() {
     let (loader, observed, log) = reenter_fixture();
     loader
         .reconcile(profile(vec![
@@ -172,14 +174,15 @@ async fn teardown_reentering_the_loader_is_answered_never_deadlocked() {
         "amending the entry mid-disposal must be refused honestly, got: {}",
         observed[0]
     );
-    assert_eq!(
-        observed[1], "sibling: succeeded",
-        "an unrelated entry's amendment is served, not deadlocked"
+    assert!(
+        observed[1].starts_with("sibling: refused"),
+        "a sibling amendment from teardown context is refused too, got: {}",
+        observed[1]
     );
 
-    // Both truths landed: the disposal disabled its entry, and the sibling
-    // amendment served mid-teardown survived the disposal's own write-back.
-    assert_eq!(common::activations(&log, "b"), 2);
+    // Only the disposal's own truth landed: the entry is disabled, and the
+    // refused sibling amendment left the sibling exactly as it was.
+    assert_eq!(common::activations(&log, "b"), 1);
     let committed: Profile<u32> = loader.persisted().grab();
     let disposed = committed
         .entries
@@ -193,8 +196,8 @@ async fn teardown_reentering_the_loader_is_answered_never_deadlocked() {
         .find(|spec| spec.id == id("b"))
         .grab();
     assert_eq!(
-        sibling.config, 9,
-        "the disposal's write-back must not overwrite the sibling amendment"
+        sibling.config, 1,
+        "a refused amendment commits nothing anywhere"
     );
     assert!(loader.entry_faults().is_empty());
 }

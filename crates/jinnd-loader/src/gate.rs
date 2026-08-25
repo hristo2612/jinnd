@@ -18,6 +18,14 @@
 //!   re-derives, persists, and commits — no plugin-facing call, no wait on
 //!   engagement — so every holder finishes and every waiter is served.
 //!
+//! - **The teardown refusal** — any amendment invoked from within a fiber's
+//!   teardown context is refused at the door, before engagement. Teardown
+//!   replays plugin-owned inverses on the fiber's own task, so an admitted
+//!   amendment can close a wait cycle through the very teardown it runs
+//!   inside, whichever crates the cycle threads through. The refusal is
+//!   decidable — a task-local marker check, no dependency analysis (R10) —
+//!   and total over every current and future cycle shape.
+//!
 //! Deadlock freedom is structural: the only blocking wait is the permit, and
 //! no permit holder waits on anything a plugin can hold up.
 
@@ -99,6 +107,21 @@ impl Engagement {
             .unwrap_or_else(|poison| poison.into_inner())
             .document = false;
     }
+}
+
+/// Refuses `operation` when invoked from within a fiber's teardown context
+/// (M1-P6b): teardown is the wrong time to reshape the profile — I2 entitles
+/// a dying plugin to call the services it leases while unloading, never to
+/// amend the document — and admitting any such amendment reopens the
+/// re-entrant deadlock class (R1).
+pub(crate) fn refuse_teardown_context(operation: &str) -> Result<(), KernelError> {
+    if jinnd_fiber::in_teardown() {
+        return Err(error(
+            ErrorCode::InvalidProfile,
+            &format!("{operation} refused: the profile cannot be amended from a teardown context"),
+        ));
+    }
+    Ok(())
 }
 
 /// The loader's gate: engagement plus the persist permit.

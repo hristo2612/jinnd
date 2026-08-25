@@ -131,16 +131,18 @@ impl Loader {
     ///
     /// [`ErrorCode::InvalidProfile`] when `C` differs from the config type the
     /// loader is already committed to, when the attached store cannot
-    /// write the document back — nothing is committed then — or when any
+    /// write the document back — nothing is committed then — when any
     /// loader operation is already in flight, a re-entrant call from one of
-    /// this reconcile's own callbacks included (refused, never deadlocked;
-    /// R1). Per-entry problems are not errors: they are contained faults in
+    /// this reconcile's own callbacks included, or when called from within a
+    /// fiber's teardown context (refused, never deadlocked; R1, M1-P6b).
+    /// Per-entry problems are not errors: they are contained faults in
     /// the report (R11).
     pub async fn reconcile_with<C: LaneConfig>(
         &self,
         profile: Profile<C>,
         cancel: CancellationToken,
     ) -> Result<ReconcileReport, KernelError> {
+        crate::gate::refuse_teardown_context("reconcile")?;
         // The document engagement spans the whole reconcile — plan steps run
         // lane constructors and fiber teardowns with only this marker held;
         // a callback re-entering the loader is refused honestly (R1, M1-P6b).
