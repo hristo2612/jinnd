@@ -1,7 +1,6 @@
 # The Jinn Kernel — Source of Truth
 
-**Status:** LAW. This is the canonical copy. (`a private mirror`
-is a pointer here.) Every design decision, every delegation brief, every review of kernel
+**Status:** LAW. This is the canonical copy; private mirrors point here. Every design decision, every delegation brief, every review of kernel
 work checks against this file. If work contradicts this file, the work is wrong or this
 file gets amended first — never both drifting silently.
 
@@ -253,9 +252,9 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 
 - **2026-08-23** — All-in ground-up rewrite in Rust; Cordis paradigm reimplemented, not
   wrapped; one plugin contract, static-native + WASM hosting; old gateway keeps
-  production until parity (Hristo, session redacted).
+  production until parity (Hristo).
 - **2026-08-23** — 7-agent audit of Cordis v4 + paper complete; Rust verdict GO
-  (~4–6k LOC kernel). Synthesis: `the private audit annex`.
+  (~4–6k LOC kernel). Synthesis lives in the private audit annex.
 - **2026-08-24** — cordis-rs (dshbox) audited by 4-agent fleet: rejected as foundation
   (sync-only engine, dylib tier, no WASM/capabilities/ledger, bus factor 1); kept as
   vendored reference/quarry. R1/R2 codified from its failure mode (Jimbo, approved
@@ -317,6 +316,16 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   future cards: budgets are estimates priced before adversarial findings — the COO
   re-prices on evidence rather than incentivizing containment-code golf.
 
+- **2026-08-25** — **Test-harness lane ruling** (COO, from the independent audit): the
+  in-proc, statically-typed `jinnd-api::Kernel` facade is the CONFORMANCE HARNESS lane —
+  it exists so the invariant suite can drive kernel semantics; it is never a plugin host
+  and never ships in the daemon binary (Law 1 closure). The wasm-host packet card MUST
+  carry as acceptance: (a) the production plugin path is WIT/broker only, (b) the harness
+  lane is compile-gated out of the daemon build, (c) the transport-agnostic broker (R7)
+  is the single dispatch point for both lanes. Same date: machine-specific references
+  (private paths, host-machine names, session ids) scrubbed from prose and history by
+  operator directive; authorship deliberately remains the creator's personal identity.
+
 - **2026-08-24** — M1-P1 delivered (jinnd-context, 468 LOC, miri clean) but exposed
   a P0 suite defect: cases never call the facade, so no packet can green a case
   without breaking the two-key rule. Implementer correctly BLOCKED instead of
@@ -327,12 +336,10 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 
 ## 10. Sources
 
-- Full audits: `the private audit annex` (TS v4 + paper
-  + cordis-rs addendum). Read before any kernel work; do not re-audit.
-- TS Cordis v4: `the private reference annex (cordis)` · Paper (88pp):
-  `the private reference annex (paper)` · cordis-rs reference:
-  `the private reference annex (cordis-rs)`.
+- Full audits (TS v4 + paper + cordis-rs addendum) live in the private audit annex.
+  Read before any kernel work; do not re-audit.
+- Reference checkouts (TS Cordis v4, the 88pp paper, cordis-rs) live in the private
+  reference annex, outside this repo.
 - dsh cordis-primer (vocabulary for plugin authors):
   `deepseek-ai/deepseek-harness/docs/cordis-primer.md`.
-- Origin sessions: redacted (mandate), redacted (jinnOS planning), redacted
-  (audits + rules + green light).
+- Origin: operator sessions (private annex).

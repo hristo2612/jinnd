@@ -7,8 +7,7 @@ This directory is the kernel's definition of correct. It will hold:
    spatiotemporal-composability paper as executable acceptance criteria
    (SOURCE-OF-TRUTH §4).
 2. **The ported Cordis v4 spec suite** — behavioral parity tests translated from
-   `cordis/packages/*/tests/*.spec.ts` (reference checkout:
-   `the private reference annex (cordis)`). The inertia-lock trio from
+   `cordis/packages/*/tests/*.spec.ts` (reference checkout in the private annex). The inertia-lock trio from
    `fiber.spec.ts` is the crown: it pins mid-flight dependency-swap coalescing,
    which is exactly what naive ports lose (see the cordis-rs audit).
 

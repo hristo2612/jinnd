@@ -63,9 +63,9 @@ It is LAW; this file translates it into direct instructions for you.
 - `crates/` — kernel crates (workspace)
 - `tests/invariants/` — I1–I4 + ported Cordis spec suite (verifier-owned;
   read-only for implementers)
-- Reference material (read-only, never depend on): audits at
-  `the private audit annex`; TS Cordis, the paper, and
-  cordis-rs under `the private reference annex`.
+- Reference material (read-only, never depend on): the audit synthesis and the
+  reference checkouts (TS Cordis, the paper, cordis-rs) live in the private annex
+  outside this repo.
 
 ## Worktree discipline (added 2026-08-24 after a branch collision)
 
