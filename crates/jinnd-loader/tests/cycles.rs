@@ -96,8 +96,11 @@ async fn a_declared_dependency_cycle_is_detected_and_contained() {
         )
         .grab();
 
+    // The bound exists to catch a regression hang; miri interprets ~100x
+    // slower, so the guard widens there rather than reporting wall-clock.
+    let deadline = Duration::from_secs(if cfg!(miri) { 300 } else { 5 });
     let report = tokio::time::timeout(
-        Duration::from_secs(5),
+        deadline,
         loader.reconcile(profile(vec![
             entry("alpha", "test/alpha", 1),
             entry("beta", "test/beta", 1),
