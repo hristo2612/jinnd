@@ -159,6 +159,10 @@ mod tests {
             .unwrap_or_else(|error| panic!("register: {error:?}"));
         scope.drain().await;
         scope.drain().await;
-        assert_eq!(ran.load(Ordering::SeqCst), 1, "a drain phase runs at most once");
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            1,
+            "a drain phase runs at most once"
+        );
     }
 }

@@ -100,9 +100,8 @@ fn fault(message: String) -> KernelError {
 }
 
 /// Renders one type-erased committed profile over the baseline document.
-type Encode = Box<
-    dyn Fn(&(dyn Any + Send + Sync), &Document) -> Result<Document, KernelError> + Send + Sync,
->;
+type Encode =
+    Box<dyn Fn(&(dyn Any + Send + Sync), &Document) -> Result<Document, KernelError> + Send + Sync>;
 
 /// The attached store, the kernel-owned encoder, and the committed document —
 /// the persistence unit (M1-P6c): raw entries and unknown fields live here and

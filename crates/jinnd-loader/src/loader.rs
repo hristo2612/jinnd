@@ -157,11 +157,26 @@ impl Loader {
         let attested = erased.map(|eq| {
             move |a: &C, b: &C| eq(a as &(dyn Any + Send + Sync), b as &(dyn Any + Send + Sync))
         });
-        let plan = crate::diff::plan(
+        let mut plan = crate::diff::plan(
             old.as_ref(),
             &profile,
             attested.as_ref().map(|eq| eq as &dyn Fn(&C, &C) -> bool),
         );
+        // Static cycle detection over lane declarations (I3, M1-P6c): cycle
+        // members lose their steps — never spawned, cleanly inactive with the
+        // recorded fault — and acyclic siblings load untouched (R11).
+        let cyclic = {
+            let lanes = lock(&self.lanes);
+            crate::cycles::cycle_faults(&crate::tree::EntryIndex::new(&profile), &lanes)
+        };
+        if !cyclic.is_empty() {
+            {
+                let members: std::collections::HashSet<&EntryId> =
+                    cyclic.iter().map(|fault| &fault.entry).collect();
+                plan.steps.retain(|step| !members.contains(&step.entry));
+            }
+            plan.faults.extend(cyclic);
+        }
         let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
         // The document of record moves to disk before the runtime (LAW §3),
         // under the one persist permit every write-back and commit runs under.

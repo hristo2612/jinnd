@@ -15,7 +15,7 @@ use jinnd_api::{
     ErrorCode, FiberId, FiberState, KernelError, KernelFuture, PluginRef, Profile, ProfileEntry,
     TransitionCause,
 };
-use jinnd_loader::{Document, DocumentEntry, EntryHandle, FileStore, Loader, PackageLane, SpawnRequest};
+use jinnd_loader::{DocumentEntry, EntryHandle, FileStore, Loader, PackageLane, SpawnRequest};
 
 use super::{Grab, id};
 

@@ -244,8 +244,7 @@ impl serde::Serialize for FlakySerialize {
 
 #[tokio::test]
 async fn a_disposal_write_back_is_retried_before_recording_divergence() {
-    let (loader, _log) =
-        probe_loader::<FlakySerialize>(|flaky| flaky.value, Probe::default());
+    let (loader, _log) = probe_loader::<FlakySerialize>(|flaky| flaky.value, Probe::default());
     let path = scratch_path();
     loader.attach_store::<FlakySerialize>(FileStore::new(path.clone()), Document::default());
     let calls = Arc::new(AtomicU64::new(0));

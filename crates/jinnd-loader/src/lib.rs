@@ -11,6 +11,7 @@
 
 mod amend;
 mod apply;
+mod cycles;
 mod diff;
 mod document;
 mod gate;

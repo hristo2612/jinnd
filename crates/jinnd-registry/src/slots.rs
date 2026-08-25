@@ -178,12 +178,7 @@ mod tests {
     }
 
     /// Publishes, panicking on a refusal these map tests never expect.
-    fn publish(
-        map: &SlotMap,
-        address: Address,
-        provider: FiberId,
-        value: u8,
-    ) -> super::SlotEntry {
+    fn publish(map: &SlotMap, address: Address, provider: FiberId, value: u8) -> super::SlotEntry {
         match map.insert(address, provider, Arc::new(value), live()) {
             Ok(entry) => entry,
             Err(occupant) => panic!("unexpected refusal: occupied by {occupant:?}"),

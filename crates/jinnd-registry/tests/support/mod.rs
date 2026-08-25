@@ -62,8 +62,11 @@ pub fn provide_other<I>(registry: &Registry, scope: &mut EffectScope, at: &Conte
             &registry.vitality(true),
         )
         .unwrap_or_else(|error| panic!("the provision must land: {error:?}"));
-    let registered =
-        scope.register_draining(format!("provide {}", Other::NAME), provision.drain, provision.undo);
+    let registered = scope.register_draining(
+        format!("provide {}", Other::NAME),
+        provision.drain,
+        provision.undo,
+    );
     assert!(
         registered.is_ok(),
         "the provision undo must register: {registered:?}"

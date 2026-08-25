@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::{Grab, entry, fixture, id, profile};
-use jinnd_api::{ErrorCode, Profile};
+use jinnd_api::ErrorCode;
 use jinnd_loader::{Document, DocumentEntry, FileStore};
 
 static SCRATCH: AtomicU64 = AtomicU64::new(0);
@@ -191,7 +191,11 @@ async fn raw_entries_and_unknown_fields_survive_load_amend_write_back() {
     let store = FileStore::new(path.clone());
     let document = store.load().await.grab().grab();
     let (profile, faults) = document.resolve();
-    assert_eq!(faults.len(), 1, "the undecodable entry is a contained fault");
+    assert_eq!(
+        faults.len(),
+        1,
+        "the undecodable entry is a contained fault"
+    );
 
     // The committed document — not the typed profile — is the persistence
     // unit: the loader takes over the loaded document as its baseline.
@@ -212,10 +216,7 @@ async fn raw_entries_and_unknown_fields_survive_load_amend_write_back() {
     let on_disk: serde_json::Value = serde_json::from_str(&text).grab();
     let entries = on_disk["entries"].as_array().grab();
     assert_eq!(entries.len(), 2, "the raw entry survived the write-back");
-    let one = entries
-        .iter()
-        .find(|entry| entry["id"] == "one")
-        .grab();
+    let one = entries.iter().find(|entry| entry["id"] == "one").grab();
     assert_eq!(one["config"], 5, "the amendment landed");
     assert_eq!(
         one["note"], "keep-me",

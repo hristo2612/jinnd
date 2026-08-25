@@ -181,7 +181,10 @@ impl Document {
         for entry in &profile.entries {
             let config = serde_json::to_value(&entry.config).map_err(|error| KernelError {
                 code: ErrorCode::InvalidProfile,
-                message: format!("the config of entry {:?} does not serialize: {error}", entry.id),
+                message: format!(
+                    "the config of entry {:?} does not serialize: {error}",
+                    entry.id
+                ),
                 fiber: None,
             })?;
             let extra = baseline

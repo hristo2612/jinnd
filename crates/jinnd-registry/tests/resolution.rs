@@ -199,8 +199,11 @@ async fn a_named_realm_connects_same_realm_contexts_across_subtrees() {
             &registry.vitality(true),
         )
         .unwrap_or_else(|error| panic!("the provision must land: {error:?}"));
-    let registered =
-        scope.register_draining("provide counter".to_owned(), provision.drain, provision.undo);
+    let registered = scope.register_draining(
+        "provide counter".to_owned(),
+        provision.drain,
+        provision.undo,
+    );
     assert!(
         registered.is_ok(),
         "the provision undo must register: {registered:?}"

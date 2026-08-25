@@ -41,8 +41,7 @@ impl FiberBody for SelfAmendBody {
             if !self.probe.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
             }
-            self.probe
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+            self.probe.store(false, std::sync::atomic::Ordering::SeqCst);
             let Some(loader) = self.loader.upgrade() else {
                 return Ok(());
             };
@@ -108,9 +107,8 @@ fn self_amend_fixture() -> (
                         body as Arc<dyn FiberBody>,
                         request.signal,
                     ));
-                    *stashed
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner()) = Some(Arc::clone(&fiber));
+                    *stashed.lock().unwrap_or_else(|poison| poison.into_inner()) =
+                        Some(Arc::clone(&fiber));
                     Ok(Arc::new(common::PlainHandle { fiber })
                         as Arc<dyn jinnd_loader::EntryHandle>)
                 }),
