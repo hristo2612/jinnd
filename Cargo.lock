@@ -143,6 +143,11 @@ name = "jinnd-adapter"
 version = "0.0.1"
 dependencies = [
  "jinnd-api",
+ "jinnd-context",
+ "jinnd-effects",
+ "jinnd-fiber",
+ "jinnd-registry",
+ "tokio",
 ]
 
 [[package]]
@@ -183,6 +188,18 @@ dependencies = [
  "jinnd-adapter",
  "jinnd-api",
  "proptest",
+ "tokio",
+]
+
+[[package]]
+name = "jinnd-registry"
+version = "0.0.1"
+dependencies = [
+ "jinnd-api",
+ "jinnd-context",
+ "jinnd-effects",
+ "jinnd-fiber",
+ "loom",
  "tokio",
 ]
 

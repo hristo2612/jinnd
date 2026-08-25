@@ -16,8 +16,9 @@ This directory is the kernel's definition of correct. It will hold:
 - **Two-key rule (R2):** implementation agents MUST NOT modify anything here. Test
   changes and implementation changes never travel in the same PR. CI enforces both.
 - Tests land **red** through `jinnd-adapter` before each kernel subsystem exists. Red
-  here is the implementation backlog, and every current failure names its subsystem
-  as `NO_KERNEL: <subsystem>`.
+  here is the implementation backlog: unwired subsystems fail as
+  `NO_KERNEL: <subsystem>`, while a wired subsystem whose facade cannot yet express
+  the assertion fails as `FACADE_GAP`.
 - A test may be changed only with verifier sign-off (`verifier-approved` label) and
   a rationale referencing the TS original or the paper.
 
@@ -31,6 +32,7 @@ This directory is the kernel's definition of correct. It will hold:
 
 Every case calls the facade returned by `jinnd_adapter::kernel()`. When the facade
 cannot express the cited observation, the case records a concrete `FACADE_GAP` after
-driving the closest available subsystem; the adapter's current `NO_KERNEL` panic is
-therefore still the only accepted red reason. `expected-green.txt` is the exact case
-ratchet: listed-red and unlisted-green cases both fail `check-ratchet.sh`.
+driving the closest available subsystem. `expected-green.txt` records every green;
+`expected-red-reasons.txt` records the expected reason class for every red. Listed-red,
+unlisted-green, unknown, missing, duplicate, and reason-drifted cases all fail
+`check-ratchet.sh`.

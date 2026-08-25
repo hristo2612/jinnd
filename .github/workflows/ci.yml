@@ -43,6 +43,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: loom models — the inertia lock's interleavings (R1)
         run: cargo test -p jinnd-fiber --features loom --release
+      - name: loom models — the registry's lease/slot interleavings (I2, R9)
+        run: cargo test -p jinnd-registry --features loom --release
 
   miri:
     if: github.event_name == 'push'
@@ -56,7 +58,7 @@ jobs:
       - name: miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
-        run: cargo +nightly miri test -p jinnd-context -p jinnd-effects -p jinnd-fiber
+        run: cargo +nightly miri test -p jinnd-context -p jinnd-effects -p jinnd-fiber -p jinnd-registry
 
   test-protection:
     runs-on: ubuntu-latest
