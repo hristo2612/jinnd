@@ -305,6 +305,13 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   socket-connected sandboxed process is a transport detail. A broker fused to WASM
   linking is a design defect, not an implementation choice.
 
+- **2026-08-25** — M1-P4 round-1 adjudication (COO, with verifier escalation): first
+  3 invariant cases GREEN (verifier-validated). Rulings: additive dependency-
+  declaration/injection facade surface authorized; FACADE_GAP red-reasons admitted
+  as the designed post-wiring state, verifier owns the per-case recorded-reason
+  ratchet catalog (completes the PLA-255 ruling); component LOC budgets are
+  ceilings, not floors (R10).
+
 - **2026-08-25** — Body refactored to carry the tier model natively (operator-directed):
   R7 rewritten as "One contract, tiered containment" (Tiers A/B/C + transport-agnostic
   broker inline); R8's reload "tiers" renamed to *modes* so "tier" unambiguously means
