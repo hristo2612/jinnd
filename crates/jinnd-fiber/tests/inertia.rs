@@ -71,10 +71,7 @@ async fn a_target_that_returns_to_itself_during_loading_coalesces_to_nothing() {
     fiber.quiesce().await;
 
     assert_eq!(fiber.state(), FiberState::Active);
-    assert_eq!(
-        trace.entries(),
-        vec!["load:alpha", "land:alpha"]
-    );
+    assert_eq!(trace.entries(), vec!["load:alpha", "land:alpha"]);
     assert_eq!(
         path(&fiber.record().transitions),
         vec![FiberState::Loading, FiberState::Active]

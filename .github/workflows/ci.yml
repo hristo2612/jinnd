@@ -33,9 +33,27 @@ jobs:
       - name: invariant suite + expected-green ratchet
         run: tests/invariants/check-ratchet.sh
 
-  # loom + miri jobs are added with the jinnd-fiber crate (R1/R2):
-  #   loom: cargo test -p jinnd-fiber --features loom --release
-  #   miri: cargo +nightly miri test -p jinnd-effect -p jinnd-context
+  loom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: loom models — the inertia lock's interleavings (R1)
+        run: cargo test -p jinnd-fiber --features loom --release
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: miri
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: cargo miri test -p jinnd-context -p jinnd-effects -p jinnd-fiber
 
   test-protection:
     runs-on: ubuntu-latest

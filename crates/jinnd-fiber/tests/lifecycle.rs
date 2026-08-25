@@ -174,7 +174,12 @@ async fn disposal_reaches_disposed_only_after_the_replay_reported() {
             .collect::<Vec<_>>(),
         vec!["alpha"]
     );
-    assert_eq!(*path(&record.transitions).last().unwrap_or(&FiberState::Pending), FiberState::Disposed);
+    assert_eq!(
+        *path(&record.transitions)
+            .last()
+            .unwrap_or(&FiberState::Pending),
+        FiberState::Disposed
+    );
 }
 
 /// Disposal is idempotent: the second call withdraws nothing and adds no transition.
@@ -222,7 +227,10 @@ async fn disposing_a_pending_fiber_skips_unloading() {
 
     fiber.dispose().await;
 
-    assert_eq!(path(&fiber.record().transitions), vec![FiberState::Disposed]);
+    assert_eq!(
+        path(&fiber.record().transitions),
+        vec![FiberState::Disposed]
+    );
     assert!(trace.entries().is_empty());
 }
 
@@ -233,10 +241,7 @@ async fn fiber_uids_are_never_reused() {
     let mut seen = Vec::new();
     for _ in 0..4 {
         let source = ReadinessSource::new(Some(epoch(1)));
-        let fiber = Fiber::spawn(
-            body(|_setup| Box::pin(async { Ok(()) })),
-            source.signal(),
-        );
+        let fiber = Fiber::spawn(body(|_setup| Box::pin(async { Ok(()) })), source.signal());
         fiber.quiesce().await;
         seen.push(fiber.id());
         fiber.dispose().await;
