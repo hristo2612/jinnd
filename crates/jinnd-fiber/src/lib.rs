@@ -33,10 +33,15 @@
 //! watch-backed [`ReadinessSource`] so the engine stands on its own.
 
 #![forbid(unsafe_code)]
-// The loom build compiles the steering cell and its models only: the tokio
-// supervisor that consumes the rest of this module is gated out below.
+// The loom build compiles every concurrency-sensitive decision — the planner, the
+// steering cell, and the absorb/staleness path the supervisor drives through it —
+// plus the models in `models`. The tokio supervisor itself cannot be expressed in
+// loom's primitives (`select!`, `Notify`, `watch`) and is gated out below; it is
+// thin by construction, every choice it makes delegated to the modelled code.
 #![cfg_attr(feature = "loom", allow(dead_code))]
 
+#[cfg(all(test, feature = "loom"))]
+mod models;
 mod plan;
 mod steering;
 mod sync;

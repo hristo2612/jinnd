@@ -97,6 +97,18 @@ impl SteeringCell {
         self.with(|inner| inner.in_flight = None);
     }
 
+    /// Folds one observed input into the cell and reports whether the in-flight
+    /// activation went stale with it.
+    ///
+    /// This is the decision half of the supervisor's absorb path: the caller raises
+    /// the cooperative cancellation signal exactly when this returns true. It lives
+    /// on the cell so the loom models in [`crate::models`] drive the very function
+    /// the supervisor does.
+    pub(crate) fn absorb(&self, epoch: Option<Epoch>) -> bool {
+        self.set_epoch(epoch);
+        self.stale()
+    }
+
     /// True when the in-flight activation is already known to be obsolete.
     ///
     /// Nothing is aborted on the strength of this: it is what the supervisor tells
@@ -114,117 +126,5 @@ impl SteeringCell {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         change(&mut inner)
-    }
-}
-
-#[cfg(all(test, feature = "loom"))]
-mod models {
-    use super::SteeringCell;
-    use crate::plan::Aim;
-    use jinnd_api::TransitionCause;
-    use loom::sync::Arc;
-    use loom::thread;
-
-    fn aim(revision: u64) -> Aim {
-        Aim {
-            epoch: None,
-            revision,
-        }
-    }
-
-    /// The supervisor's half of one round: launch a transition, learn whether it
-    /// went stale, land it, then read the target it must reconcile against.
-    ///
-    /// Whether a change that lands *after* this read is serviced is the loop's
-    /// business, not the cell's — the loop re-reads every input at the top of the
-    /// next round, and the writer's wake-up is what guarantees there is one. What
-    /// the cell owes is modelled below: no update is lost, and staleness is never
-    /// invented.
-    fn round(cell: &SteeringCell) -> (bool, Aim) {
-        cell.launch(aim(0));
-        let stale = cell.stale();
-        cell.land();
-        (stale, cell.desired().aim)
-    }
-
-    /// A restart racing a launch is applied exactly once, and if the in-flight
-    /// activation was told it went stale, the target really had moved by then.
-    #[test]
-    fn a_restart_racing_a_launch_is_applied_exactly_once() {
-        loom::model(|| {
-            let cell = Arc::new(SteeringCell::new(None));
-            let writer = Arc::clone(&cell);
-            let restarting =
-                thread::spawn(move || writer.restart(TransitionCause::ExplicitRestart));
-
-            let (stale, landed) = round(&cell);
-
-            restarting.join().unwrap_or_else(|_| unreachable!());
-            assert!(
-                !stale || landed == aim(1),
-                "staleness was reported for a target that had not moved"
-            );
-            assert_eq!(
-                cell.desired().aim,
-                aim(1),
-                "the restart was lost, or applied twice"
-            );
-        });
-    }
-
-    /// Disposal racing a launch is subject to the same rule, and it is sticky: no
-    /// interleaving ever leaves it withdrawn.
-    #[test]
-    fn a_disposal_racing_a_launch_is_never_lost_or_withdrawn() {
-        loom::model(|| {
-            let cell = Arc::new(SteeringCell::new(None));
-            let writer = Arc::clone(&cell);
-            let disposing = thread::spawn(move || writer.dispose());
-
-            let (stale, _) = round(&cell);
-
-            disposing.join().unwrap_or_else(|_| unreachable!());
-            assert!(
-                !stale || cell.desired().disposing,
-                "staleness was reported before disposal was requested"
-            );
-            assert!(cell.desired().disposing, "the disposal was lost");
-        });
-    }
-
-    /// Two writers racing one landing: both changes are applied, and what the
-    /// supervisor reconciles against afterwards is the coalesced latest target, not
-    /// either writer's private view.
-    #[test]
-    fn concurrent_targets_coalesce_into_one_latest_target() {
-        loom::model(|| {
-            let cell = Arc::new(SteeringCell::new(None));
-            let first = Arc::clone(&cell);
-            let second = Arc::clone(&cell);
-            let restarting = thread::spawn(move || first.restart(TransitionCause::ExplicitRestart));
-            let disposing = thread::spawn(move || second.dispose());
-
-            round(&cell);
-
-            restarting.join().unwrap_or_else(|_| unreachable!());
-            disposing.join().unwrap_or_else(|_| unreachable!());
-            let desired = cell.desired();
-            assert_eq!(desired.aim, aim(1));
-            assert!(desired.disposing);
-        });
-    }
-
-    /// A launch while one transition is already in flight is a broken supervisor,
-    /// not a plugin failure: the cell refuses it however the threads interleave.
-    #[test]
-    fn the_cell_refuses_a_second_transition_in_flight() {
-        loom::model(|| {
-            let cell = SteeringCell::new(None);
-            cell.launch(aim(0));
-            assert!(
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cell.launch(aim(1))))
-                    .is_err()
-            );
-        });
     }
 }

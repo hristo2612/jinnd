@@ -271,6 +271,10 @@ async fn land<F: Future>(
 }
 
 /// Waits for one input to move, folds it in, and reports staleness to the activation.
+///
+/// The decision — fold, then raise on staleness — is
+/// [`crate::steering::SteeringCell::absorb`], which the loom models drive; only
+/// the waiting and the token are tokio's.
 async fn absorb(signal: &mut dyn ReadinessSignal, shared: &Shared, cancel: &CancellationToken) {
     {
         tokio::select! {
@@ -278,8 +282,7 @@ async fn absorb(signal: &mut dyn ReadinessSignal, shared: &Shared, cancel: &Canc
             () = signal.changed() => {}
         }
     }
-    shared.steering.set_epoch(signal.epoch());
-    if shared.steering.stale() {
+    if shared.steering.absorb(signal.epoch()) {
         cancel.cancel();
     }
 }
