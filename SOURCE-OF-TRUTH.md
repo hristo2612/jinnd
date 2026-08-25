@@ -137,7 +137,9 @@ base host-provider contracts (fs, process, net, keystore), exposed to plugins so
 as contracts. Capability grants, metering, and signing are enforced per-backend by
 the kernel. Native dylib loading is banned. *(Amended 2026-08-24 from "three modes
 incl. InProc" — verifier round 2: lint discipline is not mechanical closure; an
-InProc plugin tier is a Law-1 side door.)*
+InProc plugin tier is a Law-1 side door.)* The two backends are containment tiers
+behind one contract, and the capability broker is transport-agnostic across them —
+see Decision Log 2026-08-25 (binding on the wasm-host packet).
 
 **R8 — Hot reload has three honest tiers.** Tier 0: config reconcile (most operator
 value, always available). Tier 1: WASM instance swap — old instance stays warm until
@@ -260,6 +262,24 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   explicitly confirmed the InProc removal: all plugins WASM-hosted, first-party
   included; native Rust = kernel implementation only. M1 begins: packet 0 = test
   port (verifier-owned, lands red).
+
+- **2026-08-25** — **Containment tier model codified** (operator-approved). Law 5
+  mandates *sandboxed and signed*, not a technology; R7's two backends are tiers of
+  one contract. **Tier A (default): WASM components** — logic/orchestration plugins
+  and all machine-written code (provable confinement, instant dispose, one portable
+  signed artifact). **Tier B: sandboxed native processes** (`Subprocess` backend) —
+  any language, native-heavy/data-plane plugins; containment via per-OS sandbox
+  (macOS Seatbelt; Linux namespaces + seccomp + Landlock); enabled only when that
+  sandbox ships, per R7. **Tier C: GUI environments** — Tier B processes whose
+  capability grants include the display protocol (Wayland/Fuchsia pattern): a
+  compositor plugin holds the hardware capability and mediates surfaces, input, and
+  GPU. Ledger granularity for Tier B/C is grants + lifecycle + contract-level
+  effects, never data-plane traffic — per-frame mediation is rejected as a scaling
+  hazard. **Binding design requirement on the wasm-host packet: the capability
+  broker is transport-agnostic** — grant check, ledger append, and dispatch accept
+  "a contract call from a peer"; whether the peer is a linked WASM instance or a
+  socket-connected sandboxed process is a transport detail. A broker fused to WASM
+  linking is a design defect, not an implementation choice.
 
 - **2026-08-24** — M1-P1 delivered (jinnd-context, 468 LOC, miri clean) but exposed
   a P0 suite defect: cases never call the facade, so no packet can green a case
