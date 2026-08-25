@@ -305,6 +305,12 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   socket-connected sandboxed process is a transport detail. A broker fused to WASM
   linking is a design defect, not an implementation choice.
 
+- **2026-08-25** — M1-P5 round-1 adjudication (COO): invariant-suite prose IOUs are
+  converted to executable bodies BY THE VERIFIER inside the packet that wires their
+  subsystem (starting with the 14 events cases), before the implement rework round —
+  suite-level TDD, two-key preserved. This prices the audit's "hidden verifier
+  packet" into every remaining subsystem packet.
+
 - **2026-08-25** — M1-P4 round-1 adjudication (COO, with verifier escalation): first
   3 invariant cases GREEN (verifier-validated). Rulings: additive dependency-
   declaration/injection facade surface authorized; FACADE_GAP red-reasons admitted
