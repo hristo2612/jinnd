@@ -34,40 +34,108 @@ pub struct DocumentEntry {
     pub isolate: BTreeMap<String, String>,
 }
 
+/// One entry that did not decode, preserved verbatim so a later write-back
+/// re-emits it unchanged (v0.1: no destructive compaction — a save never
+/// erases what it did not understand).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RawEntry {
+    /// The entry's position in the persisted `entries` array.
+    pub index: usize,
+    /// The verbatim value [`Document::render`] re-emits.
+    pub value: serde_json::Value,
+    /// Why the entry did not decode.
+    pub error: KernelError,
+}
+
+impl RawEntry {
+    /// The faulted entry's best identity: its `id` when one is legible, its
+    /// position otherwise.
+    #[must_use]
+    pub fn entry_id(&self) -> EntryId {
+        match self.value.get("id").and_then(serde_json::Value::as_str) {
+            Some(id) => EntryId(id.to_owned()),
+            None => EntryId(format!("entries[{}]", self.index)),
+        }
+    }
+}
+
 /// An ordered profile document.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Document {
     pub entries: Vec<DocumentEntry>,
+    /// Entries that did not decode, contained per entry (R11) and preserved
+    /// verbatim for write-back.
+    pub raw: Vec<RawEntry>,
 }
 
 impl Document {
-    /// Parses a persisted document.
+    /// Parses a persisted document. Decoding is lenient per entry (R11): a
+    /// malformed entry becomes one preserved [`RawEntry`] — reported by
+    /// [`Document::resolve`] — and its siblings still load.
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::InvalidProfile`] when the text is not a document at all;
-    /// entry-level problems are reported per entry by [`Document::resolve`].
+    /// [`ErrorCode::InvalidProfile`] only when the text is not a document at
+    /// all: not JSON, or without an `entries` array.
     pub fn parse(text: &str) -> Result<Self, KernelError> {
-        serde_json::from_str(text).map_err(|error| KernelError {
+        let shape = |message: String| KernelError {
             code: ErrorCode::InvalidProfile,
-            message: format!("the profile document does not parse: {error}"),
+            message,
             fiber: None,
-        })
+        };
+        let value: serde_json::Value = serde_json::from_str(text)
+            .map_err(|error| shape(format!("the profile document does not parse: {error}")))?;
+        let Some(items) = value.get("entries").and_then(serde_json::Value::as_array) else {
+            return Err(shape(
+                "the profile document has no `entries` array".to_owned(),
+            ));
+        };
+        let mut entries = Vec::with_capacity(items.len());
+        let mut raw = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            match serde_json::from_value::<DocumentEntry>(item.clone()) {
+                Ok(entry) => entries.push(entry),
+                Err(error) => raw.push(RawEntry {
+                    index,
+                    value: item.clone(),
+                    error: shape(format!("the entry does not decode: {error}")),
+                }),
+            }
+        }
+        Ok(Self { entries, raw })
     }
 
-    /// Renders the document for persistence.
+    /// Renders the document for persistence. Preserved raw entries re-enter at
+    /// their recorded positions, verbatim.
     #[must_use]
     pub fn render(&self) -> String {
         // A struct of plain data serializes; there is no failing path.
-        serde_json::to_string_pretty(self).unwrap_or_default()
+        let mut items: Vec<serde_json::Value> = self
+            .entries
+            .iter()
+            .map(|entry| serde_json::to_value(entry).unwrap_or_default())
+            .collect();
+        // Ascending recorded indexes: each insert restores one original slot.
+        for raw in &self.raw {
+            items.insert(raw.index.min(items.len()), raw.value.clone());
+        }
+        serde_json::to_string_pretty(&serde_json::json!({ "entries": items })).unwrap_or_default()
     }
 
-    /// Resolves the document into the typed profile plus per-entry faults for
-    /// entries whose directives do not parse (R11: the rest still load).
+    /// Resolves the document into the typed profile plus per-entry faults —
+    /// entries that did not decode and entries whose directives do not parse
+    /// (R11: the rest still load).
     #[must_use]
     pub fn resolve(&self) -> (Profile<serde_json::Value>, Vec<EntryFault>) {
         let mut entries = Vec::with_capacity(self.entries.len());
-        let mut faults = Vec::new();
+        let mut faults: Vec<EntryFault> = self
+            .raw
+            .iter()
+            .map(|raw| EntryFault {
+                entry: raw.entry_id(),
+                error: raw.error.clone(),
+            })
+            .collect();
         for entry in &self.entries {
             match resolve_entry(entry) {
                 Ok(resolved) => entries.push(resolved),
@@ -102,7 +170,10 @@ impl Document {
                     .collect(),
             })
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            raw: Vec::new(),
+        }
     }
 }
 

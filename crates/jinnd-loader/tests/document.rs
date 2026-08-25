@@ -32,6 +32,49 @@ fn parse_render_round_trip_preserves_every_entry() {
 }
 
 #[test]
+fn a_malformed_entry_is_contained_and_its_siblings_still_load() {
+    let json = r#"{
+        "entries": [
+            {"id": "good", "package": "test/good"},
+            {"id": 7, "package": "test/bad"},
+            {"id": "late", "package": "test/late", "disabled": "yes"},
+            {"id": "tail", "package": "test/tail"}
+        ]
+    }"#;
+    let document = Document::parse(json).grab();
+    assert_eq!(document.entries.len(), 2, "the well-formed entries decode");
+
+    let (profile, faults) = document.resolve();
+    assert_eq!(profile.entries.len(), 2);
+    assert_eq!(profile.entries[0].id, EntryId("good".to_owned()));
+    assert_eq!(profile.entries[1].id, EntryId("tail".to_owned()));
+    // Each malformed entry surfaces exactly one recorded fault (R11): by its
+    // id when one is legible, by its position otherwise.
+    assert_eq!(faults.len(), 2);
+    assert_eq!(faults[0].entry, EntryId("entries[1]".to_owned()));
+    assert_eq!(faults[0].error.code, ErrorCode::InvalidProfile);
+    assert_eq!(faults[1].entry, EntryId("late".to_owned()));
+    assert_eq!(faults[1].error.code, ErrorCode::InvalidProfile);
+}
+
+#[test]
+fn a_malformed_entry_survives_write_back_verbatim() {
+    let json = r#"{
+        "entries": [
+            {"id": "good", "package": "test/good"},
+            {"id": 7, "package": "test/bad"}
+        ]
+    }"#;
+    let document = Document::parse(json).grab();
+    // Write-back re-emits what it did not understand, in place: a save never
+    // erases a faulted entry (v0.1: no destructive compaction).
+    let rendered = document.render();
+    assert!(rendered.contains("\"id\": 7"), "verbatim entry kept: {rendered}");
+    let again = Document::parse(&rendered).grab();
+    assert_eq!(document, again);
+}
+
+#[test]
 fn parse_refuses_documents_that_are_not_json() {
     let Err(error) = Document::parse("entries: nope") else {
         panic!("a non-document must not parse");
@@ -51,6 +94,7 @@ fn resolve_maps_local_and_shared_realm_directives() {
         .insert("svc.bar".to_owned(), "@beta".to_owned());
     let document = Document {
         entries: vec![provider, shared],
+        raw: Vec::new(),
     };
 
     let (profile, faults) = document.resolve();
@@ -74,6 +118,7 @@ fn resolve_contains_a_malformed_directive_to_its_own_entry() {
     let good = entry("good", "test/good");
     let document = Document {
         entries: vec![bad, good],
+        raw: Vec::new(),
     };
 
     let (profile, faults) = document.resolve();

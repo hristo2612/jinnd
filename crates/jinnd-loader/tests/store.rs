@@ -23,6 +23,7 @@ fn scratch_path() -> PathBuf {
 
 fn document(marker: u64) -> Document {
     Document {
+        raw: Vec::new(),
         entries: vec![DocumentEntry {
             id: "foo".to_owned(),
             package: "test/foo".to_owned(),
