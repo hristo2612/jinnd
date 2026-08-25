@@ -167,3 +167,51 @@ async fn a_dying_provider_waits_for_its_dependents_lease() {
         "the drained withdrawal completes: {report:?}"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_named_realm_connects_same_realm_contexts_across_subtrees() {
+    let tree: ContextTree = ContextTree::new();
+    let registry = Registry::new();
+    let mut scope = EffectScope::new();
+
+    // Provider and consumer live in unrelated subtrees; only the shared realm
+    // label connects them (LAW §3 isolation: realms are the visibility unit,
+    // never tree position).
+    let name = tree.name(Counter::NAME);
+    let realm = Realm::Shared("island".to_owned());
+    let provider_home = tree
+        .root()
+        .derive()
+        .isolate(name, tree.realm(&realm))
+        .build();
+    let consumer_home = tree
+        .root()
+        .derive()
+        .isolate(name, tree.realm(&realm))
+        .build();
+
+    let provision = registry.provide::<Counter, ()>(
+        &provider_home,
+        &realm,
+        KERNEL_SCOPE,
+        std::sync::Arc::new(Counter(11)),
+        &registry.vitality(true),
+    );
+    let registered = scope.register("provide counter".to_owned(), provision.undo);
+    assert!(
+        registered.is_ok(),
+        "the provision undo must register: {registered:?}"
+    );
+
+    let observed = registry
+        .resolve::<Counter, ()>(&consumer_home)
+        .map(|handle| (handle.service.observe(), handle.realm.clone()));
+    assert_eq!(observed.ok(), Some((11, realm)));
+
+    // The root realm stays positional: the root context does not see it.
+    let error = match registry.resolve::<Counter, ()>(&tree.root()) {
+        Err(error) => error,
+        Ok(handle) => panic!("the root realm must not see a named realm: {handle:?}"),
+    };
+    assert_eq!(error.code, ErrorCode::MissingDependency);
+}

@@ -69,10 +69,18 @@ impl Registry {
         vitality: &Vitality,
     ) -> Provision {
         let tree = at.tree();
+        let realm_id = tree.realm(realm);
         let address = Address {
-            context: at.id(),
+            // A named realm is the visibility unit itself (LAW §3): its slots
+            // are realm-global, anchored at the tree root wherever the
+            // provider's context sits. The root realm stays positional.
+            context: if realm_id.is_root() {
+                at.id()
+            } else {
+                tree.root().id()
+            },
             key: tree.key_of::<S>(),
-            realm: tree.realm(realm),
+            realm: realm_id,
         };
         let entry = self
             .store
@@ -141,14 +149,30 @@ impl Registry {
         &self.store
     }
 
-    /// The walk `resolve` and `lease` share: nearest frame holding the key, in the
-    /// caller's realm for it (the boundary semantics are `jinnd-context`'s).
+    /// The lookup `resolve` and `lease` share, in the caller's realm for the
+    /// key. In the root realm: the nearest frame holding the key (the boundary
+    /// semantics are `jinnd-context`'s). In a named realm: the realm-global
+    /// slot — realms, not tree positions, are the visibility unit (LAW §3).
     pub(crate) fn locate<I>(
         &self,
         from: &Context<I>,
         key: ServiceKey,
     ) -> Result<(Address, SlotEntry), KernelError> {
         let realm = from.resolution_frames(key).realm();
+        if !realm.is_root() {
+            let address = Address {
+                context: from.tree().root().id(),
+                key,
+                realm,
+            };
+            return match self.store.slots.get(&address) {
+                Some(entry) => Ok((address, entry)),
+                None => Err(error(
+                    ErrorCode::MissingDependency,
+                    "no provider for the service is reachable in this realm",
+                )),
+            };
+        }
         let resolved = from.resolve(key, |frame| {
             let address = Address {
                 context: frame.id(),
