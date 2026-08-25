@@ -28,6 +28,8 @@ pub(crate) struct Shared {
     pub(crate) settled: watch::Sender<u64>,
     /// Raised for exactly the span of every withdrawal replay (M1-P6b).
     pub(crate) withdrawal: crate::withdrawal::WithdrawalCell,
+    /// Raised while the fiber owes no transition (M1-P6c round 2).
+    pub(crate) rest: crate::rest::RestCell,
     record: Mutex<FiberRecord>,
 }
 
@@ -41,6 +43,7 @@ impl Shared {
             probe: AtomicU64::new(0),
             settled: watch::Sender::new(0),
             withdrawal: crate::withdrawal::WithdrawalCell::new(),
+            rest: crate::rest::RestCell::new(),
             record: Mutex::new(FiberRecord::default()),
         }
     }

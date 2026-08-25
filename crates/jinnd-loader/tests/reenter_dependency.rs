@@ -96,6 +96,10 @@ impl EntryHandle for DependentHandle {
         self.fiber.withdrawing()
     }
 
+    fn resting(&self) -> bool {
+        self.fiber.resting()
+    }
+
     fn restart(&self, cause: TransitionCause) {
         self.fiber.restart(cause);
     }

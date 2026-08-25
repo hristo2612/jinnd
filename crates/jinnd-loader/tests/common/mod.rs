@@ -158,6 +158,10 @@ impl EntryHandle for TestHandle {
         self.fiber.withdrawing()
     }
 
+    fn resting(&self) -> bool {
+        self.fiber.resting()
+    }
+
     fn restart(&self, cause: TransitionCause) {
         self.fiber.restart(cause);
     }
@@ -265,6 +269,10 @@ impl EntryHandle for PlainHandle {
 
     fn withdrawing(&self) -> bool {
         self.fiber.withdrawing()
+    }
+
+    fn resting(&self) -> bool {
+        self.fiber.resting()
     }
 
     fn restart(&self, cause: TransitionCause) {

@@ -35,12 +35,12 @@ impl Loader {
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
     /// foreign config type, an operation already in flight for this entry or
     /// the document, a call from within a fiber's teardown context, or —
-    /// when the entry is live — a call from the entry's own fiber task (the
-    /// amendment would await the calling task's own fiber, a self-deadlock;
-    /// M1-P6c) or any tracked fiber's withdrawal replay in
-    /// flight: the amendment would await the fiber, so it is refused
-    /// retryably at the conflict point, never parked, from any task
-    /// (R1, M1-P6b); whatever the lane answers for a rejected or
+    /// when the entry is live — a target fiber not at REST (mid-transition:
+    /// the amendment would await a fiber that may be awaiting this very
+    /// call, the self-deadlock class; M1-P6c round 2) or any tracked fiber's
+    /// withdrawal replay in flight: the amendment would await the fiber, so
+    /// it is refused retryably at the conflict point, never parked, from any
+    /// task (R1, M1-P6b); whatever the lane answers for a rejected or
     /// unstatable payload; whatever the attached store answers for a failed
     /// write-back. After any error exactly one of three states holds: both
     /// views at the prior state (the usual case — a staged config is
@@ -52,18 +52,20 @@ impl Loader {
         entry: &EntryId,
         config: C,
     ) -> Result<(), KernelError> {
-        crate::gate::refuse_teardown_context("the amendment")?;
+        crate::refuse::refuse_teardown_context("the amendment")?;
         let _engaged = self.gate.engage_entry(entry)?;
         // Validation and the prior-config snapshot; the engagement keeps this
         // entry's slice of the document stable for the operation's span.
         let staged = self.amended::<C>(entry, |persisted| persisted.config = config.clone())?;
         let handle = self.live_handle(entry);
         // A live entry's amendment will await its fiber, so it never begins
-        // on that fiber's own task (M1-P6c) nor amid a withdrawal (round-4
-        // law); both checks precede the restate — the first side effect — so
-        // a refusal commits nothing anywhere.
+        // while that fiber is mid-transition — the REST gate, the round-2
+        // mechanism (M1-P6c) behind the own-task fast path — nor amid a
+        // withdrawal (round-4 law); every check precedes the restate — the
+        // first side effect — so a refusal commits nothing anywhere.
         if let Some(handle) = &handle {
-            crate::gate::refuse_own_fiber(handle.as_ref(), "the amendment")?;
+            crate::refuse::refuse_own_fiber(handle.as_ref(), "the amendment")?;
+            crate::refuse::refuse_unrested(handle.as_ref(), "the amendment")?;
             self.refuse_amid_withdrawal("the amendment")?;
         }
         // The runtime is offered the change first: a rejection commits
@@ -128,8 +130,8 @@ impl Loader {
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
     /// foreign config type, an operation already in flight for this entry or
     /// the document, a call from within a fiber's teardown context, or —
-    /// when the entry is live — a call from the entry's own fiber task
-    /// (M1-P6c) or any tracked fiber's withdrawal replay in
+    /// when the entry is live — a target fiber not at REST (M1-P6c round 2)
+    /// or any tracked fiber's withdrawal replay in
     /// flight (refused retryably at the conflict point, never parked, from
     /// any task; R1, M1-P6b); whatever the handle
     /// answers for a failed disposal (nothing is persisted or committed
@@ -139,16 +141,18 @@ impl Loader {
     /// returned, so the next reconcile of the document reconverges the two
     /// views (LAW §3: never swallowed).
     pub async fn dispose_entry<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
-        crate::gate::refuse_teardown_context("the disposal")?;
+        crate::refuse::refuse_teardown_context("the disposal")?;
         let _engaged = self.gate.engage_entry(entry)?;
         // Validation and the reality snapshot for a recorded divergence.
         let staged = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
         let handle = self.live_handle(entry);
         // A live entry's disposal awaits its fiber's withdrawal: it never
-        // begins on that fiber's own task (M1-P6c) nor amid another
-        // withdrawal already in flight (round-4 law).
+        // begins while that fiber is mid-transition (the REST gate, M1-P6c
+        // round 2) nor amid another withdrawal already in flight (round-4
+        // law).
         if let Some(handle) = &handle {
-            crate::gate::refuse_own_fiber(handle.as_ref(), "the disposal")?;
+            crate::refuse::refuse_own_fiber(handle.as_ref(), "the disposal")?;
+            crate::refuse::refuse_unrested(handle.as_ref(), "the disposal")?;
             self.refuse_amid_withdrawal("the disposal")?;
         }
         // The runtime moves first: a refused disposal commits nothing. The

@@ -143,7 +143,7 @@ impl Loader {
         profile: Profile<C>,
         cancel: CancellationToken,
     ) -> Result<ReconcileReport, KernelError> {
-        crate::gate::refuse_teardown_context("reconcile")?;
+        crate::refuse::refuse_teardown_context("reconcile")?;
         // The document engagement spans the whole reconcile — plan steps run
         // lane constructors and fiber teardowns with only this marker held;
         // a callback re-entering the loader is refused honestly (R1, M1-P6b).

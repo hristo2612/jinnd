@@ -102,6 +102,20 @@ impl Fiber {
         self.shared.withdrawal.active()
     }
 
+    /// True while the fiber is at rest: its last transition landed and the
+    /// committed state equals the latest desired one — nothing in flight,
+    /// nothing owed (M1-P6c round 2).
+    ///
+    /// Causal for the fiber's own work, exactly like [`Fiber::withdrawing`]:
+    /// the bit is lowered before any transition runs, so the body, the
+    /// inverses, and tasks they spawn never observe their own fiber at rest.
+    /// For anyone else the answer is advisory — a refusal built on it is
+    /// honest and retryable, never a lock.
+    #[must_use]
+    pub fn resting(&self) -> bool {
+        self.shared.rest.observed()
+    }
+
     /// Resolves once the fiber has settled with nothing left to do, having re-read
     /// every input after this call.
     pub async fn quiesce(&self) {

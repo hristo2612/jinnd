@@ -22,6 +22,7 @@ mod loader;
 mod models;
 mod proxy;
 mod rebind;
+mod refuse;
 mod state;
 mod store;
 mod tree;

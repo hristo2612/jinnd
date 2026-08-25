@@ -63,9 +63,13 @@ pub(crate) async fn supervise(mut cell: Cell) {
         let asked = cell.shared.probe.load(Ordering::SeqCst);
         cell.sync_signal();
         if let Some(step) = cell.next_step() {
+            // Lowered before any transition work runs (M1-P6c round 2): code
+            // the transition reaches never observes its own fiber at rest.
+            cell.shared.rest.lower();
             cell.run(step).await;
             continue;
         }
+        cell.shared.rest.raise();
         cell.shared.settle(asked);
         if cell.committed.state == FiberState::Disposed || cell.committed.disposal_failed {
             // Settled for good: no probe will ever go unanswered again.

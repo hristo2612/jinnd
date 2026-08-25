@@ -62,6 +62,11 @@ impl EntryHandle for ProbingHandle {
         false
     }
 
+    // The probe never transitions: honestly always at rest.
+    fn resting(&self) -> bool {
+        true
+    }
+
     fn restart(&self, _cause: TransitionCause) {
         self.probe();
     }

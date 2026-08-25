@@ -43,6 +43,7 @@
 #[cfg(all(test, feature = "loom"))]
 mod models;
 mod plan;
+mod rest;
 mod steering;
 mod sync;
 mod withdrawal;

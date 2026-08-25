@@ -1,8 +1,11 @@
 //! M1-P6c scope 3 (R1, extending the P6b conflict-point refusal): an entry's
 //! activation amending its OWN entry would make the loader await the calling
 //! task's own fiber — a self-deadlock, not a race. Refused honestly and
-//! retryably at the conflict point, with no caller analysis beyond fiber
-//! identity; a sibling amendment from the same activation stays admissible.
+//! retryably at the conflict point; a sibling amendment from the same
+//! activation stays admissible. The mechanism is the REST gate (round-2 law):
+//! a fiber-awaiting amendment begins only when the target fiber is at rest,
+//! decided from kernel-owned state — so the refusal holds through any chain
+//! of spawned-and-awaited helper tasks, not just on the fiber's own task.
 
 #![cfg(not(feature = "loom"))]
 
@@ -26,11 +29,13 @@ fn describe(label: &str, result: &Result<(), KernelError>) -> String {
 }
 
 /// A body that, when told to probe, amends its own entry and then a sibling
-/// from inside its activation — on the fiber's own task.
+/// from inside its activation — directly on the fiber's own task, or through
+/// a spawned-and-awaited helper (the task-local-bypass shape, round 2).
 struct SelfAmendBody {
     loader: Weak<Loader>,
     own: EntryId,
     sibling: EntryId,
+    via_spawn: bool,
     probe: Arc<std::sync::atomic::AtomicBool>,
     observed: Observed,
 }
@@ -45,14 +50,31 @@ impl FiberBody for SelfAmendBody {
             let Some(loader) = self.loader.upgrade() else {
                 return Ok(());
             };
+            let own = {
+                let loader = Arc::clone(&loader);
+                let entry = self.own.clone();
+                async move {
+                    if self.via_spawn {
+                        // The awaited helper escapes any task-local: only
+                        // kernel-owned state can refuse this shape.
+                        let helper = tokio::spawn(async move {
+                            loader.update_entry(&entry, 5_u32).await
+                        });
+                        helper.await.unwrap_or_else(|join| {
+                            Err(KernelError {
+                                code: jinnd_api::ErrorCode::InvalidProfile,
+                                message: format!("the helper panicked: {join}"),
+                                fiber: None,
+                            })
+                        })
+                    } else {
+                        loader.update_entry(&entry, 5_u32).await
+                    }
+                }
+            };
             // Bounded so the pre-fix self-deadlock reads as a failed
             // assertion, never a hung suite.
-            let mine = match tokio::time::timeout(
-                Duration::from_secs(2),
-                loader.update_entry(&self.own, 5_u32),
-            )
-            .await
-            {
+            let mine = match tokio::time::timeout(Duration::from_secs(2), own).await {
                 Ok(result) => result,
                 Err(_elapsed) => Err(KernelError {
                     code: jinnd_api::ErrorCode::InvalidProfile,
@@ -74,7 +96,9 @@ impl FiberBody for SelfAmendBody {
 
 type FiberSlot = Arc<Mutex<Option<Arc<jinnd_fiber::Fiber>>>>;
 
-fn self_amend_fixture() -> (
+fn self_amend_fixture(
+    via_spawn: bool,
+) -> (
     Arc<Loader>,
     Observed,
     Arc<std::sync::atomic::AtomicBool>,
@@ -100,6 +124,7 @@ fn self_amend_fixture() -> (
                         loader: captured.clone(),
                         own: request.entry.clone(),
                         sibling: id("b"),
+                        via_spawn,
                         probe: Arc::clone(&armed),
                         observed: Arc::clone(&recorded),
                     });
@@ -118,9 +143,10 @@ fn self_amend_fixture() -> (
     (loader, observed, probe, slot)
 }
 
-#[tokio::test]
-async fn an_activation_amending_its_own_entry_is_refused_never_deadlocked() {
-    let (loader, observed, probe, slot) = self_amend_fixture();
+/// Loads both entries, arms the probe, re-activates the probing fiber, and
+/// returns what its activation observed.
+async fn probe_run(via_spawn: bool) -> (Arc<Loader>, Vec<String>) {
+    let (loader, observed, probe, slot) = self_amend_fixture(via_spawn);
     loader
         .reconcile(profile(vec![
             entry("a", "test/self-amend", 1),
@@ -148,6 +174,29 @@ async fn an_activation_amending_its_own_entry_is_refused_never_deadlocked() {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .clone();
+    (loader, observed)
+}
+
+/// The refusal committed nothing anywhere; the sibling amendment did.
+fn assert_only_the_sibling_committed(loader: &Loader) {
+    let committed: Profile<u32> = loader.persisted().grab();
+    let own = committed
+        .entries
+        .iter()
+        .find(|spec| spec.id == id("a"))
+        .grab();
+    assert_eq!(own.config, 1, "a refused self-amendment commits nothing");
+    let sibling = committed
+        .entries
+        .iter()
+        .find(|spec| spec.id == id("b"))
+        .grab();
+    assert_eq!(sibling.config, 9);
+}
+
+#[tokio::test]
+async fn an_activation_amending_its_own_entry_is_refused_never_deadlocked() {
+    let (loader, observed) = probe_run(false).await;
     assert_eq!(observed.len(), 2, "the activation probed both entries");
     assert!(
         observed[0].starts_with("own: refused")
@@ -162,19 +211,26 @@ async fn an_activation_amending_its_own_entry_is_refused_never_deadlocked() {
         "a sibling amendment from an activation is admissible, got: {}",
         observed[1]
     );
+    assert_only_the_sibling_committed(&loader);
+}
 
-    // The refusal committed nothing anywhere; the sibling amendment did.
-    let committed: Profile<u32> = loader.persisted().grab();
-    let own = committed
-        .entries
-        .iter()
-        .find(|spec| spec.id == id("a"))
-        .grab();
-    assert_eq!(own.config, 1, "a refused self-amendment commits nothing");
-    let sibling = committed
-        .entries
-        .iter()
-        .find(|spec| spec.id == id("b"))
-        .grab();
-    assert_eq!(sibling.config, 9);
+/// Round 2 (the task-local-bypass finding): the same self-amendment issued
+/// through a helper task the activation spawns and awaits escapes any
+/// task-local — the REST gate must refuse it from kernel-owned state alone.
+#[tokio::test]
+async fn an_awaited_helper_amending_the_activations_entry_is_refused_never_deadlocked() {
+    let (loader, observed) = probe_run(true).await;
+    assert_eq!(observed.len(), 2, "the activation probed both entries");
+    assert!(
+        observed[0].starts_with("own: refused") && !observed[0].contains("DEADLOCKED"),
+        "the awaited-helper self-amendment must be refused at the conflict \
+         point, got: {}",
+        observed[0]
+    );
+    assert!(
+        observed[1].starts_with("sibling: succeeded"),
+        "a sibling amendment from an activation is admissible, got: {}",
+        observed[1]
+    );
+    assert_only_the_sibling_committed(&loader);
 }

@@ -61,6 +61,11 @@ impl<C: Send + Sync + 'static> EntryHandle for ProbeHandle<C> {
         false
     }
 
+    // The probe never transitions: honestly always at rest.
+    fn resting(&self) -> bool {
+        true
+    }
+
     fn restart(&self, _cause: TransitionCause) {}
 
     fn restate(&self, config: &(dyn Any + Send + Sync)) -> Result<(), KernelError> {
