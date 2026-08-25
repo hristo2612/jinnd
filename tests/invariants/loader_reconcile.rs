@@ -1,9 +1,12 @@
+mod loader_cases;
+mod loader_fixture;
 mod support;
 
 use support::spec_case;
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
-const FACADE_GAP_REASON: &str = "reconcile has no fixture plugin registry, profile persistence read-back, or entry-to-fiber observation API";
+const FACADE_GAP_REASON: &str =
+    "the facade has no loader-as-service dependency or loader await-intercept surface";
 
 spec_case! {
     /// TS origin: `packages/loader/tests/index.spec.ts`, test `loader initiate`.
@@ -12,7 +15,8 @@ spec_case! {
     test: "loader initiate",
     setup: ["profile contains enabled foo, enabled nested bar, and disabled nested qux"],
     actions: ["reconcile from an empty runtime"],
-    expected: ["foo and bar activate once", "qux remains inactive", "entry ids are retained"]
+    expected: ["foo and bar activate once", "qux remains inactive", "entry ids are retained"],
+    body: |_case| { loader_cases::reconcile::initial_profile().await; }
 }
 
 spec_case! {
@@ -22,7 +26,8 @@ spec_case! {
     test: "loader update",
     setup: ["active profile has foo and nested bar while qux is disabled"],
     actions: ["reconcile final profile containing unchanged foo and enabled qux but no bar"],
-    expected: ["foo does not restart", "bar disposes", "qux activates exactly once"]
+    expected: ["foo does not restart", "bar disposes", "qux activates exactly once"],
+    body: |_case| { loader_cases::reconcile::reconcile_by_id().await; }
 }
 
 spec_case! {
@@ -32,7 +37,8 @@ spec_case! {
     test: "plugin self-update",
     setup: ["profile has foo id=1 and qux id=4"],
     actions: ["fiber id=1 updates config to a=3", "wait for atomic write-back"],
-    expected: ["persisted entry id=1 has config a=3", "sibling id=4 is unchanged"]
+    expected: ["persisted entry id=1 has config a=3", "sibling id=4 is unchanged"],
+    body: |_case| { loader_cases::reconcile::runtime_update().await; }
 }
 
 spec_case! {
@@ -42,7 +48,8 @@ spec_case! {
     test: "plugin self-dispose",
     setup: ["profile entry id=1 is active with config a=3"],
     actions: ["fiber id=1 disposes itself", "wait for atomic write-back"],
-    expected: ["persisted id=1 is disabled and retains config a=3", "siblings are unchanged"]
+    expected: ["persisted id=1 is disabled and retains config a=3", "siblings are unchanged"],
+    body: |_case| { loader_cases::reconcile::runtime_disposal().await; }
 }
 
 spec_case! {
