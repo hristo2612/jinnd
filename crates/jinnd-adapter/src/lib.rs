@@ -22,6 +22,7 @@ mod body;
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{
@@ -120,15 +121,20 @@ impl Kernel for Adapter {
     ) -> KernelFuture<'_, FiberId> {
         Box::pin(async move {
             let at = self.context(context)?;
+            // The declaration is plugin-owned code running before any fiber
+            // exists: its panic is contained right here and answered as this
+            // plugin's failure, charged to no live fiber (R11).
+            let services = panic::catch_unwind(AssertUnwindSafe(P::Dependencies::declare))
+                .map_err(|_| {
+                    error(
+                        ErrorCode::PluginFailed,
+                        "the dependency declaration panicked",
+                    )
+                })?;
             // Reactive availability (R1): the fiber activates only when every
             // declared service has an Active, checked provider, and any provider
             // change moves the epoch and forces a clean reload (R9).
-            let readiness = self.registry.readiness(
-                &at,
-                Injection {
-                    services: P::Dependencies::declare(),
-                },
-            );
+            let readiness = self.registry.readiness(&at, Injection { services });
             let body = Arc::new(FacadeBody::new(
                 plugin,
                 context,
