@@ -1,9 +1,12 @@
+mod loader_cases;
+mod loader_fixture;
 mod support;
 
 use support::spec_case;
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
-const FACADE_GAP_REASON: &str = "reconcile accepts unresolved PluginRef values and exposes no test fixture registry or persisted entry tree";
+const FACADE_GAP_REASON: &str =
+    "the facade has no profile-intercept declaration or intercept-chain observation API";
 
 spec_case! {
     /// TS origin: `packages/loader/tests/group.spec.ts`, test `Group: basic support / initialize`.
@@ -12,7 +15,8 @@ spec_case! {
     test: "Group: basic support / initialize",
     setup: ["outer group contains foo", "inner group nested under outer also contains foo"],
     actions: ["create both groups and settle"],
-    expected: ["both foo entries activate", "four profile entries remain addressable"]
+    expected: ["both foo entries activate", "four profile entries remain addressable"],
+    body: |_case| { loader_cases::group::nested_initialize().await; }
 }
 
 spec_case! {
@@ -22,7 +26,8 @@ spec_case! {
     test: "Group: basic support / disable inner",
     setup: ["outer and nested inner groups are active with one child each"],
     actions: ["disable inner group"],
-    expected: ["one child disposes", "outer child stays active", "all four entries remain in profile"]
+    expected: ["one child disposes", "outer child stays active", "all four entries remain in profile"],
+    body: |_case| { loader_cases::group::disable_inner().await; }
 }
 
 spec_case! {
@@ -32,7 +37,8 @@ spec_case! {
     test: "Group: basic support / disable outer",
     setup: ["inner group is already disabled", "outer child remains active"],
     actions: ["disable outer group"],
-    expected: ["remaining outer child disposes once", "entry tree is retained"]
+    expected: ["remaining outer child disposes once", "entry tree is retained"],
+    body: |_case| { loader_cases::group::disable_outer().await; }
 }
 
 spec_case! {
@@ -42,7 +48,8 @@ spec_case! {
     test: "Group: basic support / enable inner",
     setup: ["outer and inner groups are disabled"],
     actions: ["enable inner only"],
-    expected: ["no child activates or disposes", "effective disabled state is inherited"]
+    expected: ["no child activates or disposes", "effective disabled state is inherited"],
+    body: |_case| { loader_cases::group::enable_inner_under_disabled().await; }
 }
 
 spec_case! {
@@ -52,7 +59,8 @@ spec_case! {
     test: "Group: basic support / enable outer",
     setup: ["outer disabled while inner is locally enabled"],
     actions: ["enable outer and settle"],
-    expected: ["both child plugins activate once", "entry tree identity is unchanged"]
+    expected: ["both child plugins activate once", "entry tree identity is unchanged"],
+    body: |_case| { loader_cases::group::enable_outer().await; }
 }
 
 spec_case! {
@@ -62,7 +70,8 @@ spec_case! {
     test: "Group: transfer / initialize",
     setup: ["active standalone plugin", "active alpha group", "disabled beta under alpha", "enabled gamma under beta"],
     actions: ["settle initial profile"],
-    expected: ["standalone plugin activates once", "four entries are addressable"]
+    expected: ["standalone plugin activates once", "four entries are addressable"],
+    body: |_case| { loader_cases::group::transfer_initial().await; }
 }
 
 spec_case! {
@@ -72,7 +81,8 @@ spec_case! {
     test: "Group: transfer / enabled -> enabled",
     setup: ["plugin is active at root", "alpha parent is enabled"],
     actions: ["move plugin under alpha without config changes"],
-    expected: ["plugin neither restarts nor disposes", "entry identity is preserved"]
+    expected: ["plugin neither restarts nor disposes", "entry identity is preserved"],
+    body: |_case| { loader_cases::group::move_enabled_to_enabled().await; }
 }
 
 spec_case! {
@@ -82,7 +92,8 @@ spec_case! {
     test: "Group: transfer / enabled -> disabled",
     setup: ["plugin is active under alpha", "beta parent is disabled"],
     actions: ["move plugin under beta"],
-    expected: ["plugin disposes once and remains addressable"]
+    expected: ["plugin disposes once and remains addressable"],
+    body: |_case| { loader_cases::group::move_enabled_to_disabled().await; }
 }
 
 spec_case! {
@@ -92,7 +103,8 @@ spec_case! {
     test: "Group: transfer / disabled -> disabled",
     setup: ["plugin is inactive under beta", "gamma is enabled but nested under disabled beta"],
     actions: ["move plugin under gamma"],
-    expected: ["plugin neither activates nor disposes", "effective disabled state remains true"]
+    expected: ["plugin neither activates nor disposes", "effective disabled state remains true"],
+    body: |_case| { loader_cases::group::move_disabled_to_disabled().await; }
 }
 
 spec_case! {
@@ -102,7 +114,8 @@ spec_case! {
     test: "Group: transfer / disabled -> enabled",
     setup: ["plugin is inactive under effectively disabled gamma"],
     actions: ["move plugin to root"],
-    expected: ["plugin activates once without a redundant disposal"]
+    expected: ["plugin activates once without a redundant disposal"],
+    body: |_case| { loader_cases::group::move_disabled_to_root().await; }
 }
 
 spec_case! {

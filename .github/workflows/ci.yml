@@ -60,7 +60,7 @@ jobs:
       - name: miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
-        run: cargo +nightly miri test -p jinnd-context -p jinnd-effects -p jinnd-events -p jinnd-fiber -p jinnd-registry
+        run: cargo +nightly miri test -p jinnd-context -p jinnd-effects -p jinnd-events -p jinnd-fiber -p jinnd-loader -p jinnd-registry
 
   test-protection:
     runs-on: ubuntu-latest

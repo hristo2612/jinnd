@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use jinnd_api::{Activation, ContextId, Inject, KernelFuture, PluginContract};
+use jinnd_api::{Activation, Inject, KernelFuture, PluginContract};
 use jinnd_context::Context;
 use jinnd_effects::Disposer;
 use jinnd_fiber::{FiberBody, Setup};
@@ -10,29 +10,22 @@ use jinnd_registry::{ActivationResolver, Registry};
 
 /// One facade plugin behind the fiber engine's body seam.
 ///
-/// The config cell holds the *latest stated* config; each activation reads it
-/// once at its start, so a config update lands as a full clean reload observing
-/// the new value (§3, "Epoch gating" — never a mutation under a live activation).
+/// The config and context cells hold the *latest stated* values; each
+/// activation reads them once at its start, so a config update or a loader
+/// rebind lands as a full clean reload observing the new value (§3, "Epoch
+/// gating" — never a mutation under a live activation).
 pub(crate) struct FacadeBody<P: PluginContract> {
     plugin: P,
-    context: ContextId,
-    at: Context<()>,
+    at: Mutex<Context<()>>,
     registry: Registry,
     config: Mutex<P::Config>,
 }
 
 impl<P: PluginContract> FacadeBody<P> {
-    pub(crate) fn new(
-        plugin: P,
-        context: ContextId,
-        at: Context<()>,
-        registry: Registry,
-        config: P::Config,
-    ) -> Self {
+    pub(crate) fn new(plugin: P, at: Context<()>, registry: Registry, config: P::Config) -> Self {
         Self {
             plugin,
-            context,
-            at,
+            at: Mutex::new(at),
             registry,
             config: Mutex::new(config),
         }
@@ -45,6 +38,18 @@ impl<P: PluginContract> FacadeBody<P> {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()) = config;
     }
+
+    /// States a rebuilt context for the next activation to resolve in.
+    pub(crate) fn rebind(&self, at: Context<()>) {
+        *self.at.lock().unwrap_or_else(|poison| poison.into_inner()) = at;
+    }
+
+    fn context(&self) -> Context<()> {
+        self.at
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
 }
 
 impl<P: PluginContract> FiberBody for FacadeBody<P> {
@@ -54,11 +59,12 @@ impl<P: PluginContract> FiberBody for FacadeBody<P> {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
+        let at = self.context();
         let fiber = setup.fiber();
         Box::pin(async move {
             // One owned dependency snapshot per activation (R4), each resolution
             // leased so a dying provider waits for this consumer (I2).
-            let resolver = ActivationResolver::new(&self.registry, &self.at);
+            let resolver = ActivationResolver::new(&self.registry, &at);
             let dependencies = P::Dependencies::inject(&resolver)?;
             let guards = resolver.into_guards();
             if !guards.is_empty() {
@@ -75,7 +81,7 @@ impl<P: PluginContract> FiberBody for FacadeBody<P> {
             self.plugin
                 .activate(
                     Activation {
-                        context: self.context,
+                        context: at.id(),
                         fiber,
                         dependencies: &dependencies,
                     },

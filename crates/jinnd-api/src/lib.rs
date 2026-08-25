@@ -245,6 +245,19 @@ pub struct PluginRef {
     pub artifact_hash: String,
 }
 
+/// The reserved package naming a pure grouping entry: it spawns no fiber and
+/// exists to carry children, disablement, and isolation directives (authorized
+/// M1-P6 additive delta; LAW §3 "Profiles & loader").
+pub const GROUP_PACKAGE: &str = "jinn.profile/group";
+
+/// One contained per-entry failure of a reconciliation (R11: good entries
+/// load, bad entries surface recorded errors; authorized M1-P6 additive delta).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntryFault {
+    pub entry: EntryId,
+    pub error: KernelError,
+}
+
 /// Isolation mapping applied to one profile entry or group.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IsolationBinding {
@@ -270,12 +283,15 @@ pub struct Profile<C> {
 }
 
 /// Observable result of one profile reconciliation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReconcileReport {
     pub created: Vec<EntryId>,
     pub restarted: Vec<EntryId>,
     pub disposed: Vec<EntryId>,
     pub unchanged: Vec<EntryId>,
+    /// Contained per-entry faults (R11); never a whole-reconcile failure
+    /// (authorized M1-P6 additive delta).
+    pub errors: Vec<EntryFault>,
 }
 
 /// Types-only surface the future kernel must satisfy for verifier-owned tests.
@@ -354,8 +370,83 @@ pub trait Kernel: Send + Sync + 'static {
         event: E,
     ) -> KernelFuture<'_, DispatchReport<E>>;
 
+    /// Reconciles the runtime onto `profile` by entry id: only affected fibers
+    /// move, and the profile becomes the committed document of record. Entry
+    /// configs are compared under the equality attestation their package
+    /// registration captured (`C`'s own `PartialEq`, where the type is
+    /// statically known); without one a change is assumed, never ignored (R9)
+    /// — so this pre-existing surface keeps its exact bound (R12).
     fn reconcile<C: Clone + Debug + Send + Sync + 'static>(
         &self,
         profile: Profile<C>,
     ) -> KernelFuture<'_, ReconcileReport>;
+
+    /// Registers the constructor for profile entries referencing `package`
+    /// (R3's string-keyed lane for dynamically loaded plugins). `build` maps an
+    /// entry's config payload to the plugin instance and its typed config.
+    ///
+    /// The registration is an effect on the kernel scope (R5): withdrawing the
+    /// returned effect unregisters the package. Registering a package twice is
+    /// refused — replacement is never silent (R9). (Authorized M1-P6 additive
+    /// delta.)
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] on duplicate registration.
+    /// [`ErrorCode::PluginFailed`] when the plugin's dependency declaration
+    /// panics: the declaration is plugin-owned code, its panic is contained at
+    /// this boundary, and the package never registers (R11).
+    fn register_package<C, P, F>(&self, package: &str, build: F) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        P: PluginContract,
+        F: Fn(C) -> Result<(P, P::Config), KernelError> + Send + Sync + 'static;
+
+    /// Registers a provider package: each activation of such an entry provides
+    /// `S` — built from the entry's config by `provide` — in the realm the
+    /// entry's context resolves `S` in, charged to the entry's fiber and
+    /// withdrawn with it (R5, I2). (Authorized M1-P6 additive delta.)
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] on duplicate registration.
+    fn register_provider_package<C, S, F>(
+        &self,
+        package: &str,
+        provide: F,
+    ) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        S: ServiceContract,
+        F: Fn(C) -> Result<Arc<S>, KernelError> + Send + Sync + 'static;
+
+    /// The fiber currently hosting `entry`, if any (authorized M1-P6 additive
+    /// delta: entry-to-fiber observation).
+    fn entry_fiber(&self, entry: &EntryId) -> Option<FiberId>;
+
+    /// A runtime-originated config change: the entry's fiber validates and
+    /// stages the new config first, the committed document is then written
+    /// back atomically, and only then does the fiber reload to observe it. A
+    /// rejected or unpersistable change leaves both views at the prior state
+    /// (LAW §3 bidirectional persistence; authorized M1-P6 additive delta).
+    fn update_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+        entry: &EntryId,
+        config: C,
+    ) -> KernelFuture<'_, ()>;
+
+    /// A runtime-originated disposal: the entry's fiber is withdrawn first,
+    /// then the document persists the entry as disabled, config retained. A
+    /// refused disposal persists nothing (authorized M1-P6 additive delta).
+    fn dispose_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+        entry: &EntryId,
+    ) -> KernelFuture<'_, ()>;
+
+    /// The committed document as persisted, `None` before the first reconcile
+    /// or under a foreign config type (authorized M1-P6 additive delta:
+    /// persistence read-back).
+    fn persisted_profile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+        &self,
+    ) -> Option<Profile<C>>;
 }
