@@ -94,25 +94,20 @@ impl Fiber {
         let asked = self.shared.probe.fetch_add(1, Ordering::SeqCst) + 1;
         self.shared.wake.notify_one();
         let mut settled = self.shared.settled.subscribe();
-        let mut states = self.shared.state.subscribe();
-        tokio::select! {
-            _ = settled.wait_for(|acknowledged| *acknowledged >= asked) => {}
-            _ = states.wait_for(|state| *state == FiberState::Disposed) => {}
-        }
+        let _ = settled
+            .wait_for(|acknowledged| *acknowledged >= asked)
+            .await;
     }
 
     /// Disposes the fiber and resolves once its withdrawal has completed and
-    /// reported.
+    /// reported: `Disposed` after a clean replay, `Failed` with the residue in the
+    /// record when an inverse refused (R11) — never a state that hides the residue.
     ///
     /// Idempotent: a second call withdraws nothing, because the first one already
     /// withdrew everything exactly once.
     pub async fn dispose(&self) {
         self.shared.steering.dispose();
-        self.shared.wake.notify_one();
-        let mut states = self.shared.state.subscribe();
-        let _ = states
-            .wait_for(|state| *state == FiberState::Disposed)
-            .await;
+        self.quiesce().await;
     }
 }
 

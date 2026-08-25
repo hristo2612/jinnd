@@ -67,7 +67,9 @@ pub(crate) async fn supervise(mut cell: Cell) {
             continue;
         }
         cell.shared.settle(asked);
-        if cell.committed.state == FiberState::Disposed {
+        if cell.committed.state == FiberState::Disposed || cell.committed.disposal_failed {
+            // Settled for good: no probe will ever go unanswered again.
+            cell.shared.settle(u64::MAX);
             return;
         }
         cell.wait().await;
@@ -161,11 +163,7 @@ impl Cell {
         self.committed.active_for = None;
 
         if self.shared.steering.desired().disposing {
-            // Disposal is terminal even when the withdrawal was not clean: the
-            // residue is in the report, not hidden behind a state that claims the
-            // fiber is still alive.
-            self.committed.state = FiberState::Disposed;
-            self.publish(FiberState::Disposed, TransitionCause::ExplicitDispose);
+            self.disposal_landed(&report);
         } else if report.is_clean() {
             self.committed.state = FiberState::Pending;
             self.publish(FiberState::Pending, cause);
@@ -179,9 +177,24 @@ impl Cell {
 
     /// Disposes a fiber that holds no live activation.
     async fn finish(&mut self) {
-        self.withdraw().await;
-        self.committed.state = FiberState::Disposed;
-        self.publish(FiberState::Disposed, TransitionCause::ExplicitDispose);
+        let report = self.withdraw().await;
+        self.disposal_landed(&report);
+    }
+
+    /// Commits the state a disposal's withdrawal earned: `Disposed` for a clean
+    /// replay, `Failed` for an unclean one (R11) — a fiber that could not withdraw
+    /// never claims it is gone, and the failed replay is not reattempted against an
+    /// unchanged scope (R9). Either way the withdrawal has completed and reported.
+    fn disposal_landed(&mut self, report: &ReplayReport) {
+        if report.is_clean() {
+            self.committed.state = FiberState::Disposed;
+            self.publish(FiberState::Disposed, TransitionCause::ExplicitDispose);
+        } else {
+            self.shared.fail(unclean(self.shared.id, report));
+            self.committed.state = FiberState::Failed;
+            self.committed.disposal_failed = true;
+            self.publish(FiberState::Failed, TransitionCause::ExplicitDispose);
+        }
     }
 
     /// Replays this activation's scope and starts the next one from an empty tree.

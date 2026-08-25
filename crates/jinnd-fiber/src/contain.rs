@@ -65,14 +65,35 @@ impl Future for Contained<'_> {
             return Poll::Pending;
         };
 
-        let outcome = match panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
+        let polled = match panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
             Ok(Poll::Pending) => return Poll::Pending,
             Ok(Poll::Ready(result)) => Ok(result),
             Err(payload) => Err(describe(payload)),
         };
-        this.future = None;
-        Poll::Ready(outcome)
+        // The future's destructor is plugin code too: it is dropped behind the same
+        // containment its poll ran behind, so a panicking Drop fails this one fiber
+        // instead of unwinding through its supervisor (R11).
+        let dropped = contain_drop(this.future.take());
+        Poll::Ready(match (polled, dropped) {
+            (Err(panic), _) | (Ok(Ok(())), Err(panic)) => Err(panic),
+            // A body that already failed keeps its own failure as the recorded
+            // cause; a Drop panic behind it is contained all the same.
+            (Ok(result), _) => Ok(result),
+        })
     }
+}
+
+impl Drop for Contained<'_> {
+    /// The wrapper is dropped mid-flight only when its whole task is; even then
+    /// the plugin future's destructor stays contained (R11).
+    fn drop(&mut self) {
+        let _ = contain_drop(self.future.take());
+    }
+}
+
+/// Drops a plugin future behind `catch_unwind`, reporting a panicking destructor.
+fn contain_drop(future: Option<KernelFuture<'_, ()>>) -> Result<(), String> {
+    panic::catch_unwind(AssertUnwindSafe(move || drop(future))).map_err(describe)
 }
 
 /// Renders a panic payload for the record.

@@ -87,6 +87,11 @@ pub(crate) fn plan(committed: &Committed, desired: &Desired) -> Option<Step> {
         }
         FiberState::Pending | FiberState::Failed => {
             if desired.disposing {
+                // A disposal whose own withdrawal failed rests `Failed`: the replay
+                // is not reattempted against an unchanged scope (R9).
+                if committed.disposal_failed {
+                    return None;
+                }
                 return Some(Step::Finish);
             }
             desired.aim.epoch.as_ref()?;
