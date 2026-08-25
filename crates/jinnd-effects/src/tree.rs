@@ -58,6 +58,32 @@ pub(crate) fn flatten(roots: Vec<Record>) -> Vec<Record> {
     order
 }
 
+/// Removes the next record to withdraw: the deepest last-registered live effect.
+///
+/// Repeated calls yield exactly the order [`flatten`] produces, one record at a
+/// time, so a teardown that stops early leaves the rest of the forest standing —
+/// still nested, still replayable. The returned record is always childless.
+///
+/// One call walks the deepest path, so a whole teardown costs the forest's size
+/// times its depth. Effect nesting mirrors plugin structure and is shallow; the
+/// pathologically deep forest is the destructor's problem, and that one is
+/// [`flatten`]'s single pass.
+pub(crate) fn take_next(roots: &mut Vec<Record>) -> Option<Record> {
+    let mut path = Vec::new();
+    let mut level: &[Record] = roots;
+    while let Some(last) = level.len().checked_sub(1) {
+        path.push(last);
+        level = &level[last].children;
+    }
+    path.pop()?;
+
+    let mut siblings = roots;
+    for index in path {
+        siblings = &mut siblings[index].children;
+    }
+    siblings.pop()
+}
+
 /// Publishes a forest as facade descriptors, in registration order.
 pub(crate) fn describe(roots: &[Record]) -> Vec<EffectDescriptor> {
     let mut nodes: Vec<(&Record, Option<usize>)> = Vec::new();

@@ -14,7 +14,11 @@ use jinnd_api::{KernelError, KernelFuture};
 /// (`make`, which runs the caller's closure) and polling it. Both are caught here,
 /// so no plugin-authored inverse can unwind past the kernel.
 ///
-/// `AssertUnwindSafe` is honest at both sites: a future that panicked is dropped
+/// Its destructor is a third boundary, and just as plugin-authored: a panic raised
+/// while the finished future is dropped outranks whatever the inverse returned,
+/// because a withdrawal that ends in a panic is not a clean one.
+///
+/// `AssertUnwindSafe` is honest at every site: a future that panicked is dropped
 /// immediately and never polled again, and nothing this crate keeps is left borrowed
 /// across the call, so no half-updated state is observable afterwards. Whatever the
 /// inverse itself half-did is exactly what the returned outcome reports.
@@ -31,6 +35,22 @@ where
         }
         Err(payload) => Err(describe(payload)),
     }
+}
+
+/// Runs `body`, turning a panic it raises into its rendered payload (R11).
+pub(crate) fn catching<T, F>(body: F) -> Result<T, String>
+where
+    F: FnOnce() -> T,
+{
+    panic::catch_unwind(AssertUnwindSafe(body)).map_err(describe)
+}
+
+/// Runs `body` for its effect only, reporting a panic it raised.
+pub(crate) fn caught<F>(body: F) -> Option<String>
+where
+    F: FnOnce(),
+{
+    catching(body).err()
 }
 
 /// A boxed inverse future plus the guarantee that it is polled at most to completion.
@@ -53,23 +73,20 @@ impl Future for Contained {
             return Poll::Pending;
         };
 
-        match panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
-            Ok(Poll::Pending) => Poll::Pending,
-            Ok(Poll::Ready(result)) => {
-                drop_contained(&mut this.future);
-                Poll::Ready(Ok(result))
-            }
-            Err(payload) => {
-                drop_contained(&mut this.future);
-                Poll::Ready(Err(describe(payload)))
-            }
-        }
-    }
-}
+        let outcome = match catching(|| future.as_mut().poll(cx)) {
+            Ok(Poll::Pending) => return Poll::Pending,
+            Ok(Poll::Ready(result)) => Ok(result),
+            Err(panic) => Err(panic),
+        };
 
-/// Drops the inverse future, containing a panic raised by its own destructor.
-fn drop_contained(future: &mut Option<KernelFuture<'static, ()>>) {
-    let _ = panic::catch_unwind(AssertUnwindSafe(|| drop(future.take())));
+        // The inverse is finished either way, so drop it here rather than leaving it
+        // for a destructor that has nowhere to report. A panic from that destructor
+        // is the stronger signal and outranks what the inverse returned.
+        Poll::Ready(match caught(|| drop(this.future.take())) {
+            Some(panic) => Err(panic),
+            None => outcome,
+        })
+    }
 }
 
 /// Renders a panic payload for the report.

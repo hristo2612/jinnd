@@ -10,9 +10,11 @@
 //!
 //! Three properties this crate owes the rest of the kernel:
 //!
-//! * **Exactly once.** An inverse is consumed by value when it runs and the record is
-//!   removed from the tree as it is flattened, so there is no second copy to run.
-//!   Replaying a scope twice withdraws nothing the second time.
+//! * **Exactly once.** An inverse is consumed by value when it runs and its record
+//!   leaves the tree as it is taken, so there is no second copy to run. Replaying a
+//!   scope twice withdraws nothing the second time — and a replay that is dropped
+//!   part-way pauses the teardown rather than discharging it: what it never reached
+//!   stays live and replayable, and what was in flight is reported, not lost.
 //! * **Failure is local (R11).** An inverse that errors or panics is contained,
 //!   recorded, and the remaining inverses still run. Replay never aborts on the first
 //!   failure (R9) and no panic crosses this crate's boundary.
@@ -39,6 +41,7 @@ mod report;
 mod scope;
 mod tree;
 mod undo;
+mod withdrawal;
 
 pub use disposer::Disposer;
 pub use report::{EffectReport, ReplayReport, UndoOutcome};

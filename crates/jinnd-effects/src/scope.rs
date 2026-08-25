@@ -4,11 +4,10 @@ use std::mem;
 
 use jinnd_api::{EffectDescriptor, EffectId, ErrorCode, KernelError};
 
-use crate::contain::contained;
 use crate::disposer::Disposer;
-use crate::report::{EffectReport, ReplayReport, UndoOutcome};
-use crate::tree::{Record, describe, find, flatten, next_id};
-use crate::undo::StepwiseUndo;
+use crate::report::{EffectReport, ReplayReport};
+use crate::tree::{Record, describe, find, flatten, next_id, take_next};
+use crate::withdrawal::Withdrawal;
 
 /// One scope's live effect tree.
 ///
@@ -18,6 +17,7 @@ use crate::undo::StepwiseUndo;
 /// await (R1).
 pub struct EffectScope {
     roots: Vec<Record>,
+    withdrawn: Vec<EffectReport>,
     replayed: bool,
 }
 
@@ -27,6 +27,7 @@ impl EffectScope {
     pub fn new() -> Self {
         Self {
             roots: Vec::new(),
+            withdrawn: Vec::new(),
             replayed: false,
         }
     }
@@ -83,9 +84,22 @@ impl EffectScope {
     }
 
     /// True when this scope holds no live effect.
+    ///
+    /// A teardown paused by a dropped replay is not empty: everything it never
+    /// reached is still live, and still owed a withdrawal.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.roots.is_empty()
+    }
+
+    /// What this scope has withdrawn but not yet reported.
+    ///
+    /// Empty after a replay that ran to completion — its report carried those lines
+    /// away. Non-empty only while a teardown is paused, which is exactly when there
+    /// is no report to read them from; the next replay opens its report with them.
+    #[must_use]
+    pub fn withdrawn(&self) -> &[EffectReport] {
+        &self.withdrawn
     }
 
     /// Withdraws every live effect, last registered first, and reports what each
@@ -93,24 +107,26 @@ impl EffectScope {
     ///
     /// Children are withdrawn before the effect they nested under, so a subtree
     /// cascades structurally. An inverse that fails or panics is recorded and the
-    /// remaining inverses still run (R9, R11). The whole tree is moved out of the
-    /// scope before the first inverse is touched, so nothing of this scope is held
-    /// while plugin-authored code runs (R1).
+    /// remaining inverses still run (R9, R11). Each record leaves the tree as its
+    /// inverse starts, and every line is written to the scope as it is produced, so
+    /// dropping this future mid-teardown loses neither: the untouched effects stay
+    /// live and a later replay resumes from them, opening its report with what the
+    /// interrupted one had already done. Only the inverse actually in flight cannot
+    /// be resumed — it was consumed when it started — and it is reported
+    /// [`Interrupted`](crate::UndoOutcome::Interrupted) rather than dropped.
+    ///
+    /// No lock is held while an inverse runs (R1); the scope is exclusive to this
+    /// replay for its duration, which is what `&mut self` already says.
     ///
     /// Replaying twice withdraws nothing the second time.
     pub async fn replay(&mut self) -> ReplayReport {
         self.replayed = true;
-        let order = flatten(mem::take(&mut self.roots));
-        let mut effects = Vec::with_capacity(order.len());
-        for record in order {
-            let outcome = withdraw(record.disposer).await;
-            effects.push(EffectReport {
-                id: record.id,
-                label: record.label,
-                outcome,
-            });
+        while let Some(record) = take_next(&mut self.roots) {
+            Withdrawal::new(&mut self.withdrawn, record).await;
         }
-        ReplayReport { effects }
+        ReplayReport {
+            effects: mem::take(&mut self.withdrawn),
+        }
     }
 
     fn record(&self, label: impl Into<String>, disposer: Disposer) -> Result<Record, KernelError> {
@@ -139,6 +155,7 @@ impl std::fmt::Debug for EffectScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EffectScope")
             .field("effects", &self.tree())
+            .field("withdrawn", &self.withdrawn.len())
             .field("replayed", &self.replayed)
             .finish()
     }
@@ -156,45 +173,6 @@ fn error(code: ErrorCode, message: &str) -> KernelError {
         code,
         message: message.to_owned(),
         fiber: None,
-    }
-}
-
-/// Runs one inverse and classifies how it ended.
-async fn withdraw(disposer: Disposer) -> UndoOutcome {
-    match disposer {
-        Disposer::Whole(undo) => classify(contained(move || undo.undo()).await),
-        Disposer::Stepwise(stepwise) => withdraw_steps(stepwise).await,
-    }
-}
-
-/// Runs a stepwise inverse, checking for cancellation between steps.
-///
-/// A step that errors or panics stops its own sequence — the steps after it assume it
-/// ran — but never the replay it belongs to.
-async fn withdraw_steps(stepwise: StepwiseUndo) -> UndoOutcome {
-    let (steps, cancel) = stepwise.into_parts();
-    let total = steps.len();
-    let mut completed = 0;
-    for step in steps {
-        if cancel.is_cancelled() {
-            return UndoOutcome::Cancelled {
-                completed,
-                remaining: total - completed,
-            };
-        }
-        match classify(contained(step).await) {
-            UndoOutcome::Done => completed += 1,
-            outcome => return outcome,
-        }
-    }
-    UndoOutcome::Done
-}
-
-fn classify(result: Result<Result<(), KernelError>, String>) -> UndoOutcome {
-    match result {
-        Ok(Ok(())) => UndoOutcome::Done,
-        Ok(Err(failure)) => UndoOutcome::Failed(failure),
-        Err(panic) => UndoOutcome::Panicked(panic),
     }
 }
 
@@ -219,6 +197,7 @@ mod tests {
 
         let scope = EffectScope {
             roots: vec![record],
+            withdrawn: Vec::new(),
             replayed: false,
         };
 

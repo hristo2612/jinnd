@@ -21,6 +21,14 @@ pub enum UndoOutcome {
     /// The inverse panicked. The panic was contained here (R11) and its payload
     /// rendered for the report; replay carried on with the next effect.
     Panicked(String),
+    /// The replay was dropped while this inverse was in flight.
+    ///
+    /// The inverse was consumed when it started, so it can never be re-run: the
+    /// effect is however far its own withdrawal got. `panic` carries a panic raised
+    /// by the inverse's destructor as it was dropped, if there was one. Everything
+    /// the replay had not reached stays live and replayable — a dropped replay
+    /// pauses a teardown, it never discharges one.
+    Interrupted { panic: Option<String> },
 }
 
 impl UndoOutcome {
