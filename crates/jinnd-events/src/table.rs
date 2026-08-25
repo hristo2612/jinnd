@@ -76,16 +76,17 @@ impl ListenerTable {
     /// Removes one registration; `false` when it was already gone.
     ///
     /// This is both the effect's undo and the once-claim: idempotent by
-    /// construction, and exactly-once by the lock's mutual exclusion.
+    /// construction, and exactly-once by the lock's mutual exclusion. The
+    /// removed entry is returned out of the critical section before it drops:
+    /// a final handle's destructor is plugin code, and no lock is held across
+    /// plugin code (R1) — the caller's containment sees the drop (R11).
     pub(crate) fn remove(&self, event: TypeId, id: ListenerId) -> bool {
-        self.with(|state| {
-            let Some(entries) = state.listeners.get_mut(&event) else {
-                return false;
-            };
-            let before = entries.len();
-            entries.retain(|entry| entry.id != id);
-            entries.len() < before
-        })
+        let removed = self.with(|state| {
+            let entries = state.listeners.get_mut(&event)?;
+            let index = entries.iter().position(|entry| entry.id == id)?;
+            Some(entries.remove(index))
+        });
+        removed.is_some()
     }
 
     /// Clones the current registration list for one walk.

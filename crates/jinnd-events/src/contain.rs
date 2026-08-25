@@ -39,6 +39,23 @@ where
     }
 }
 
+/// Drops a plugin-owned value behind containment (R11).
+///
+/// A listener handle released by a claiming walk may be the final one, so the
+/// destructor that runs is plugin code; the same holds for a payload clone the
+/// walk discards. A panicking destructor becomes a recorded failure, never an
+/// unwind out of the walk (R9).
+pub(crate) fn releasing<T>(value: T) -> Result<(), KernelError> {
+    panic::catch_unwind(AssertUnwindSafe(move || drop(value))).map_err(|payload| KernelError {
+        code: ErrorCode::ListenerFailed,
+        message: format!(
+            "a plugin-authored destructor panicked: {}",
+            describe(payload)
+        ),
+        fiber: None,
+    })
+}
+
 /// Runs payload-owned selection or folding code, reporting a panic it raises.
 pub(crate) fn catching<T, F>(body: F) -> Result<T, KernelError>
 where
