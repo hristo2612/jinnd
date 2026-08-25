@@ -17,9 +17,10 @@ use crate::lanes::PackageLane;
 use crate::state::{State, amend_committed, error, lock};
 
 /// A config type usable at the loader's typed boundary (R3): profile config
-/// payloads are plain comparable data, never behavior (R9).
-pub trait LaneConfig: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static {}
-impl<C: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> LaneConfig for C {}
+/// payloads are plain data, never behavior (R9), compared in their canonical
+/// `Debug` rendering — exactly the facade's `reconcile` bound (R12).
+pub trait LaneConfig: Clone + std::fmt::Debug + Send + Sync + 'static {}
+impl<C: Clone + std::fmt::Debug + Send + Sync + 'static> LaneConfig for C {}
 
 /// The profile loader over one kernel assembly.
 pub struct Loader {

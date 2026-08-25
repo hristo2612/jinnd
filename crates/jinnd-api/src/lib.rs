@@ -371,10 +371,11 @@ pub trait Kernel: Send + Sync + 'static {
     ) -> KernelFuture<'_, DispatchReport<E>>;
 
     /// Reconciles the runtime onto `profile` by entry id: only affected fibers
-    /// move, and the profile becomes the committed document of record. The
-    /// `PartialEq` bound is what reconcile-by-id compares configs with
-    /// (authorized M1-P6 delta; R3).
-    fn reconcile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+    /// move, and the profile becomes the committed document of record. Entry
+    /// configs are compared in their canonical `Debug` rendering — config is
+    /// plain data, never behavior (R9) — so this pre-existing surface keeps
+    /// its exact bound (R12).
+    fn reconcile<C: Clone + Debug + Send + Sync + 'static>(
         &self,
         profile: Profile<C>,
     ) -> KernelFuture<'_, ReconcileReport>;

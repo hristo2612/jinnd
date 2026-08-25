@@ -54,8 +54,13 @@ pub struct Plan {
 
 /// Diffs the applied document (`old`, `None` before the first reconcile)
 /// against the desired one.
+///
+/// Entry configs are compared in their canonical `Debug` rendering: config is
+/// plain data, never behavior (R9), so its rendering is a faithful canonical
+/// form — and the facade's `reconcile` bound stays exactly
+/// `Clone + Debug + Send + Sync` (R12).
 #[must_use]
-pub fn plan<C: PartialEq>(old: Option<&Profile<C>>, new: &Profile<C>) -> Plan {
+pub fn plan<C: std::fmt::Debug>(old: Option<&Profile<C>>, new: &Profile<C>) -> Plan {
     let new_index = EntryIndex::new(new);
     let old_index = old.map(EntryIndex::new);
     let mut outcome = Plan {
@@ -102,7 +107,7 @@ pub fn plan<C: PartialEq>(old: Option<&Profile<C>>, new: &Profile<C>) -> Plan {
                     continue;
                 }
                 let rebind = old_index.environment(&entry.id) != new_index.environment(&entry.id);
-                let restate = previous.config != entry.config;
+                let restate = canonical(&previous.config) != canonical(&entry.config);
                 if rebind {
                     rebinds.push((new_index.depth(&entry.id), StepKind::Rebind, &entry.id));
                 }
@@ -145,6 +150,11 @@ pub fn plan<C: PartialEq>(old: Option<&Profile<C>>, new: &Profile<C>) -> Plan {
     }));
     steps.extend(step_of(creations));
     outcome
+}
+
+/// One config's canonical comparison form at this boundary.
+fn canonical<C: std::fmt::Debug>(config: &C) -> String {
+    format!("{config:?}")
 }
 
 fn step_of<'a>(ranked: Vec<(usize, StepKind, &'a EntryId)>) -> impl Iterator<Item = Step> + 'a {

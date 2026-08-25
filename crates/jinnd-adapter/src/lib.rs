@@ -419,7 +419,7 @@ impl Kernel for Adapter {
         Box::pin(async move { self.report(context, event).await })
     }
 
-    fn reconcile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
+    fn reconcile<C: Clone + Debug + Send + Sync + 'static>(
         &self,
         profile: Profile<C>,
     ) -> KernelFuture<'_, ReconcileReport> {

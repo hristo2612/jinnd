@@ -35,6 +35,55 @@ fn kinds(steps: &[Step], entry: &str) -> Vec<StepKind> {
         .collect()
 }
 
+/// A config carrying no `PartialEq` at all: the facade's `reconcile` bound is
+/// `Clone + Debug + Send + Sync` and nothing more (R12 — the round-2 ruling),
+/// so the diff compares configs in their canonical `Debug` rendering.
+#[derive(Clone, Debug)]
+struct Opaque(u32);
+
+fn opaque(name: &str, config: u32) -> ProfileEntry<Opaque> {
+    ProfileEntry {
+        id: id(name),
+        plugin: PluginRef {
+            package: format!("test/{name}"),
+            version: "1".to_owned(),
+            artifact_hash: String::new(),
+        },
+        config: Opaque(config),
+        disabled: false,
+        parent: None,
+        isolation: Vec::new(),
+    }
+}
+
+#[test]
+fn configs_without_partial_eq_are_compared_canonically() {
+    let old = Profile {
+        entries: vec![opaque("foo", 1), opaque("bar", 2)],
+    };
+    let same = Profile {
+        entries: vec![opaque("foo", 1), opaque("bar", 2)],
+    };
+    let outcome = plan(Some(&old), &same);
+    assert!(outcome.steps.is_empty(), "identical renderings are inert");
+    assert_eq!(outcome.unchanged.len(), 2);
+
+    let changed = Profile {
+        entries: vec![opaque("foo", 9), opaque("bar", 2)],
+    };
+    let outcome = plan(Some(&old), &changed);
+    assert_eq!(
+        outcome
+            .steps
+            .iter()
+            .map(|step| (step.entry.clone(), step.kind))
+            .collect::<Vec<_>>(),
+        vec![(id("foo"), StepKind::Restate)],
+        "a changed rendering restates exactly its own entry"
+    );
+    assert_eq!(outcome.unchanged, vec![id("bar")]);
+}
+
 #[test]
 fn first_reconcile_creates_every_enabled_entry_and_skips_disabled_ones() {
     let mut qux = entry("qux", 4);
