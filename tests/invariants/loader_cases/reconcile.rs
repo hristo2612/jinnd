@@ -43,7 +43,7 @@ pub async fn reconcile_by_id() {
         ],
     )
     .await;
-    let foo = fiber(&kernel, "foo");
+    let unchanged_fiber = fiber(&kernel, "foo");
 
     let report = expect_ok(
         kernel
@@ -61,7 +61,7 @@ pub async fn reconcile_by_id() {
     assert_eq!(report.unchanged, vec![id("foo")]);
     assert_eq!(report.disposed, vec![id("bar")]);
     assert_eq!(report.created, vec![id("qux")]);
-    assert_eq!(kernel.entry_fiber(&id("foo")), Some(foo));
+    assert_eq!(kernel.entry_fiber(&id("foo")), Some(unchanged_fiber));
     assert_eq!(activations(&log, "foo"), 1);
     assert_eq!(activations(&log, "qux"), 1);
 }
