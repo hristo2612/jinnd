@@ -39,10 +39,10 @@ pub struct Loader {
     pub(crate) state: Mutex<State>,
     /// The attached write-back store, if any (see [`Loader::attach_store`]).
     pub(crate) persist: Mutex<Option<Arc<crate::store::Persistence>>>,
-    /// Serializes reconcile/update/dispose. Held across plan application —
-    /// loader operations are never reachable from plugin code, so no lock is
-    /// ever held across a call into a plugin (R1).
-    pub(crate) gate: tokio::sync::Mutex<()>,
+    /// Admits reconcile/update/dispose single-flight. Admission, not a lock:
+    /// no guard is held while plan steps run plugin-facing callbacks, and a
+    /// re-entrant call from a callback is refused honestly (R1, M1-P6b).
+    pub(crate) gate: crate::gate::Gate,
 }
 
 impl Loader {
@@ -62,7 +62,7 @@ impl Loader {
             eqs: Mutex::new(HashMap::new()),
             state: Mutex::new(State::default()),
             persist: Mutex::new(None),
-            gate: tokio::sync::Mutex::new(()),
+            gate: crate::gate::Gate::new(),
         }
     }
 
@@ -130,15 +130,28 @@ impl Loader {
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] when `C` differs from the config type the
-    /// loader is already committed to, or when the attached store cannot
-    /// write the document back — nothing is committed then. Per-entry
-    /// problems are not errors: they are contained faults in the report (R11).
+    /// loader is already committed to, when the attached store cannot
+    /// write the document back — nothing is committed then — or when called
+    /// re-entrantly from a loader operation's own callback (refused, never
+    /// deadlocked; R1). Per-entry problems are not errors: they are contained
+    /// faults in the report (R11).
     pub async fn reconcile_with<C: LaneConfig>(
         &self,
         profile: Profile<C>,
         cancel: CancellationToken,
     ) -> Result<ReconcileReport, KernelError> {
-        let _gate = self.gate.lock().await;
+        self.gate
+            .admit(self.reconcile_admitted(profile, cancel))
+            .await
+    }
+
+    /// The admitted body of [`Loader::reconcile_with`]: runs single-flight,
+    /// with no lock guard held across plan steps (R1, M1-P6b).
+    async fn reconcile_admitted<C: LaneConfig>(
+        &self,
+        profile: Profile<C>,
+        cancel: CancellationToken,
+    ) -> Result<ReconcileReport, KernelError> {
         let old = self.applied::<C>()?;
         let erased = lock(&self.eqs).get(&TypeId::of::<C>()).cloned();
         let attested = erased.map(|eq| {

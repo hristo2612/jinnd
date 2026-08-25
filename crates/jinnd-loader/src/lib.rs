@@ -13,6 +13,7 @@ mod amend;
 mod apply;
 mod diff;
 mod document;
+mod gate;
 pub mod host;
 mod lanes;
 mod loader;

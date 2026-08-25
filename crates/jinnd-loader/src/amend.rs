@@ -32,19 +32,30 @@ impl Loader {
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry or a
-    /// foreign config type; whatever the lane answers for a rejected or
-    /// unstatable payload; whatever the attached store answers for a failed
-    /// write-back. After any error exactly one of three states holds: both
-    /// views at the prior state (the usual case — a staged config is
-    /// withdrawn), both at the new state, or a recorded [`Loader::entry_faults`]
-    /// divergence when the withdrawal itself failed (LAW §3: never dropped).
+    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
+    /// foreign config type, or a re-entrant call from a loader operation's
+    /// own callback (refused, never deadlocked; R1); whatever the lane
+    /// answers for a rejected or unstatable payload; whatever the attached
+    /// store answers for a failed write-back. After any error exactly one of
+    /// three states holds: both views at the prior state (the usual case — a
+    /// staged config is withdrawn), both at the new state, or a recorded
+    /// [`Loader::entry_faults`] divergence when the withdrawal itself failed
+    /// (LAW §3: never dropped).
     pub async fn update_entry<C: LaneConfig>(
         &self,
         entry: &EntryId,
         config: C,
     ) -> Result<(), KernelError> {
-        let _gate = self.gate.lock().await;
+        self.gate.admit(self.update_admitted(entry, config)).await
+    }
+
+    /// The admitted body of [`Loader::update_entry`]: runs single-flight,
+    /// with no lock guard held across the restate callback (R1, M1-P6b).
+    async fn update_admitted<C: LaneConfig>(
+        &self,
+        entry: &EntryId,
+        config: C,
+    ) -> Result<(), KernelError> {
         let amendment = self.amended::<C>(entry, |persisted| persisted.config = config.clone())?;
         let handle = self.live_handle(entry);
         // The runtime is offered the change first: a rejection commits
@@ -88,15 +99,22 @@ impl Loader {
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry or a
-    /// foreign config type; whatever the handle answers for a failed disposal
-    /// (nothing is persisted or committed then). Disposal is irreversible at
-    /// runtime, so a failed write-back is retried once; failing again, the
-    /// divergence — runtime disposed, document enabled — is recorded in
-    /// [`Loader::entry_faults`] and returned, so the next reconcile of the
-    /// document reconverges the two views (LAW §3: never swallowed).
+    /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
+    /// foreign config type, or a re-entrant call from a loader operation's
+    /// own callback (refused, never deadlocked; R1); whatever the handle
+    /// answers for a failed disposal (nothing is persisted or committed
+    /// then). Disposal is irreversible at runtime, so a failed write-back is
+    /// retried once; failing again, the divergence — runtime disposed,
+    /// document enabled — is recorded in [`Loader::entry_faults`] and
+    /// returned, so the next reconcile of the document reconverges the two
+    /// views (LAW §3: never swallowed).
     pub async fn dispose_entry<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
-        let _gate = self.gate.lock().await;
+        self.gate.admit(self.dispose_admitted::<C>(entry)).await
+    }
+
+    /// The admitted body of [`Loader::dispose_entry`]: runs single-flight,
+    /// with no lock guard held across the fiber's withdrawal (R1, M1-P6b).
+    async fn dispose_admitted<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
         let amendment = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
         let handle = self.live_handle(entry);
         // The runtime moves first: a refused disposal commits nothing.
