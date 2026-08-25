@@ -28,3 +28,11 @@ license = "MIT"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+# R11 rests on unwinding: a panic="abort" profile would silently void the kernel's
+# panic containment (audit 2026-08-25). Pin unwind explicitly.
+[profile.release]
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"
