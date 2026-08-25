@@ -128,22 +128,44 @@ kernel; the kernel appends it to the ledger (SQLite, append-only). Revert is bui
 the ledger + effect inverses. Errors, transitions, write-backs, and provenance are
 ledger events, not a `last_error` string.
 
-**R7 — One contract; plugins are always sandboxed hosts.** Plugin backends behind one
-trait: `Wasm` (wasmtime + WIT — the only live host in v0.1, first-party plugins
-included) and `Subprocess` (supervised process over IPC — disabled until its
-mandatory OS sandbox exists). **There is no in-process plugin host**: native Rust is
-kernel implementation, never a plugin — it implements only the broker/runtime and the
-base host-provider contracts (fs, process, net, keystore), exposed to plugins solely
-as contracts. Capability grants, metering, and signing are enforced per-backend by
-the kernel. Native dylib loading is banned. *(Amended 2026-08-24 from "three modes
-incl. InProc" — verifier round 2: lint discipline is not mechanical closure; an
-InProc plugin tier is a Law-1 side door.)*
+**R7 — One contract, tiered containment.** Every plugin runs behind the same typed
+capability contract (WIT); what differs per plugin is its **containment tier**:
 
-**R8 — Hot reload has three honest tiers.** Tier 0: config reconcile (most operator
-value, always available). Tier 1: WASM instance swap — old instance stays warm until
+- **Tier A — WASM components** (wasmtime; the default, and the only live tier in
+  v0.1). Logic and orchestration plugins and *all machine-written code*,
+  first-party included. Provable confinement, instant dispose, one portable
+  signed artifact.
+- **Tier B — sandboxed native processes** (`Subprocess`: supervised process over
+  IPC; any language). For native-heavy and data-plane plugins. Disabled until its
+  mandatory per-OS sandbox exists (macOS Seatbelt; Linux namespaces + seccomp +
+  Landlock). An unsandboxed subprocess tier never ships.
+- **Tier C — GUI environments** (rung 3, post-M4). Tier B processes whose
+  capability grants include the display protocol: a compositor plugin holds the
+  hardware capability and mediates surfaces, input, and GPU (the Wayland/Fuchsia
+  pattern).
+
+The **capability broker is transport-agnostic**: grant check, ledger append, and
+dispatch accept "a contract call from a peer" — whether the peer is a linked WASM
+instance or a socket-connected sandboxed process is a transport detail. A broker
+fused to WASM linking is a design defect (binding on the wasm-host packet).
+Ledger granularity for Tier B/C is grants + lifecycle + contract-level effects,
+never data-plane traffic — per-frame mediation is rejected as a scaling hazard.
+
+**There is no in-process plugin host**: native Rust is kernel implementation, never
+a plugin — it implements only the broker/runtime and the base host-provider
+contracts (fs, process, net, keystore), exposed to plugins solely as contracts.
+Capability grants, metering, and signing are enforced per-tier by the kernel.
+Native dylib loading is banned. *(Amended 2026-08-24 from "three modes incl.
+InProc" — verifier round 2: lint discipline is not mechanical closure; an InProc
+plugin tier is a Law-1 side door. Amended 2026-08-25: containment tier model
+codified — see Decision Log.)*
+
+**R8 — Hot reload has three honest modes.** Mode 0: config reconcile (most operator
+value, always available). Mode 1: WASM instance swap — old instance stays warm until
 the new one is healthy, auto-rollback on failure, optional state-handoff blob from old
-to new. Tier 2: supervised kernel restart with state in the ledger, not process memory.
-No in-process native code patching, ever.
+to new. Mode 2: supervised kernel restart with state in the ledger, not process memory.
+No in-process native code patching, ever. (Renamed tiers→modes 2026-08-25 so "tier"
+means containment tier, R7, unambiguously.)
 
 **R9 — Known hazards stay dead.** Do not port: emit aborting remaining listeners on
 first error; async results counting as "bailed"; side-effectful service constructors;
@@ -176,20 +198,25 @@ within a major version.
 ├════════════ typed capability contracts (WIT) ══════════════┤
 │ KERNEL (jinnd): fiber runtime · effect/undo engine ·       │
 │ service registry & epochs · event bus · profile loader ·   │
-│ ledger + revert · capability broker · base host providers  │
-│ (fs/process/net/keystore, exposed as contracts) · plugin   │
-│ hosts (Wasm | Subprocess) · HTTP/WS API (axum)             │
+│ ledger + revert · transport-agnostic capability broker ·   │
+│ base host providers (fs/process/net/keystore, exposed as   │
+│ contracts) · plugin hosts: Tier A WASM | Tier B sandboxed  │
+│ process (R7) · HTTP/WS API (axum)                          │
 ├────────────────────────────────────────────────────────────┤
 │ host OS: macOS launchd · Linux systemd · Android service   │
 └────────────────────────────────────────────────────────────┘
 ```
 
+- Every plugin above the contract line runs in a containment tier per R7: WASM by
+  default (Tier A); sandboxed native processes for native-heavy work (Tier B);
+  GUI environments as Tier B processes with display-protocol grants (Tier C,
+  post-M4). One contract surface, one broker, swappable transports.
 - The existing React web UI becomes a client of the kernel's API plugin — no UI rewrite
   required for parity.
 - The old Node gateway keeps running ALL production until the new kernel proves parity;
   instances cut over one at a time. (The cutover rule — non-negotiable.)
 - Component budgets: context tree 0.5–0.7k · fiber lifecycle 0.8–1.2k · effects
-  0.3–0.4k · registry+gating 0.5–0.7k · event bus 0.4–0.6k · loader 1–1.5k ·
+  0.3–0.5k · registry+gating 0.5–0.7k · event bus 0.4–0.6k · loader 1–1.5k ·
   proc-macros 0.3–0.6k · tracing bridge 0.15–0.3k.
 
 ## 7. Roadmap (each milestone gated by a demo, not a claim)
@@ -260,6 +287,35 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   explicitly confirmed the InProc removal: all plugins WASM-hosted, first-party
   included; native Rust = kernel implementation only. M1 begins: packet 0 = test
   port (verifier-owned, lands red).
+
+- **2026-08-25** — **Containment tier model codified** (operator-approved). Law 5
+  mandates *sandboxed and signed*, not a technology; R7's two backends are tiers of
+  one contract. **Tier A (default): WASM components** — logic/orchestration plugins
+  and all machine-written code (provable confinement, instant dispose, one portable
+  signed artifact). **Tier B: sandboxed native processes** (`Subprocess` backend) —
+  any language, native-heavy/data-plane plugins; containment via per-OS sandbox
+  (macOS Seatbelt; Linux namespaces + seccomp + Landlock); enabled only when that
+  sandbox ships, per R7. **Tier C: GUI environments** — Tier B processes whose
+  capability grants include the display protocol (Wayland/Fuchsia pattern): a
+  compositor plugin holds the hardware capability and mediates surfaces, input, and
+  GPU. Ledger granularity for Tier B/C is grants + lifecycle + contract-level
+  effects, never data-plane traffic — per-frame mediation is rejected as a scaling
+  hazard. **Binding design requirement on the wasm-host packet: the capability
+  broker is transport-agnostic** — grant check, ledger append, and dispatch accept
+  "a contract call from a peer"; whether the peer is a linked WASM instance or a
+  socket-connected sandboxed process is a transport detail. A broker fused to WASM
+  linking is a design defect, not an implementation choice.
+
+- **2026-08-25** — Body refactored to carry the tier model natively (operator-directed):
+  R7 rewritten as "One contract, tiered containment" (Tiers A/B/C + transport-agnostic
+  broker inline); R8's reload "tiers" renamed to *modes* so "tier" unambiguously means
+  containment; §6 diagram and notes updated. Semantics identical to the entry above.
+
+- **2026-08-25** — M1-P2 budget amended 300–400 → 300–500 (COO; §6 effects estimate
+  synced to 0.3–0.5k). Round-1 verify blockers mandated containment machinery the
+  estimate didn't price in; verifier confirmed all else passes at 479 LOC. Rule for
+  future cards: budgets are estimates priced before adversarial findings — the COO
+  re-prices on evidence rather than incentivizing containment-code golf.
 
 - **2026-08-24** — M1-P1 delivered (jinnd-context, 468 LOC, miri clean) but exposed
   a P0 suite defect: cases never call the facade, so no packet can green a case
