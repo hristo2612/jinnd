@@ -21,6 +21,10 @@ pub(crate) struct EntryRuntime {
     pub(crate) context: Option<Context<()>>,
     /// The spawned fiber while the entry is an enabled plugin.
     pub(crate) live: Option<Live>,
+    /// A recorded divergence between the two views of the one truth: set when
+    /// an amendment double-failed and runtime and document honestly disagree,
+    /// cleared when a reconcile reconverges them (LAW §3; never dropped).
+    pub(crate) fault: Option<KernelError>,
 }
 
 pub(crate) struct Live {

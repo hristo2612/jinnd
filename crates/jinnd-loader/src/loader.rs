@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{
-    EntryId, ErrorCode, FiberId, FiberState, KernelError, Profile, ProfileEntry, ReconcileReport,
+    EntryFault, EntryId, ErrorCode, FiberId, FiberState, KernelError, Profile, ProfileEntry,
+    ReconcileReport,
 };
 use jinnd_context::Context;
 use jinnd_registry::Registry;
@@ -151,12 +152,25 @@ impl Loader {
         let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
         // The document of record moves to disk before the runtime (LAW §3).
         self.persist(&committed).await?;
-        {
+        // Committing the new document reconverges every recorded divergence:
+        // the drained faults surface in the report, never dropped (LAW §3).
+        let drained: Vec<EntryFault> = {
             let mut state = lock(&self.state);
             state.config_type = Some(TypeId::of::<C>());
             state.committed = Some(committed);
-        }
-        let report = self.apply(plan, &profile, &cancel).await;
+            state
+                .entries
+                .iter_mut()
+                .filter_map(|(entry, runtime)| {
+                    runtime.fault.take().map(|error| EntryFault {
+                        entry: entry.clone(),
+                        error,
+                    })
+                })
+                .collect()
+        };
+        let mut report = self.apply(plan, &profile, &cancel).await;
+        report.errors.extend(drained);
         self.settle().await;
         Ok(report)
     }
@@ -181,6 +195,25 @@ impl Loader {
             .filter_map(|runtime| runtime.live.as_ref())
             .find(|live| live.handle.id() == fiber)
             .map(|live| live.handle.state())
+    }
+
+    /// The recorded divergence faults: entries whose last amendment
+    /// double-failed, leaving the runtime and the committed document honestly
+    /// apart until a reconcile reconverges them. After any failed amendment
+    /// exactly one of three states holds: both views at the prior state, both
+    /// at the new state, or a fault here naming the divergence (LAW §3).
+    #[must_use]
+    pub fn entry_faults(&self) -> Vec<EntryFault> {
+        lock(&self.state)
+            .entries
+            .iter()
+            .filter_map(|(entry, runtime)| {
+                runtime.fault.clone().map(|error| EntryFault {
+                    entry: entry.clone(),
+                    error,
+                })
+            })
+            .collect()
     }
 
     /// The committed document, as persisted.

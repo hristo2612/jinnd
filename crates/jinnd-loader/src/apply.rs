@@ -97,9 +97,8 @@ impl Loader {
         }
     }
 
-    /// Rebuilds an entry's context and lets epoch identity decide the rest.
-    /// A provider entry whose provided realm moved is explicitly reloaded —
-    /// its next activation provides in the new realm.
+    /// Rebuilds an entry's context and lets epoch identity decide the rest;
+    /// a provider whose provided realm moved reloads to provide in it.
     fn rebind_step<C: LaneConfig>(
         &self,
         entry: &EntryId,
@@ -286,6 +285,7 @@ impl Loader {
                 spec: Arc::new(spec.clone()),
                 context,
                 live,
+                fault: None,
             },
         );
     }
