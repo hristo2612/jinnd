@@ -113,8 +113,14 @@ where
                 fiber,
                 value,
                 &self.registry.vitality(true),
-            );
-            setup.effect(format!("provide {}", S::NAME), provision.undo)?;
+            )?;
+            // A draining effect (I2): dependents are waited out before ANY of
+            // this fiber's inverses replay.
+            setup.draining_effect(
+                format!("provide {}", S::NAME),
+                provision.drain,
+                provision.undo,
+            )?;
             Ok(())
         })
     }

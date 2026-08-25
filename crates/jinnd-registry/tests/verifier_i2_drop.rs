@@ -48,16 +48,18 @@ async fn the_provider_value_outlives_its_dependents_unload() {
     let mut scope = EffectScope::new();
     let dropped = Arc::new(AtomicBool::new(false));
 
-    let provision = registry.provide::<Sentinel, ()>(
-        &tree.root(),
-        &Realm::Root,
-        FiberId(0),
-        Arc::new(Sentinel {
-            dropped: Arc::clone(&dropped),
-        }),
-        &registry.vitality(true),
-    );
-    let registered = scope.register("provide sentinel", provision.undo);
+    let provision = registry
+        .provide::<Sentinel, ()>(
+            &tree.root(),
+            &Realm::Root,
+            FiberId(0),
+            Arc::new(Sentinel {
+                dropped: Arc::clone(&dropped),
+            }),
+            &registry.vitality(true),
+        )
+        .unwrap_or_else(|error| panic!("an empty slot must accept a provision: {error:?}"));
+    let registered = scope.register_draining("provide sentinel", provision.drain, provision.undo);
     assert!(
         registered.is_ok(),
         "provision must register on a live scope"

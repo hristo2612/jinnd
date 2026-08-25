@@ -39,11 +39,13 @@ impl Fiber {
     /// If called outside a tokio runtime, which is where every fiber lives (R1).
     pub fn spawn(body: Arc<dyn FiberBody>, signal: impl ReadinessSignal) -> Self {
         let shared = Arc::new(Shared::new(next_fiber_id(), signal.epoch()));
-        tokio::spawn(supervise(Cell::new(
-            Arc::clone(&shared),
-            body,
-            Box::new(signal),
-        )));
+        // The whole supervisor task carries its fiber's identity, so any code
+        // it runs — activations and teardown replays alike — can be refused
+        // an operation that would await this very fiber (M1-P6c).
+        tokio::spawn(crate::current::identified(
+            shared.id,
+            supervise(Cell::new(Arc::clone(&shared), body, Box::new(signal))),
+        ));
         Self { shared }
     }
 

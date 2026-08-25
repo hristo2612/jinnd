@@ -108,8 +108,12 @@ impl FiberBody for FixtureBody {
                         fiber,
                         Arc::new(FixtureService(config)),
                         &vitality,
-                    );
-                    setup.effect("provide svc.fixture", provision.undo)?;
+                    )?;
+                    setup.draining_effect(
+                        "provide svc.fixture",
+                        provision.drain,
+                        provision.undo,
+                    )?;
                 }
                 Role::Consumer => {
                     let at = cell.context();
@@ -241,6 +245,63 @@ fn lane(
             }) as Arc<dyn EntryHandle>)
         }),
     }
+}
+
+/// A plain lane handle over one spawned fiber: restate accepts anything, rebind
+/// is a no-op. For conformance tests whose bodies read neither config nor
+/// context after spawn.
+pub struct PlainHandle {
+    pub fiber: Arc<Fiber>,
+}
+
+impl EntryHandle for PlainHandle {
+    fn id(&self) -> FiberId {
+        self.fiber.id()
+    }
+
+    fn state(&self) -> jinnd_api::FiberState {
+        self.fiber.state()
+    }
+
+    fn withdrawing(&self) -> bool {
+        self.fiber.withdrawing()
+    }
+
+    fn restart(&self, cause: TransitionCause) {
+        self.fiber.restart(cause);
+    }
+
+    fn restate(&self, _config: &(dyn Any + Send + Sync)) -> Result<(), KernelError> {
+        Ok(())
+    }
+
+    fn rebind(&self, _at: Context<()>) {}
+
+    fn dispose(&self) -> KernelFuture<'static, ()> {
+        let fiber = Arc::clone(&self.fiber);
+        Box::pin(async move {
+            fiber.dispose().await;
+            Ok(())
+        })
+    }
+
+    fn quiesce(&self) -> KernelFuture<'static, ()> {
+        let fiber = Arc::clone(&self.fiber);
+        Box::pin(async move {
+            fiber.quiesce().await;
+            Ok(())
+        })
+    }
+}
+
+/// Spawns `body` on a lane request's signal and wraps it as a plain handle.
+pub fn plain_spawn(
+    body: Arc<dyn FiberBody>,
+    signal: jinnd_fiber::WatchReadiness,
+) -> Arc<dyn EntryHandle> {
+    Arc::new(PlainHandle {
+        fiber: Arc::new(Fiber::spawn(body, signal)),
+    }) as Arc<dyn EntryHandle>
 }
 
 /// A loader wired with the three fixture packages: `test/count`,

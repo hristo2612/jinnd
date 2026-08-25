@@ -38,6 +38,7 @@
 
 mod contain;
 mod disposer;
+mod drain;
 mod report;
 mod scope;
 mod tree;

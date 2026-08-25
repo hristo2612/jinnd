@@ -67,16 +67,19 @@ impl SlotMap {
 
     /// Publishes `value` at `address`, returning the new entry.
     ///
-    /// A previous entry at the address is superseded: its lease cell is closed in
-    /// the same critical section, and the new generation is strictly greater than
-    /// every generation this map has ever minted.
+    /// An address occupied by ANOTHER provider refuses the provision — a live
+    /// binding is never silently replaced (paper Def 23, R9) — answering the
+    /// occupant. The SAME provider supersedes its own binding (the hot-swap
+    /// lane): the superseded lease cell is closed in the same critical
+    /// section, and the new generation is strictly greater than every
+    /// generation this map has ever minted.
     pub(crate) fn insert(
         &self,
         address: Address,
         provider: FiberId,
         value: Arc<dyn Any + Send + Sync>,
         vitality: Arc<VitalityCell>,
-    ) -> SlotEntry {
+    ) -> Result<SlotEntry, FiberId> {
         let entry = SlotEntry {
             provider,
             generation: Generation(self.generations.fetch_add(1, Ordering::Relaxed) + 1),
@@ -85,11 +88,16 @@ impl SlotMap {
             vitality,
         };
         self.with(|slots| {
+            if let Some(occupant) = slots.get(&address) {
+                if occupant.provider != provider {
+                    return Err(occupant.provider);
+                }
+            }
             if let Some(superseded) = slots.insert(address, entry.clone()) {
                 superseded.leases.close();
             }
-        });
-        entry
+            Ok(entry)
+        })
     }
 
     /// The current entry at `address`, if any.
@@ -169,11 +177,24 @@ mod tests {
         assert!(map.get(&address(&ContextTree::new())).is_none());
     }
 
+    /// Publishes, panicking on a refusal these map tests never expect.
+    fn publish(
+        map: &SlotMap,
+        address: Address,
+        provider: FiberId,
+        value: u8,
+    ) -> super::SlotEntry {
+        match map.insert(address, provider, Arc::new(value), live()) {
+            Ok(entry) => entry,
+            Err(occupant) => panic!("unexpected refusal: occupied by {occupant:?}"),
+        }
+    }
+
     #[test]
     fn insertion_publishes_the_value_under_a_fresh_generation() {
         let map = SlotMap::new();
         let address = address(&ContextTree::new());
-        let entry = map.insert(address, FiberId(7), Arc::new(41_u8), live());
+        let entry = publish(&map, address, FiberId(7), 41);
         let found = map.get(&address).into_iter().next();
         let found = found.as_ref();
         assert_eq!(found.map(|found| found.generation), Some(entry.generation));
@@ -185,12 +206,12 @@ mod tests {
     }
 
     #[test]
-    fn replacement_mints_a_strictly_newer_generation_and_closes_the_old_leases() {
+    fn same_provider_supersession_mints_a_newer_generation_and_closes_old_leases() {
         let map = SlotMap::new();
         let address = address(&ContextTree::new());
-        let first = map.insert(address, FiberId(1), Arc::new(1_u8), live());
+        let first = publish(&map, address, FiberId(1), 1);
         assert!(first.leases.acquire());
-        let second = map.insert(address, FiberId(2), Arc::new(2_u8), live());
+        let second = publish(&map, address, FiberId(1), 2);
         assert!(second.generation > first.generation);
         assert!(
             !first.leases.acquire(),
@@ -200,12 +221,36 @@ mod tests {
     }
 
     #[test]
+    fn a_second_provider_is_refused_and_the_occupant_is_untouched() {
+        let map = SlotMap::new();
+        let address = address(&ContextTree::new());
+        let first = publish(&map, address, FiberId(1), 1);
+        assert!(first.leases.acquire());
+        let refused = map.insert(address, FiberId(2), Arc::new(2_u8), live());
+        assert_eq!(
+            refused.err(),
+            Some(FiberId(1)),
+            "an occupied slot refuses a DIFFERENT provider (Def 23, R9)"
+        );
+        let occupant = map.get(&address).into_iter().next();
+        assert_eq!(
+            occupant.as_ref().map(|entry| entry.generation),
+            Some(first.generation),
+            "the occupant's binding must be untouched by the refusal"
+        );
+        assert!(
+            first.leases.acquire(),
+            "the occupant's leases stay open: nothing was superseded"
+        );
+    }
+
+    #[test]
     fn leasing_honors_the_generation_the_epoch_captured() {
         let map = SlotMap::new();
         let address = address(&ContextTree::new());
-        let first = map.insert(address, FiberId(1), Arc::new(1_u8), live());
+        let first = publish(&map, address, FiberId(1), 1);
         assert!(map.lease(&address, first.generation).is_some());
-        let second = map.insert(address, FiberId(2), Arc::new(2_u8), live());
+        let second = publish(&map, address, FiberId(1), 2);
         assert!(
             map.lease(&address, first.generation).is_none(),
             "a stale epoch must not lease the replacement generation"
@@ -217,8 +262,8 @@ mod tests {
     fn removal_is_generation_guarded() {
         let map = SlotMap::new();
         let address = address(&ContextTree::new());
-        let first = map.insert(address, FiberId(1), Arc::new(1_u8), live());
-        let second = map.insert(address, FiberId(2), Arc::new(2_u8), live());
+        let first = publish(&map, address, FiberId(1), 1);
+        let second = publish(&map, address, FiberId(1), 2);
         assert!(
             !map.remove_if(&address, first.generation),
             "a stale undo must not withdraw a newer provider's slot"
@@ -232,7 +277,7 @@ mod tests {
     fn removal_closes_the_leases_it_withdraws() {
         let map = SlotMap::new();
         let address = address(&ContextTree::new());
-        let entry = map.insert(address, FiberId(1), Arc::new(1_u8), live());
+        let entry = publish(&map, address, FiberId(1), 1);
         assert!(entry.leases.acquire());
         assert!(map.remove_if(&address, entry.generation));
         assert!(!entry.leases.acquire());
@@ -253,8 +298,8 @@ mod tests {
             key: tree.dynamic_key("jinn.test/second"),
             ..address(&tree)
         };
-        let earlier = map.insert(first, FiberId(1), Arc::new(1_u8), live());
-        let later = map.insert(second, FiberId(2), Arc::new(2_u8), live());
+        let earlier = publish(&map, first, FiberId(1), 1);
+        let later = publish(&map, second, FiberId(2), 2);
         assert!(later.generation > earlier.generation);
     }
 }

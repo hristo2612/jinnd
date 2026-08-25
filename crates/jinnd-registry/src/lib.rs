@@ -18,10 +18,11 @@
 //!   provider — provider fiber, generation, realm. Any provider change bumps a
 //!   generation, which changes the epoch, which forces the consumer through a full
 //!   clean unload → reload in the fiber engine. There is no silent replace (R9).
-//! * **Provider-waits-for-consumers (I2).** A dying provider first removes its
-//!   slot — no new resolutions, availability withdrawn — and then awaits every
-//!   dependent's lease before its withdrawal completes, so dependents may still
-//!   call the dying service during their own teardown.
+//! * **Provider-waits-for-consumers (I2).** A dying provider's drain phase
+//!   removes its slot — no new resolutions, availability withdrawn — and
+//!   completes only when every dependent's lease has drained, BEFORE any of
+//!   the provider's inverses replay (paper Alg 5), so dependents may still
+//!   call the dying service during their own teardown and observe it whole.
 //!
 //! # What this crate is not
 //!

@@ -52,6 +52,8 @@ mod body;
 #[cfg(not(feature = "loom"))]
 mod contain;
 #[cfg(not(feature = "loom"))]
+mod current;
+#[cfg(not(feature = "loom"))]
 mod fiber;
 #[cfg(not(feature = "loom"))]
 mod landing;
@@ -70,6 +72,8 @@ mod uid;
 
 #[cfg(not(feature = "loom"))]
 pub use body::{FiberBody, Setup};
+#[cfg(not(feature = "loom"))]
+pub use current::current_fiber;
 #[cfg(not(feature = "loom"))]
 pub use fiber::Fiber;
 #[cfg(not(feature = "loom"))]

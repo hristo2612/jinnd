@@ -26,7 +26,27 @@ pub(crate) struct Record {
     pub(crate) id: EffectId,
     pub(crate) label: String,
     pub(crate) disposer: Disposer,
+    /// A drain phase, run before ANY inverse of a full withdrawal (I2): the
+    /// effect stops accepting dependents and waits them out, its inverse still
+    /// owed afterwards. `None` for ordinary effects.
+    pub(crate) drain: Option<Disposer>,
     pub(crate) children: Vec<Record>,
+}
+
+/// Takes every pending drain phase, in replay order (children before the
+/// effect they nested under, last registration first). The records stay live —
+/// only their drain phase moves out, so a drain runs at most once.
+pub(crate) fn drains(roots: &mut [Record]) -> Vec<(EffectId, String, Disposer)> {
+    let mut stack: Vec<&mut Record> = roots.iter_mut().rev().collect();
+    let mut collected = Vec::new();
+    while let Some(record) = stack.pop() {
+        if let Some(drain) = record.drain.take() {
+            collected.push((record.id, record.label.clone(), drain));
+        }
+        stack.extend(record.children.iter_mut().rev());
+    }
+    collected.reverse();
+    collected
 }
 
 /// The live record `id` names.

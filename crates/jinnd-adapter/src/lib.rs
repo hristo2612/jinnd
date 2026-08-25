@@ -332,8 +332,15 @@ impl Kernel for Adapter {
                 KERNEL_SCOPE,
                 value,
                 &self.kernel_vitality,
-            );
-            lock(&self.kernel_scope).register(format!("provide {}", S::NAME), provision.undo)
+            )?;
+            // The kernel scope's provisions carry the same drain-then-undo
+            // shape (I2); every facade provision shares the kernel
+            // pseudo-fiber, so re-providing here is the hot-swap lane.
+            lock(&self.kernel_scope).register_draining(
+                format!("provide {}", S::NAME),
+                provision.drain,
+                provision.undo,
+            )
         })
     }
 

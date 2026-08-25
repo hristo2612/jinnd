@@ -90,6 +90,23 @@ impl<'a> Setup<'a> {
         self.effects.register(label, disposer)
     }
 
+    /// Applies an effect with a drain phase (I2): `drain` runs before ANY
+    /// inverse of this fiber's withdrawal — the provision shape, where
+    /// dependents must be waited out while the contribution is still whole —
+    /// and `undo` is the inverse proper, complete on its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`effect`](Setup::effect).
+    pub fn draining_effect(
+        &mut self,
+        label: impl Into<String>,
+        drain: Disposer,
+        undo: Disposer,
+    ) -> Result<EffectId, KernelError> {
+        self.effects.register_draining(label, drain, undo)
+    }
+
     /// Applies an effect nested under `parent`, so that withdrawing `parent`
     /// withdraws this one first.
     ///

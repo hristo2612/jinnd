@@ -94,7 +94,7 @@ impl Drop for Withdrawal<'_> {
 }
 
 /// Runs one inverse and classifies how it ended.
-async fn withdraw(disposer: Disposer) -> UndoOutcome {
+pub(crate) async fn withdraw(disposer: Disposer) -> UndoOutcome {
     match disposer {
         Disposer::Whole(undo) => classify(contained(move || undo.undo()).await),
         Disposer::Stepwise(stepwise) => withdraw_steps(stepwise).await,
