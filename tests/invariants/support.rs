@@ -2,7 +2,7 @@
 
 use jinnd_api::{
     ContextId, DispatchMode, ErrorCode, Event, EventListener, FiberId, FiberState, Kernel,
-    KernelFuture, Profile, ServiceContract,
+    KernelError, KernelFuture, Profile, ServiceContract,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -60,7 +60,7 @@ impl EventListener<FixtureEvent> for FixtureListener {
     }
 }
 
-fn validate(case: &SpecCase<'_>) {
+pub(crate) fn validate(case: &SpecCase<'_>) {
     assert!(
         case.origin.ends_with(".spec.ts")
             || case.origin.starts_with("paper:")
@@ -95,6 +95,46 @@ fn validate(case: &SpecCase<'_>) {
         )),
         "state checkpoints must use facade states"
     );
+}
+
+pub struct Listener<F>(pub F);
+
+impl<E, F> EventListener<E> for Listener<F>
+where
+    E: Event,
+    F: Fn(ContextId, E) -> KernelFuture<'static, E::Output> + Send + Sync + 'static,
+{
+    fn call<'a>(&'a self, caller: ContextId, event: E) -> KernelFuture<'a, E::Output> {
+        (self.0)(caller, event)
+    }
+}
+
+pub fn ready<T: Send + 'static>(result: Result<T, KernelError>) -> KernelFuture<'static, T> {
+    Box::pin(async move { result })
+}
+
+pub fn listener_error(message: &str) -> KernelError {
+    KernelError {
+        code: ErrorCode::ListenerFailed,
+        message: message.to_owned(),
+        fiber: None,
+    }
+}
+
+pub fn expect_ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("{context}: {error:?}"),
+    }
+}
+
+pub fn facade_gap_at(case: &SpecCase<'_>, reason: &str) -> ! {
+    validate(case);
+    assert!(!reason.is_empty(), "facade gaps require a concrete reason");
+    panic!(
+        "FACADE_GAP: {reason}; case={} :: {}",
+        case.origin, case.test_name
+    )
 }
 
 /// Drives the closest facade subsystem before recording why the full cited behavior
@@ -167,13 +207,35 @@ pub async fn facade_gap(case: &SpecCase<'_>, subsystem: Subsystem, reason: &str)
         }
     }
 
-    panic!(
-        "FACADE_GAP: {reason}; case={} :: {}",
-        case.origin, case.test_name
-    )
+    facade_gap_at(case, reason)
 }
 
 macro_rules! spec_case {
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        origin: $origin:literal,
+        test: $test_name:literal,
+        setup: [$($setup:literal),* $(,)?],
+        actions: [$($action:literal),+ $(,)?],
+        expected: [$($expected:literal),+ $(,)?],
+        body: |$case:ident| $body:block
+    ) => {
+        $(#[$meta])*
+        #[tokio::test(flavor = "current_thread")]
+        async fn $name() {
+            let $case = $crate::support::SpecCase {
+                origin: $origin,
+                test_name: $test_name,
+                setup: &[$($setup),*],
+                actions: &[$($action),+],
+                expected: &[$($expected),+],
+                states: &[],
+            };
+            $crate::support::validate(&$case);
+            $body
+        }
+    };
     (
         $(#[$meta:meta])*
         $name:ident,
