@@ -3,6 +3,8 @@
 //! unpersistable change leaves both views of the one truth at their prior
 //! state (LAW §3 bidirectional persistence).
 
+#![cfg(not(feature = "loom"))]
+
 mod common;
 
 use std::fmt;

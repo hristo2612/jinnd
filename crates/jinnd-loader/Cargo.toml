@@ -8,11 +8,18 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Model checking only: swaps the engagement cell's mutex for loom's and gates
+# the tokio-driven integration tests out. Off by default, never a runtime
+# dependency (mirrors jinnd-fiber's loom lane).
+loom = ["dep:loom"]
+
 [dependencies]
 jinnd-api = { path = "../jinnd-api" }
 jinnd-context = { path = "../jinnd-context" }
 jinnd-fiber = { path = "../jinnd-fiber" }
 jinnd-registry = { path = "../jinnd-registry" }
+loom = { version = "0.7.2", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
 tokio = { version = "1.47.1", features = ["fs", "io-util", "rt", "sync"] }

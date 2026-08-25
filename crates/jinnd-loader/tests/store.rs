@@ -1,6 +1,8 @@
 //! Atomic bidirectional persistence: write-temp + rename, no partial states on
 //! disk (LAW §3, v0.1 constitution bounds).
 
+#![cfg(not(feature = "loom"))]
+
 mod common;
 
 use std::path::PathBuf;

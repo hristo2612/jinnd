@@ -1,7 +1,11 @@
 //! M1-P6b regression suite: loader operations run their plugin-facing
 //! callbacks with no lock guard held (R1). A callback that calls back into
 //! the loader is refused honestly, never deadlocked, and concurrent
-//! operations stay single-flight — no interleaved amendments.
+//! operations are race-safe: a conflicting operation is refused or lands
+//! whole — never interleaved amendments. (Cross-task teardown re-entry is
+//! covered in `tests/reenter.rs`.)
+
+#![cfg(not(feature = "loom"))]
 
 mod common;
 
@@ -96,7 +100,7 @@ async fn a_callback_reentering_the_loader_is_refused_honestly() {
 }
 
 #[tokio::test]
-async fn concurrent_updates_stay_single_flight_and_converge() {
+async fn concurrent_updates_land_whole_or_are_refused_and_converge() {
     let (loader, _registry, log) = fixture();
     let loader = Arc::new(loader);
     loader
@@ -109,11 +113,22 @@ async fn concurrent_updates_stay_single_flight_and_converge() {
             tokio::spawn(async move { loader.update_entry(&id("a"), config).await })
         })
         .collect();
+    let mut landed = 0;
     for task in tasks {
-        task.await.grab().grab();
+        match task.await.grab() {
+            Ok(()) => landed += 1,
+            // Waiting is how a re-entrant caller would deadlock; a concurrent
+            // amendment of a busy entry is refused honestly instead.
+            Err(refusal) => assert!(
+                refusal.message.contains("in flight"),
+                "only the honest in-flight refusal is acceptable, got: {}",
+                refusal.message
+            ),
+        }
     }
-    // Serialized operations: every update fully landed, one activation each.
-    assert_eq!(common::activations(&log, "a"), 5);
+    // Race-safe: every landed update activated exactly once, none interleaved.
+    assert!(landed >= 1, "at least one concurrent update lands");
+    assert_eq!(common::activations(&log, "a"), 1 + landed);
     assert!(loader.entry_faults().is_empty());
     // The two views agree: the last activation observed the committed config.
     let committed: Profile<u32> = loader.persisted().grab();
@@ -126,4 +141,40 @@ async fn concurrent_updates_stay_single_flight_and_converge() {
         })
         .grab();
     assert_eq!(committed.entries[0].config, last_activated);
+}
+
+#[tokio::test]
+async fn concurrent_updates_of_distinct_entries_never_lose_each_other() {
+    let (loader, _registry, _log) = fixture();
+    let loader = Arc::new(loader);
+    loader
+        .reconcile(profile(vec![
+            entry("x", "test/count", 1),
+            entry("y", "test/count", 1),
+        ]))
+        .await
+        .grab();
+    let amendments: Vec<_> = [("x", 5_u32), ("y", 6_u32)]
+        .into_iter()
+        .map(|(name, config)| {
+            let loader = Arc::clone(&loader);
+            tokio::spawn(async move { loader.update_entry(&id(name), config).await })
+        })
+        .collect();
+    // Distinct entries never conflict: both amendments land whole, and the
+    // committed document carries both — neither write-back overwrote the
+    // other's commit.
+    for amendment in amendments {
+        amendment.await.grab().grab();
+    }
+    let committed: Profile<u32> = loader.persisted().grab();
+    for (name, config) in [("x", 5_u32), ("y", 6_u32)] {
+        let spec = committed
+            .entries
+            .iter()
+            .find(|spec| spec.id == id(name))
+            .grab();
+        assert_eq!(spec.config, config);
+    }
+    assert!(loader.entry_faults().is_empty());
 }

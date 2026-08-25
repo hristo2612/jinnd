@@ -39,9 +39,9 @@ pub struct Loader {
     pub(crate) state: Mutex<State>,
     /// The attached write-back store, if any (see [`Loader::attach_store`]).
     pub(crate) persist: Mutex<Option<Arc<crate::store::Persistence>>>,
-    /// Admits reconcile/update/dispose single-flight. Admission, not a lock:
-    /// no guard is held while plan steps run plugin-facing callbacks, and a
-    /// re-entrant call from a callback is refused honestly (R1, M1-P6b).
+    /// Keeps reconcile/update/dispose race-safe without a lock held across
+    /// plugin-facing code: conflicting operations are refused honestly, never
+    /// queued, and every write-back runs under one permit (R1, M1-P6b).
     pub(crate) gate: crate::gate::Gate,
 }
 
@@ -131,27 +131,20 @@ impl Loader {
     ///
     /// [`ErrorCode::InvalidProfile`] when `C` differs from the config type the
     /// loader is already committed to, when the attached store cannot
-    /// write the document back — nothing is committed then — or when called
-    /// re-entrantly from a loader operation's own callback (refused, never
-    /// deadlocked; R1). Per-entry problems are not errors: they are contained
-    /// faults in the report (R11).
+    /// write the document back — nothing is committed then — or when any
+    /// loader operation is already in flight, a re-entrant call from one of
+    /// this reconcile's own callbacks included (refused, never deadlocked;
+    /// R1). Per-entry problems are not errors: they are contained faults in
+    /// the report (R11).
     pub async fn reconcile_with<C: LaneConfig>(
         &self,
         profile: Profile<C>,
         cancel: CancellationToken,
     ) -> Result<ReconcileReport, KernelError> {
-        self.gate
-            .admit(self.reconcile_admitted(profile, cancel))
-            .await
-    }
-
-    /// The admitted body of [`Loader::reconcile_with`]: runs single-flight,
-    /// with no lock guard held across plan steps (R1, M1-P6b).
-    async fn reconcile_admitted<C: LaneConfig>(
-        &self,
-        profile: Profile<C>,
-        cancel: CancellationToken,
-    ) -> Result<ReconcileReport, KernelError> {
+        // The document engagement spans the whole reconcile — plan steps run
+        // lane constructors and fiber teardowns with only this marker held;
+        // a callback re-entering the loader is refused honestly (R1, M1-P6b).
+        let _engaged = self.gate.engage_document()?;
         let old = self.applied::<C>()?;
         let erased = lock(&self.eqs).get(&TypeId::of::<C>()).cloned();
         let attested = erased.map(|eq| {
@@ -163,11 +156,14 @@ impl Loader {
             attested.as_ref().map(|eq| eq as &dyn Fn(&C, &C) -> bool),
         );
         let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
-        // The document of record moves to disk before the runtime (LAW §3).
-        self.persist(&committed).await?;
-        // Committing the new document reconverges every recorded divergence:
-        // the drained faults surface in the report, never dropped (LAW §3).
+        // The document of record moves to disk before the runtime (LAW §3),
+        // under the one persist permit every write-back and commit runs under.
         let drained: Vec<EntryFault> = {
+            let _permit = self.gate.persist_permit().await?;
+            self.persist(&committed).await?;
+            // Committing the new document reconverges every recorded
+            // divergence: the drained faults surface in the report, never
+            // dropped (LAW §3).
             let mut state = lock(&self.state);
             state.config_type = Some(TypeId::of::<C>());
             state.committed = Some(committed);
