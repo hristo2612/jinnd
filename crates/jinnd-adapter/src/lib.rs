@@ -45,7 +45,7 @@ pub const KERNEL_SCOPE: FiberId = FiberId(0);
 
 /// One spawned fiber and the body whose config the facade may re-state.
 pub(crate) struct FiberEntry {
-    pub(crate) fiber: Fiber,
+    pub(crate) fiber: Arc<Fiber>,
     pub(crate) body: Arc<dyn std::any::Any + Send + Sync>,
 }
 
@@ -236,7 +236,10 @@ impl Kernel for Adapter {
                 readiness,
             );
             let id = fiber.id();
-            let entry = Arc::new(FiberEntry { fiber, body });
+            let entry = Arc::new(FiberEntry {
+                fiber: Arc::new(fiber),
+                body,
+            });
             lock(&self.fibers).insert(id, Arc::clone(&entry));
             entry.fiber.quiesce().await;
             Ok(id)

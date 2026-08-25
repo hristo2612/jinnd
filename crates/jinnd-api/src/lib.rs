@@ -283,7 +283,7 @@ pub struct Profile<C> {
 }
 
 /// Observable result of one profile reconciliation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReconcileReport {
     pub created: Vec<EntryId>,
     pub restarted: Vec<EntryId>,

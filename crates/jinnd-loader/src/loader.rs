@@ -3,7 +3,7 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use jinnd_api::{
     EntryId, ErrorCode, FiberId, FiberState, KernelError, Profile, ProfileEntry, ReconcileReport,
@@ -13,38 +13,13 @@ use jinnd_context::Context;
 use jinnd_registry::Registry;
 use tokio_util::sync::CancellationToken;
 
-use crate::lanes::{EntryHandle, PackageLane};
-use crate::proxy::ReadinessProxy;
+use crate::lanes::PackageLane;
+use crate::state::{State, amend_committed, error, lock};
 
 /// A config type usable at the loader's typed boundary (R3): profile config
 /// payloads are plain comparable data, never behavior (R9).
 pub trait LaneConfig: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static {}
 impl<C: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> LaneConfig for C {}
-
-/// One entry's runtime.
-pub(crate) struct EntryRuntime {
-    /// The applied spec, an `Arc<ProfileEntry<C>>`.
-    pub(crate) spec: Arc<dyn Any + Send + Sync>,
-    /// The entry's derived context while it is effectively enabled.
-    pub(crate) context: Option<Context<()>>,
-    /// The spawned fiber while the entry is an enabled plugin.
-    pub(crate) live: Option<Live>,
-}
-
-pub(crate) struct Live {
-    pub(crate) lane: Arc<PackageLane>,
-    pub(crate) handle: Arc<dyn EntryHandle>,
-    pub(crate) proxy: ReadinessProxy,
-}
-
-#[derive(Default)]
-pub(crate) struct State {
-    /// The one config type this loader has been driven with.
-    pub(crate) config_type: Option<TypeId>,
-    /// The committed document, an `Arc<Profile<C>>` — the persisted view.
-    pub(crate) committed: Option<Arc<dyn Any + Send + Sync>>,
-    pub(crate) entries: HashMap<EntryId, EntryRuntime>,
-}
 
 /// The profile loader over one kernel assembly.
 pub struct Loader {
@@ -269,41 +244,5 @@ impl Loader {
             entries.push(spec.clone());
         }
         Ok(Some(Profile { entries }))
-    }
-}
-
-/// Amends one entry of the committed document in place and returns the new
-/// spec `Arc` for the runtime.
-fn amend_committed<C: LaneConfig>(
-    state: &mut State,
-    entry: &EntryId,
-    change: impl FnOnce(&mut ProfileEntry<C>),
-) -> Result<Arc<dyn Any + Send + Sync>, KernelError> {
-    let committed = state
-        .committed
-        .as_ref()
-        .and_then(|committed| committed.downcast_ref::<Profile<C>>())
-        .ok_or_else(|| error(ErrorCode::InvalidProfile, "foreign config type"))?;
-    let mut profile = committed.clone();
-    let persisted = profile
-        .entries
-        .iter_mut()
-        .find(|candidate| candidate.id == *entry)
-        .ok_or_else(|| error(ErrorCode::InvalidProfile, "no such entry"))?;
-    change(persisted);
-    let spec = Arc::new(persisted.clone()) as Arc<dyn Any + Send + Sync>;
-    state.committed = Some(Arc::new(profile) as Arc<dyn Any + Send + Sync>);
-    Ok(spec)
-}
-
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poison| poison.into_inner())
-}
-
-pub(crate) fn error(code: ErrorCode, message: &str) -> KernelError {
-    KernelError {
-        code,
-        message: message.to_owned(),
-        fiber: None,
     }
 }

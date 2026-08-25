@@ -12,9 +12,11 @@
 mod apply;
 mod diff;
 mod document;
+pub mod host;
 mod lanes;
 mod loader;
 mod proxy;
+mod state;
 mod store;
 mod tree;
 

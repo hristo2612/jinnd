@@ -1,14 +1,12 @@
-//! Plan application: drives the kernel operations a diff decided on, one step
-//! at a time, cancellable between steps (R1), containing every per-entry
-//! failure to its entry (R11). No state lock is ever held across an `await` or
-//! a call through a lane.
+//! Plan application: one step at a time, cancellable between steps (R1),
+//! per-entry failures contained (R11), no lock held across an await or a lane.
 
 use std::any::TypeId;
 use std::sync::Arc;
 
 use jinnd_api::{
-    EntryFault, EntryId, ErrorCode, FiberId, FiberState, KernelError, Profile, ProfileEntry,
-    ReconcileReport, TransitionCause,
+    EntryFault, EntryId, ErrorCode, KernelError, Profile, ProfileEntry, ReconcileReport,
+    TransitionCause,
 };
 use jinnd_context::Context;
 use jinnd_registry::Injection;
@@ -16,8 +14,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::diff::{Plan, StepKind};
 use crate::lanes::SpawnRequest;
-use crate::loader::{EntryRuntime, LaneConfig, Live, Loader, error, lock};
+use crate::loader::{LaneConfig, Loader};
 use crate::proxy::ReadinessProxy;
+use crate::state::{EntryRuntime, Live, error, lock};
 use crate::tree::EntryIndex;
 
 impl Loader {
@@ -30,11 +29,9 @@ impl Loader {
     ) -> ReconcileReport {
         let index = EntryIndex::new(profile);
         let mut report = ReconcileReport {
-            created: Vec::new(),
-            restarted: Vec::new(),
-            disposed: Vec::new(),
             unchanged: plan.unchanged,
             errors: plan.faults,
+            ..ReconcileReport::default()
         };
         for step in plan.steps {
             if cancel.is_cancelled() {
@@ -291,35 +288,6 @@ impl Loader {
                 live,
             },
         );
-    }
-
-    /// Settles every loader-owned fiber: quiesce passes, with yields so
-    /// readiness watchers publish, until two consecutive passes observe the
-    /// same states. Termination is I3's promise for acyclic dependencies.
-    pub(crate) async fn settle(&self) {
-        let mut previous: Option<Vec<(FiberId, FiberState)>> = None;
-        loop {
-            let handles: Vec<_> = lock(&self.state)
-                .entries
-                .values()
-                .filter_map(|runtime| runtime.live.as_ref())
-                .map(|live| Arc::clone(&live.handle))
-                .collect();
-            for handle in &handles {
-                let _ = handle.quiesce().await;
-            }
-            tokio::task::yield_now().await;
-            tokio::task::yield_now().await;
-            let mut snapshot: Vec<(FiberId, FiberState)> = handles
-                .iter()
-                .map(|handle| (handle.id(), handle.state()))
-                .collect();
-            snapshot.sort_by_key(|(id, _)| *id);
-            if previous.as_ref() == Some(&snapshot) {
-                return;
-            }
-            previous = Some(snapshot);
-        }
     }
 }
 

@@ -1,21 +1,25 @@
 //! Loader-lane wiring: how facade package registrations become the loader's
-//! [`PackageLane`]s, and how spawned entries surface as [`EntryHandle`]s the
-//! loader can drive (authorized M1-P6 adapter delta; R1, R3, R5).
+//! [`PackageLane`]s (authorized M1-P6 adapter delta; R1, R3, R5). The generic
+//! bodies and handles live in `jinnd_loader::host`; this module contributes
+//! only what is harness-specific — the facade body and the shared fiber map.
 
 use std::any::Any;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use jinnd_api::{
-    ErrorCode, FiberId, FiberState, Inject, KernelError, KernelFuture, PluginContract,
-    ServiceContract, ServiceType, TransitionCause,
-};
-use jinnd_context::Context;
-use jinnd_fiber::{Fiber, FiberBody, Setup};
+use jinnd_api::{Inject, KernelError, PluginContract, ServiceContract, ServiceType};
+use jinnd_fiber::{Fiber, FiberBody};
+use jinnd_loader::host::{LaneHandle, ProviderBody, Rebind, config_of};
 use jinnd_loader::{EntryHandle, PackageLane, SpawnRequest};
 use jinnd_registry::Registry;
 
 use crate::body::FacadeBody;
-use crate::{FiberEntry, SharedFibers, error};
+use crate::{FiberEntry, SharedFibers};
+
+impl<P: PluginContract> Rebind for FacadeBody<P> {
+    fn rebind(&self, at: jinnd_context::Context<()>) {
+        FacadeBody::rebind(self, at);
+    }
+}
 
 /// A lane for plugin entries built by `build` from an entry's config payload.
 pub(crate) fn plugin_lane<C, P, F>(
@@ -71,18 +75,14 @@ where
         provides: Some(ServiceType::of::<S>()),
         spawn: Box::new(move |request: SpawnRequest<'_>| {
             let config = config_of::<C>(request.config)?;
-            let body = Arc::new(ProviderBody {
-                provide: Arc::clone(&provide),
-                registry: registry.clone(),
-                at: Mutex::new(request.at.clone()),
-                config: Mutex::new(config),
-                _service: std::marker::PhantomData,
-            });
+            let body = Arc::new(ProviderBody::new(
+                Arc::clone(&provide),
+                registry.clone(),
+                request.at.clone(),
+                config,
+            ));
             let restate = |body: &ProviderBody<C, S, F>, config: C| {
-                *body
-                    .config
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner()) = config;
+                body.state_config(config);
                 Ok(())
             };
             Ok(spawned(&fibers, body, request, restate))
@@ -96,17 +96,8 @@ fn declared<P: PluginContract>() -> Vec<ServiceType> {
     std::panic::catch_unwind(P::Dependencies::declare).unwrap_or_default()
 }
 
-fn config_of<C: Clone + 'static>(config: &(dyn Any + Send + Sync)) -> Result<C, KernelError> {
-    config.downcast_ref::<C>().cloned().ok_or_else(|| {
-        error(
-            ErrorCode::InvalidProfile,
-            "the entry's config payload is not this lane's config type",
-        )
-    })
-}
-
 /// Spawns `body` gated on the loader's signal, records it in the shared fiber
-/// map, and wraps it as the loader's handle.
+/// map so the facade answers for it, and wraps it as the loader's handle.
 fn spawned<B, C, R>(
     fibers: &SharedFibers,
     body: Arc<B>,
@@ -118,137 +109,14 @@ where
     C: Clone + 'static,
     R: Fn(&B, C) -> Result<(), KernelError> + Send + Sync + 'static,
 {
-    let fiber = Fiber::spawn(Arc::clone(&body) as Arc<dyn FiberBody>, request.signal);
+    let fiber = Arc::new(Fiber::spawn(
+        Arc::clone(&body) as Arc<dyn FiberBody>,
+        request.signal,
+    ));
     let entry = Arc::new(FiberEntry {
-        fiber,
+        fiber: Arc::clone(&fiber),
         body: Arc::clone(&body) as Arc<dyn Any + Send + Sync>,
     });
-    crate::lock(fibers).insert(entry.fiber.id(), Arc::clone(&entry));
-    Arc::new(LaneHandle {
-        entry,
-        body,
-        restate,
-        _config: std::marker::PhantomData::<fn(C)>,
-    })
-}
-
-/// What a lane body must support so the loader can rebind it.
-pub(crate) trait Rebind: Send + Sync + 'static {
-    fn rebind(&self, at: Context<()>);
-}
-
-impl<P: PluginContract> Rebind for FacadeBody<P> {
-    fn rebind(&self, at: Context<()>) {
-        FacadeBody::rebind(self, at);
-    }
-}
-
-/// A provider entry's body: provides on activation, withdraws on unload (R5).
-struct ProviderBody<C, S: ServiceContract, F> {
-    provide: Arc<F>,
-    registry: Registry,
-    at: Mutex<Context<()>>,
-    config: Mutex<C>,
-    _service: std::marker::PhantomData<fn() -> S>,
-}
-
-impl<C, S, F> Rebind for ProviderBody<C, S, F>
-where
-    C: Clone + std::fmt::Debug + Send + Sync + 'static,
-    S: ServiceContract,
-    F: Fn(C) -> Result<Arc<S>, KernelError> + Send + Sync + 'static,
-{
-    fn rebind(&self, at: Context<()>) {
-        *self.at.lock().unwrap_or_else(|poison| poison.into_inner()) = at;
-    }
-}
-
-impl<C, S, F> FiberBody for ProviderBody<C, S, F>
-where
-    C: Clone + std::fmt::Debug + Send + Sync + 'static,
-    S: ServiceContract,
-    F: Fn(C) -> Result<Arc<S>, KernelError> + Send + Sync + 'static,
-{
-    fn activate<'a>(&'a self, mut setup: Setup<'a>) -> KernelFuture<'a, ()> {
-        let fiber = setup.fiber();
-        Box::pin(async move {
-            let config = self
-                .config
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .clone();
-            let at = self
-                .at
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .clone();
-            let value = (self.provide)(config)?;
-            let tree = at.tree();
-            // The provision realm is whatever the entry's context resolves the
-            // service in; the registry anchors named realms globally (LAW §3).
-            let realm = tree
-                .realm_value(at.realm_of(tree.key_of::<S>().name()))
-                .unwrap_or(jinnd_api::Realm::Root);
-            let provision = self.registry.provide::<S, ()>(
-                &tree.root(),
-                &realm,
-                fiber,
-                value,
-                &self.registry.vitality(true),
-            );
-            setup.effect(format!("provide {}", S::NAME), provision.undo)?;
-            Ok(())
-        })
-    }
-}
-
-/// The loader's handle over one lane-spawned fiber.
-struct LaneHandle<B, C, R> {
-    entry: Arc<FiberEntry>,
-    body: Arc<B>,
-    restate: R,
-    _config: std::marker::PhantomData<fn(C)>,
-}
-
-impl<B, C, R> EntryHandle for LaneHandle<B, C, R>
-where
-    B: Rebind,
-    C: Clone + 'static,
-    R: Fn(&B, C) -> Result<(), KernelError> + Send + Sync + 'static,
-{
-    fn id(&self) -> FiberId {
-        self.entry.fiber.id()
-    }
-
-    fn state(&self) -> FiberState {
-        self.entry.fiber.state()
-    }
-
-    fn restart(&self, cause: TransitionCause) {
-        self.entry.fiber.restart(cause);
-    }
-
-    fn restate(&self, config: &(dyn Any + Send + Sync)) -> Result<(), KernelError> {
-        (self.restate)(&self.body, config_of::<C>(config)?)
-    }
-
-    fn rebind(&self, at: Context<()>) {
-        self.body.rebind(at);
-    }
-
-    fn dispose(&self) -> KernelFuture<'static, ()> {
-        let entry = Arc::clone(&self.entry);
-        Box::pin(async move {
-            entry.fiber.dispose().await;
-            Ok(())
-        })
-    }
-
-    fn quiesce(&self) -> KernelFuture<'static, ()> {
-        let entry = Arc::clone(&self.entry);
-        Box::pin(async move {
-            entry.fiber.quiesce().await;
-            Ok(())
-        })
-    }
+    crate::lock(fibers).insert(fiber.id(), entry);
+    Arc::new(LaneHandle::new(fiber, body, restate))
 }
