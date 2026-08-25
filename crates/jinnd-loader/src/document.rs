@@ -16,7 +16,7 @@ use jinnd_api::{
 use serde::{Deserialize, Serialize};
 
 /// One profile entry as persisted.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DocumentEntry {
     pub id: String,
     pub package: String,
@@ -32,6 +32,11 @@ pub struct DocumentEntry {
     pub parent: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub isolate: BTreeMap<String, String>,
+    /// Fields this kernel does not understand, captured verbatim and re-emitted
+    /// unchanged on every save (v0.1: no destructive compaction — a write-back
+    /// never erases what it did not understand).
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// One entry that did not decode, preserved verbatim so a later write-back
@@ -149,18 +154,48 @@ impl Document {
     }
 
     /// Rebuilds the persistable document from a typed profile, unparsing realm
-    /// bindings back into their directive syntax.
+    /// bindings back into their directive syntax. Starts from an empty
+    /// baseline: no raw entries, no unknown fields. The save path uses
+    /// [`Document::merge_profile`] instead, which preserves both.
     #[must_use]
     pub fn from_profile(profile: &Profile<serde_json::Value>) -> Self {
-        let entries = profile
-            .entries
-            .iter()
-            .map(|entry| DocumentEntry {
+        Self::merge_profile(profile, &Self::default()).unwrap_or_default()
+    }
+
+    /// Renders a typed profile over `baseline`, the committed document being
+    /// replaced: the kernel-owned raw-merge (M1-P6c). Every typed entry is
+    /// re-encoded mechanically; unknown fields of a baseline entry with the
+    /// same id are carried over verbatim, and the baseline's raw entries
+    /// re-enter at their recorded positions — a save never erases what it did
+    /// not understand (LAW §3; v0.1 bounds).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] when an entry's config does not
+    /// serialize — an honest failure, never a silent skip.
+    pub fn merge_profile<C: serde::Serialize>(
+        profile: &Profile<C>,
+        baseline: &Document,
+    ) -> Result<Self, KernelError> {
+        let mut entries = Vec::with_capacity(profile.entries.len());
+        for entry in &profile.entries {
+            let config = serde_json::to_value(&entry.config).map_err(|error| KernelError {
+                code: ErrorCode::InvalidProfile,
+                message: format!("the config of entry {:?} does not serialize: {error}", entry.id),
+                fiber: None,
+            })?;
+            let extra = baseline
+                .entries
+                .iter()
+                .find(|persisted| persisted.id == entry.id.0)
+                .map(|persisted| persisted.extra.clone())
+                .unwrap_or_default();
+            entries.push(DocumentEntry {
                 id: entry.id.0.clone(),
                 package: entry.plugin.package.clone(),
                 version: entry.plugin.version.clone(),
                 hash: entry.plugin.artifact_hash.clone(),
-                config: entry.config.clone(),
+                config,
                 disabled: entry.disabled,
                 parent: entry.parent.as_ref().map(|parent| parent.0.clone()),
                 isolate: entry
@@ -168,12 +203,13 @@ impl Document {
                     .iter()
                     .map(|binding| (binding.service.clone(), directive(&binding.realm)))
                     .collect(),
-            })
-            .collect();
-        Self {
-            entries,
-            raw: Vec::new(),
+                extra,
+            });
         }
+        Ok(Self {
+            entries,
+            raw: baseline.raw.clone(),
+        })
     }
 }
 

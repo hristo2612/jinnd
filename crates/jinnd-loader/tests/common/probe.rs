@@ -15,9 +15,7 @@ use jinnd_api::{
     ErrorCode, FiberId, FiberState, KernelError, KernelFuture, PluginRef, Profile, ProfileEntry,
     TransitionCause,
 };
-use jinnd_loader::{
-    Document, DocumentEntry, EntryHandle, FileStore, Loader, PackageLane, SpawnRequest,
-};
+use jinnd_loader::{Document, DocumentEntry, EntryHandle, FileStore, Loader, PackageLane, SpawnRequest};
 
 use super::{Grab, id};
 
@@ -163,27 +161,6 @@ pub fn scratch_path() -> PathBuf {
     let directory = std::env::temp_dir().join(unique);
     std::fs::create_dir_all(&directory).grab();
     directory.join("profile.json")
-}
-
-/// Encodes `u32`-config profiles into a persistable document.
-pub fn encode(profile: &Profile<u32>) -> Document {
-    Document {
-        entries: profile
-            .entries
-            .iter()
-            .map(|entry| DocumentEntry {
-                id: entry.id.0.clone(),
-                package: entry.plugin.package.clone(),
-                version: entry.plugin.version.clone(),
-                hash: entry.plugin.artifact_hash.clone(),
-                config: serde_json::json!(entry.config),
-                disabled: entry.disabled,
-                parent: entry.parent.as_ref().map(|parent| parent.0.clone()),
-                isolate: Default::default(),
-            })
-            .collect(),
-        raw: Vec::new(),
-    }
 }
 
 /// The named entry as the document on disk records it.

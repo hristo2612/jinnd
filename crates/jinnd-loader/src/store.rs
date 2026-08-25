@@ -99,13 +99,18 @@ fn fault(message: String) -> KernelError {
     }
 }
 
-/// Renders one type-erased committed profile into a persistable document.
-type Encode = Box<dyn Fn(&(dyn Any + Send + Sync)) -> Result<Document, KernelError> + Send + Sync>;
+/// Renders one type-erased committed profile over the baseline document.
+type Encode = Box<
+    dyn Fn(&(dyn Any + Send + Sync), &Document) -> Result<Document, KernelError> + Send + Sync,
+>;
 
-/// The attached store and its typed encoder.
+/// The attached store, the kernel-owned encoder, and the committed document —
+/// the persistence unit (M1-P6c): raw entries and unknown fields live here and
+/// survive every write-back.
 pub(crate) struct Persistence {
     store: FileStore,
     encode: Encode,
+    baseline: std::sync::Mutex<Document>,
 }
 
 impl Loader {
@@ -113,30 +118,44 @@ impl Loader {
     /// of record — reconcile, update, dispose — writes back atomically
     /// through `store`. A document-led reconcile persists before the runtime
     /// converges on the document; a runtime-led amendment persists after the
-    /// runtime accepted the change (see `amend`). `encode` renders the
-    /// committed profile; re-attaching replaces the previous store.
-    pub fn attach_store<C: LaneConfig>(
+    /// runtime accepted the change (see `amend`).
+    ///
+    /// `baseline` is the loaded document being taken over (or
+    /// [`Document::default`] for a fresh store): its raw entries and unknown
+    /// fields are carried through every save verbatim (M1-P6c). Encoding is
+    /// kernel-owned — [`Document::merge_profile`] under `C`'s mechanical
+    /// `Serialize` — so no caller-supplied code ever runs inside the persist
+    /// permit's span (R1, PLA-270). Re-attaching replaces the previous store.
+    pub fn attach_store<C: LaneConfig + serde::Serialize>(
         &self,
         store: FileStore,
-        encode: impl Fn(&Profile<C>) -> Document + Send + Sync + 'static,
+        baseline: Document,
     ) {
-        let encode: Encode = Box::new(move |committed: &(dyn Any + Send + Sync)| {
-            // A committed profile of another config type is an honest failure,
-            // never a silent skip: the document on disk may not drift.
-            let Some(profile) = committed.downcast_ref::<Profile<C>>() else {
-                return Err(error(
-                    ErrorCode::InvalidProfile,
-                    "the attached store encodes a different config type",
-                ));
-            };
-            Ok(encode(profile))
-        });
-        *lock(&self.persist) = Some(Arc::new(Persistence { store, encode }));
+        let encode: Encode =
+            Box::new(|committed: &(dyn Any + Send + Sync), baseline: &Document| {
+                // A committed profile of another config type is an honest
+                // failure, never a silent skip: the disk may not drift.
+                let Some(profile) = committed.downcast_ref::<Profile<C>>() else {
+                    return Err(error(
+                        ErrorCode::InvalidProfile,
+                        "the attached store encodes a different config type",
+                    ));
+                };
+                Document::merge_profile(profile, baseline)
+            });
+        *lock(&self.persist) = Some(Arc::new(Persistence {
+            store,
+            encode,
+            baseline: std::sync::Mutex::new(baseline),
+        }));
     }
 
     /// Persists one committed document through the attached store, if any.
     /// Called before the commit lands, under the loader gate alone — never
-    /// with the state lock held across the write (R1).
+    /// with the state lock held across the write, and with no caller-supplied
+    /// code anywhere in the span (R1): the merge is kernel-owned. A saved
+    /// document becomes the next save's baseline, so preserved raw entries
+    /// and unknown fields survive every consecutive write-back.
     pub(crate) async fn persist(
         &self,
         committed: &Arc<dyn Any + Send + Sync>,
@@ -144,7 +163,12 @@ impl Loader {
         let Some(persistence) = lock(&self.persist).clone() else {
             return Ok(());
         };
-        let document = (persistence.encode)(committed.as_ref())?;
-        persistence.store.save(&document).await
+        let document = {
+            let baseline = lock(&persistence.baseline);
+            (persistence.encode)(committed.as_ref(), &baseline)?
+        };
+        persistence.store.save(&document).await?;
+        *lock(&persistence.baseline) = document;
+        Ok(())
     }
 }
