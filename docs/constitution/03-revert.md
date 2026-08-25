@@ -61,6 +61,9 @@ Consequences:
 3. Where a **compensator** exists (send a correction, refund a charge), the contract
    may declare it. Compensation is its own confirmed operation; the ledger links it
    to the original; the contract must state the (coarser) equivalence it restores.
+   A compensator also inherits the independence obligation: it must re-establish
+   commutation against that coarser equivalence, or the branch stays marked unclean
+   (audit 2026-08-25).
 
 ## Failure during revert
 

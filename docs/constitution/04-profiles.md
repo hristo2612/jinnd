@@ -38,10 +38,16 @@ entries:
 Rules:
 
 - **`id` is configuration identity, not fiber identity.** Reconciliation is by id.
-  Moving an entry (new parent, realm, grants, or intercept chain) creates a **fresh,
-  never-reused fiber generation** and performs a complete unload/reload under the new
-  derived context — "move" preserves the entry's config identity, never its runtime
-  state.
+  Moving an entry (new parent, realm, grants, or intercept chain) re-derives its
+  context and recomputes its epoch inputs; **the epoch machinery alone decides
+  whether the fiber restarts.** A move that changes any epoch input (a provided or
+  injected realm binding, grants, intercept chain) forces a full clean unload →
+  reload under the new derived context with a fresh, never-reused fiber generation.
+  A move that changes none preserves the running fiber — runtime state survives
+  exactly when the kernel can prove the environment is unchanged. *(Amended
+  2026-08-25 from "always a complete unload/reload": the ratified sentence
+  contradicted the kernel, the verifier-green suite, and the reference
+  implementation — see SOURCE-OF-TRUTH decision log.)*
 - **Layering:** `extends` composes documents (base → overlay, id-merged). A device's
   effective profile = its layer stack; small-brain/big-brain is one overlay entry
   swapping a provider.
@@ -72,9 +78,14 @@ Rules:
   target (inertia, R1); stale in-flight steps are diverted by epoch; dependency
   cycles stay cleanly inactive (I3); failure is local with no auto-retry against an
   unchanged environment (R9/R11).
-- A profile that fails validation is rejected whole — the running system never enters
-  a state no document describes. I4 guarantees the reconciled result equals a fresh
-  boot of the final document.
+- A profile document that fails **document-level validation** (unparseable file,
+  duplicate ids, malformed tree shape) is rejected whole — the running system never
+  enters a state no document describes. **Entry-level faults are contained per entry
+  (R11):** a malformed entry loads nothing, is preserved verbatim on disk, and
+  surfaces a recorded error while its siblings load normally. I4 guarantees the
+  reconciled result equals a fresh boot of the final document. *(Amended 2026-08-25:
+  whole-rejection scoped to document shape — the ratified sentence contradicted the
+  shipped per-entry containment doctrine; see SOURCE-OF-TRUTH decision log.)*
 
 ## Open questions for v0.2
 

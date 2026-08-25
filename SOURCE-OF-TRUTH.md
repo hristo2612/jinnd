@@ -170,11 +170,17 @@ means containment tier, R7, unambiguously.)
 first error; async results counting as "bailed"; side-effectful service constructors;
 config eval with ambient authority (any expression language in config is a closed,
 side-effect-free subset). Do not invent: unload of native libraries; silent service
-replacement; auto-retry of failed fibers against an unchanged environment.
+replacement; auto-retry of failed fibers against an unchanged environment; unbounded
+self-registration (a plugin registering instances of itself without bound — the
+runaway class the progress theorem's finiteness assumption excludes, and precisely
+the failure mode of machine-written plugins; added 2026-08-25).
 
 **R10 — Small and boring.** Kernel core budget ~5k LOC (hard ceiling 8k), wasmtime host
 ~3k. The kernel has no features — anything that can be a plugin is a plugin. When in
-doubt, the code goes above the line, not below it.
+doubt, the code goes above the line, not below it. Metric note (2026-08-25): the
+kernel-core count excludes the conformance-harness lane (`jinnd-api` facade +
+`jinnd-adapter`), loom-only models, and cfg(test) code — the ceiling exists to keep
+the kernel small, never to incentivize golfing containment or honesty code.
 
 **R11 — Failure is local.** A failing plugin deactivates itself and its dependents,
 cleanly, and touches nothing else. Panics never cross the kernel boundary. Sibling
@@ -338,6 +344,37 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   is the single dispatch point for both lanes. Same date: machine-specific references
   (private paths, host-machine names, session ids) scrubbed from prose and history by
   operator directive; authorship deliberately remains the creator's personal identity.
+
+- **2026-08-25** — **Dual independent audits adjudicated** (formal paper audit →
+  PLA-269; cordis-v4/dsh implementation audit → PLA-271; verifier R1-seam
+  observations → PLA-270; code fixes packeted as **M1-P6c** registry/loader
+  conformance). Rulings codified:
+  1. **Refusal-vs-defer recorded.** M1-P6b's refuse-not-wait amendment gate is
+     deliberately STRONGER than the paper's Algorithm 5, which never refuses and
+     never waits — it stages desired state and lets the landed transition chain to
+     the latest target. Consequences: I4's history generator must include
+     amendment-during-withdrawal operations so the refusal path is itself
+     confluence-tested; constitution 04's self-write-back right is denied from
+     teardown/withdrawal contexts by this ruling. Migrating to paper-shaped
+     non-blocking staged amends is a recorded post-M1 candidate.
+  2. **Failed-fiber re-arm dated.** Re-arm when the aim changes (epoch/revision
+     bump) diverges from the paper's no-re-entry-from-failure rule; deliberate —
+     TS-v4-faithful and R9-compliant (retry only against a CHANGED environment).
+  3. **Root-realm positional ruling dated.** An explicit descendant root binding
+     stops at an intervening isolated ancestor (TS-faithful, pinned green);
+     diverges from the paper's flat-realm reassignment (Def 29); kept per R2.
+  4. **Constitution 04 amended twice** — entry move = epoch-decides-reload (not
+     always unload/reload); whole-rejection scoped to document-level shape with
+     per-entry faults contained per R11. In both places the ratified text
+     contradicted the kernel AND the verifier-green suite; code adjudicated
+     correct. Operator veto window open.
+  5. **R9 gains unbounded self-registration; R10 gains the kernel-core metric
+     note** (harness lane, loom models, cfg(test) excluded).
+  6. **Wasm-host packet card requirements extended** (joining the
+     transport-agnostic broker and harness-lane closure): per-consumer, per-notify
+     vitality-check evaluation seam; DECLARATIVE WIT event selectors (closures
+     cannot cross the component boundary; realm queries evaluated kernel-side);
+     Mode-1 swap batches all entries sharing an artifact hash.
 
 - **2026-08-24** — M1-P1 delivered (jinnd-context, 468 LOC, miri clean) but exposed
   a P0 suite defect: cases never call the facade, so no packet can green a case
