@@ -46,5 +46,5 @@ mod withdrawal;
 
 pub use disposer::Disposer;
 pub use report::{EffectReport, ReplayReport, UndoOutcome};
-pub use scope::EffectScope;
+pub use scope::{Detached, EffectScope};
 pub use undo::{FutureUndo, StepwiseUndo, UndoStep, step};
