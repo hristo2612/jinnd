@@ -5,7 +5,12 @@
 
 mod support;
 
-use jinnd_api::{ErrorCode, FiberState, TransitionCause};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use jinnd_api::{ErrorCode, FiberState, KernelError, TransitionCause};
 use jinnd_effects::{Disposer, UndoOutcome};
 use jinnd_fiber::{Fiber, ReadinessSource};
 use support::{Gate, Trace, body, epoch, failure, path, ready, recording, undo};
@@ -173,10 +178,11 @@ async fn an_undo_failure_is_contained_and_the_remaining_inverses_still_run() {
     ));
 }
 
-/// Disposal is terminal even when a withdrawal was not clean: the residue is
-/// reported, never hidden behind a state that says the fiber is still alive.
+/// An inverse that errors during disposal marks the fiber `Failed` (R11), never
+/// `Disposed`: the withdrawal landed and reported its residue, and a fiber that
+/// could not withdraw cleanly does not claim it is gone.
 #[tokio::test]
-async fn an_unclean_disposal_still_reaches_disposed_and_reports_the_residue() {
+async fn an_unclean_disposal_rests_failed_and_reports_the_residue() {
     let trace = Trace::new();
     let recorded = trace.clone();
     let (fiber, _source) = ready(body(move |mut setup| {
@@ -195,11 +201,65 @@ async fn an_unclean_disposal_still_reaches_disposed_and_reports_the_residue() {
     }));
     fiber.quiesce().await;
 
-    fiber.dispose().await;
+    tokio::time::timeout(Duration::from_secs(5), fiber.dispose())
+        .await
+        .expect("dispose must resolve once the withdrawal has landed and reported");
 
-    assert_eq!(fiber.state(), FiberState::Disposed);
+    assert_eq!(fiber.state(), FiberState::Failed);
     assert_eq!(trace.entries(), vec!["undo:stubborn"]);
-    assert!(!fiber.record().replays[0].is_clean());
+    let record = fiber.record();
+    assert!(!record.replays[0].is_clean());
+    assert_eq!(record.failures[0].code, ErrorCode::EffectFailed);
+
+    // Terminal: the failed withdrawal is not replayed against an unchanged scope
+    // (R9), and nothing later pretends the disposal succeeded.
+    tokio::time::timeout(Duration::from_secs(5), fiber.quiesce())
+        .await
+        .expect("a settled fiber must still answer quiescence");
+    assert_eq!(fiber.state(), FiberState::Failed);
+    assert_eq!(fiber.record().transitions, record.transitions);
+    assert_eq!(trace.count("undo:stubborn"), 1);
+}
+
+/// A plugin future's destructor is plugin code too: a panic there is contained at
+/// the same boundary as its poll (R11), fails only this fiber, and whatever the
+/// activation had applied is still withdrawn exactly.
+#[tokio::test]
+async fn a_drop_panicking_plugin_future_is_contained_and_recorded() {
+    struct DropBomb;
+    impl Future for DropBomb {
+        type Output = Result<(), KernelError>;
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Ready(Ok(()))
+        }
+    }
+    impl Drop for DropBomb {
+        fn drop(&mut self) {
+            if !std::thread::panicking() {
+                panic!("the plugin future destructor panicked");
+            }
+        }
+    }
+
+    let trace = Trace::new();
+    let recorded = trace.clone();
+    let (fiber, _source) = ready(body(move |mut setup| {
+        setup
+            .effect("applied", undo(&recorded, "applied"))
+            .expect("the scope is live during construction");
+        Box::pin(DropBomb)
+    }));
+
+    tokio::time::timeout(Duration::from_secs(5), fiber.quiesce())
+        .await
+        .expect("quiesce must resolve: the Drop panic may not escape the fiber");
+
+    assert_eq!(fiber.state(), FiberState::Failed);
+    assert_eq!(trace.entries(), vec!["undo:applied"]);
+    let record = fiber.record();
+    assert_eq!(record.failures[0].code, ErrorCode::PluginFailed);
+    assert!(record.failures[0].message.contains("destructor panicked"));
+    assert!(fiber.effects().is_empty());
 }
 
 /// A body that stops early on cancellation leaves exactly its partial contribution,

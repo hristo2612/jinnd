@@ -34,6 +34,9 @@ pub(crate) struct Committed {
     pub active_for: Option<Aim>,
     /// The aim the last failure happened under, so it is not attempted again (R9).
     pub failed_under: Option<Aim>,
+    /// True once a disposal's own withdrawal failed: the fiber rests `Failed` and
+    /// the replay is not reattempted against an unchanged scope (R9).
+    pub disposal_failed: bool,
 }
 
 impl Committed {
@@ -42,6 +45,7 @@ impl Committed {
             state: FiberState::Pending,
             active_for: None,
             failed_under: None,
+            disposal_failed: false,
         }
     }
 }
@@ -171,7 +175,7 @@ mod tests {
         let state = Committed {
             state: FiberState::Active,
             active_for: Some(aim(0, 0)),
-            failed_under: None,
+            ..Committed::new()
         };
         assert_eq!(plan(&state, &desired(aim(0, 0))), None);
     }
@@ -181,7 +185,7 @@ mod tests {
         let state = Committed {
             state: FiberState::Active,
             active_for: Some(aim(0, 0)),
-            failed_under: None,
+            ..Committed::new()
         };
         assert!(matches!(
             plan(&state, &desired(aim(0, 1))),
@@ -200,8 +204,8 @@ mod tests {
     fn a_failed_fiber_is_owed_nothing_under_the_aim_it_failed_on() {
         let state = Committed {
             state: FiberState::Failed,
-            active_for: None,
             failed_under: Some(aim(0, 0)),
+            ..Committed::new()
         };
         assert_eq!(plan(&state, &desired(aim(0, 0))), None);
         assert!(matches!(
@@ -219,7 +223,7 @@ mod tests {
         let active = Committed {
             state: FiberState::Active,
             active_for: Some(aim(0, 0)),
-            failed_under: None,
+            ..Committed::new()
         };
         assert_eq!(
             plan(&active, &disposing),
@@ -231,5 +235,19 @@ mod tests {
             assert_eq!(plan(&committed(state), &disposing), Some(Step::Finish));
         }
         assert_eq!(plan(&committed(FiberState::Disposed), &disposing), None);
+    }
+
+    #[test]
+    fn a_failed_disposal_is_not_reattempted_against_an_unchanged_scope() {
+        let disposing = Desired {
+            disposing: true,
+            ..desired(aim(0, 0))
+        };
+        let state = Committed {
+            state: FiberState::Failed,
+            disposal_failed: true,
+            ..Committed::new()
+        };
+        assert_eq!(plan(&state, &disposing), None);
     }
 }
