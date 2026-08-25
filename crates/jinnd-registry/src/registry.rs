@@ -17,6 +17,7 @@ use jinnd_effects::Disposer;
 
 use crate::slots::{Address, SlotEntry};
 use crate::store::{LeaseGuard, Store};
+use crate::vitality::Vitality;
 
 /// The shared registry handle. Cloning shares one store.
 #[derive(Clone, Debug)]
@@ -46,13 +47,26 @@ impl Registry {
         }
     }
 
+    /// Mints a vitality handle for one provider: the supervisor owning the
+    /// provider reports "Active and passing its check" through it (§3), and every
+    /// report wakes availability (R1).
+    #[must_use]
+    pub fn vitality(&self, initially: bool) -> Vitality {
+        self.store.vitality(initially)
+    }
+
     /// Publishes `value` as `S` at `at`, in the realm `realm` interns to.
+    ///
+    /// The slot is available to consumers only while `vitality` last reported
+    /// `true`; resolution and leasing stay answerable regardless, so dependents
+    /// can still call a dying provider during teardown (I2).
     pub fn provide<S: ServiceContract, I>(
         &self,
         at: &Context<I>,
         realm: &Realm,
         provider: FiberId,
         value: Arc<S>,
+        vitality: &Vitality,
     ) -> Provision {
         let tree = at.tree();
         let address = Address {
@@ -60,12 +74,16 @@ impl Registry {
             key: tree.key_of::<S>(),
             realm: tree.realm(realm),
         };
-        let entry = self.store.slots.insert(address, provider, value);
+        let entry = self
+            .store
+            .slots
+            .insert(address, provider, value, vitality.cell());
         self.store.bump();
 
         let store = Arc::clone(&self.store);
         let leases = Arc::clone(&entry.leases);
         let generation = entry.generation;
+        let value = Arc::clone(&entry.value);
         let undo = Disposer::future(move || async move {
             // Unregister and notify first: no new resolutions, availability
             // withdrawn, dependents told to unload — then wait for them (I2).
@@ -74,6 +92,9 @@ impl Registry {
             }
             leases.close();
             store.drained(Arc::clone(&leases)).await;
+            // Only now may the provider's value die: dependents were entitled to
+            // call it up to the moment their last lease returned (I2).
+            drop(value);
             Ok(())
         });
         Provision { generation, undo }
