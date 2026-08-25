@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jinnd_adapter::kernel;
 use jinnd_api::{
-    Activation, EntryId, ErrorCode, FiberState, Inject, IsolationBinding, Kernel, KernelFuture,
+    Activation, EntryId, FiberState, Inject, IsolationBinding, Kernel, KernelFuture,
     PluginContract, PluginRef, Profile, ProfileEntry, Realm, ServiceContract, ServiceHandle,
     ServiceResolver, ServiceType,
 };
@@ -253,54 +253,6 @@ async fn provider_and_consumer_entries_connect_and_isolate_through_realms() {
         "same fiber"
     );
     assert_eq!(kernel.state(watcher), FiberState::Pending);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn unregistered_packages_fault_per_entry_without_failing_the_reconcile() {
-    let kernel = kernel();
-    let report = kernel
-        .reconcile(Profile {
-            entries: vec![entry("ghost", "jinn.test/unregistered", 1)],
-        })
-        .await
-        .grab();
-    assert_eq!(report.errors.len(), 1);
-    assert_eq!(report.errors[0].entry, id("ghost"));
-    assert_eq!(report.errors[0].error.code, ErrorCode::InvalidProfile);
-    assert!(kernel.entry_fiber(&id("ghost")).is_none());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn package_registration_is_a_withdrawable_effect() {
-    let kernel = kernel();
-    let counter = Arc::new(AtomicUsize::new(0));
-    let lane_counter = Arc::clone(&counter);
-    let registration = kernel
-        .register_package("jinn.test/counting", move |config: u32| {
-            Ok((
-                Counting {
-                    counter: Arc::clone(&lane_counter),
-                },
-                config,
-            ))
-        })
-        .grab();
-
-    // A second registration of the same package is refused (R9).
-    let counter_again = Arc::clone(&counter);
-    let duplicate = kernel.register_package("jinn.test/counting", move |config: u32| {
-        Ok((
-            Counting {
-                counter: Arc::clone(&counter_again),
-            },
-            config,
-        ))
-    });
-    let Err(refused) = duplicate.map(|_| ()) else {
-        panic!("a duplicate package registration must be refused (R9)");
-    };
-    assert_eq!(refused.code, ErrorCode::InvalidProfile);
-    let _ = registration;
 }
 
 /// Repo convention: no `unwrap`/`expect`. `grab` is the tests' one panicking

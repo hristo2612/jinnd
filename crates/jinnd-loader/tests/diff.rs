@@ -37,9 +37,10 @@ fn kinds(steps: &[Step], entry: &str) -> Vec<StepKind> {
 
 /// A config carrying no `PartialEq` at all: the facade's `reconcile` bound is
 /// `Clone + Debug + Send + Sync` and nothing more (R12 — the round-2 ruling),
-/// so the diff compares configs in their canonical `Debug` rendering.
+/// so the diff compares configs in their canonical `Debug` rendering. The
+/// field is read only through that rendering.
 #[derive(Clone, Debug)]
-struct Opaque(u32);
+struct Opaque(#[allow(dead_code)] u32);
 
 fn opaque(name: &str, config: u32) -> ProfileEntry<Opaque> {
     ProfileEntry {
