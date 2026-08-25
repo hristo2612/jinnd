@@ -57,6 +57,12 @@ impl<C: Send + Sync + 'static> EntryHandle for ProbeHandle<C> {
         FiberState::Active
     }
 
+    // The probe replays no plugin-owned inverses: nothing here can hold up
+    // another operation's wait, so it is honestly never withdrawing.
+    fn withdrawing(&self) -> bool {
+        false
+    }
+
     fn restart(&self, _cause: TransitionCause) {}
 
     fn restate(&self, config: &(dyn Any + Send + Sync)) -> Result<(), KernelError> {

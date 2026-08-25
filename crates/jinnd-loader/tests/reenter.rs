@@ -83,6 +83,10 @@ impl EntryHandle for ReenterHandle {
         self.fiber.state()
     }
 
+    fn withdrawing(&self) -> bool {
+        self.fiber.withdrawing()
+    }
+
     fn restart(&self, cause: TransitionCause) {
         self.fiber.restart(cause);
     }

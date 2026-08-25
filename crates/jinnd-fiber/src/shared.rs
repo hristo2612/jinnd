@@ -26,6 +26,8 @@ pub(crate) struct Shared {
     pub(crate) probe: AtomicU64,
     /// The highest probe the supervisor has acknowledged at quiescence.
     pub(crate) settled: watch::Sender<u64>,
+    /// Raised for exactly the span of every withdrawal replay (M1-P6b).
+    pub(crate) withdrawal: crate::withdrawal::WithdrawalCell,
     record: Mutex<FiberRecord>,
 }
 
@@ -38,6 +40,7 @@ impl Shared {
             wake: Notify::new(),
             probe: AtomicU64::new(0),
             settled: watch::Sender::new(0),
+            withdrawal: crate::withdrawal::WithdrawalCell::new(),
             record: Mutex::new(FiberRecord::default()),
         }
     }

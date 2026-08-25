@@ -1,10 +1,11 @@
-//! M1-P6b regression (round-2 pin): a consumer's teardown re-enters the
-//! loader with an amendment of its own PROVIDER. Admitted, that amendment
-//! restarts the provider and awaits it, while the provider's withdrawal waits
-//! for the consumer's lease — which teardown cannot release until the
-//! callback returns: a deadlock threaded through three crates. Round-3 law:
-//! the amendment is refused at the loader's door because it comes from a
-//! teardown context — decidably, with no dependency analysis (R1, R10).
+//! M1-P6b regression (round-3 pin, round-4 law): a consumer's teardown moves
+//! its provider amendment into a SPAWNED task and awaits it. No task-local
+//! marker survives a plugin's own `tokio::spawn`, so caller identification
+//! can never refuse this shape — the round-4 law refuses it structurally
+//! instead: the loader never begins a fiber-awaiting amendment while a
+//! withdrawal replay is in flight, whoever asks and from whatever task. The
+//! spawned call happens-after the withdrawal began, so it always observes the
+//! conflict and is refused honestly — never parked, never deadlocked (R1).
 
 #![cfg(not(feature = "loom"))]
 
@@ -26,13 +27,13 @@ use jinnd_registry::Registry;
 
 use common::{FixtureService, Grab, activations, entry, fixture, id, profile};
 
-/// What the teardown's re-entrant provider amendment observed.
+/// What the teardown's spawned provider amendment observed.
 type Observed = Arc<Mutex<Vec<String>>>;
 
 /// A consumer body that leases the provider's service and whose teardown —
-/// with the lease still held, LIFO — re-enters the loader against the
-/// provider entry.
-struct DependentBody {
+/// with the lease still held, LIFO — spawns a task amending the provider
+/// entry and awaits it: the verifier's round-3 probe shape.
+struct SpawnerBody {
     loader: Weak<Loader>,
     provider: EntryId,
     registry: Registry,
@@ -40,13 +41,13 @@ struct DependentBody {
     observed: Observed,
 }
 
-impl FiberBody for DependentBody {
+impl FiberBody for SpawnerBody {
     fn activate<'a>(&'a self, mut setup: Setup<'a>) -> KernelFuture<'a, ()> {
         Box::pin(async move {
             let (handle, guard) = self.registry.lease::<FixtureService, ()>(&self.at)?;
             let _ = handle.service.observe();
             // Registered first, replayed last: the lease outlives the
-            // re-entrant callback below, exactly the verifier's probe shape.
+            // spawned callback below, exactly the deadlock's shape.
             setup.effect(
                 "hold the provider lease",
                 Disposer::sync(move || {
@@ -58,12 +59,17 @@ impl FiberBody for DependentBody {
             let provider = self.provider.clone();
             let observed = Arc::clone(&self.observed);
             setup.effect(
-                "amend the provider on teardown",
+                "spawn a provider amendment on teardown",
                 Disposer::future(move || async move {
-                    let Some(loader) = loader.upgrade() else {
-                        return Ok(());
-                    };
-                    let result = loader.update_entry(&provider, 5_u32).await;
+                    let spawned = tokio::spawn(async move {
+                        let Some(loader) = loader.upgrade() else {
+                            return Ok(());
+                        };
+                        loader.update_entry(&provider, 5_u32).await
+                    });
+                    let result = spawned
+                        .await
+                        .unwrap_or_else(|_join| unreachable!("the spawned amendment panicked"));
                     observed
                         .lock()
                         .unwrap_or_else(|poison| poison.into_inner())
@@ -79,11 +85,11 @@ impl FiberBody for DependentBody {
     }
 }
 
-struct DependentHandle {
+struct SpawnerHandle {
     fiber: Arc<Fiber>,
 }
 
-impl EntryHandle for DependentHandle {
+impl EntryHandle for SpawnerHandle {
     fn id(&self) -> FiberId {
         self.fiber.id()
     }
@@ -123,9 +129,9 @@ impl EntryHandle for DependentHandle {
     }
 }
 
-/// The shared fixture plus one `test/dependent` lane: a consumer of the
-/// fixture service whose teardown amends its provider.
-fn dependent_fixture() -> (Arc<Loader>, Observed, common::Log) {
+/// The shared fixture plus one `test/spawner` lane: a consumer of the fixture
+/// service whose teardown spawns an amendment of its provider.
+fn spawner_fixture() -> (Arc<Loader>, Observed, common::Log) {
     let (loader, registry, log) = fixture();
     let loader = Arc::new(loader);
     let observed: Observed = Arc::new(Mutex::new(Vec::new()));
@@ -133,12 +139,12 @@ fn dependent_fixture() -> (Arc<Loader>, Observed, common::Log) {
     let captured: Weak<Loader> = Arc::downgrade(&loader);
     loader
         .register_lane::<u32>(
-            "test/dependent",
+            "test/spawner",
             PackageLane {
                 injects: vec![ServiceType::of::<FixtureService>()],
                 provides: None,
                 spawn: Box::new(move |request: SpawnRequest<'_>| {
-                    let body = Arc::new(DependentBody {
+                    let body = Arc::new(SpawnerBody {
                         loader: captured.clone(),
                         provider: id("p"),
                         registry: registry.clone(),
@@ -146,7 +152,7 @@ fn dependent_fixture() -> (Arc<Loader>, Observed, common::Log) {
                         observed: Arc::clone(&recorded),
                     });
                     let fiber = Fiber::spawn(body as Arc<dyn FiberBody>, request.signal);
-                    Ok(Arc::new(DependentHandle {
+                    Ok(Arc::new(SpawnerHandle {
                         fiber: Arc::new(fiber),
                     }) as Arc<dyn EntryHandle>)
                 }),
@@ -157,12 +163,12 @@ fn dependent_fixture() -> (Arc<Loader>, Observed, common::Log) {
 }
 
 #[tokio::test]
-async fn consumer_teardown_amending_its_provider_is_refused_never_deadlocked() {
-    let (loader, observed, log) = dependent_fixture();
+async fn teardown_spawned_provider_amendment_is_refused_never_deadlocked() {
+    let (loader, observed, log) = spawner_fixture();
     loader
         .reconcile(profile(vec![
             entry("p", "test/provider", 1),
-            entry("c", "test/dependent", 1),
+            entry("c", "test/spawner", 1),
         ]))
         .await
         .grab();
@@ -173,10 +179,10 @@ async fn consumer_teardown_amending_its_provider_is_refused_never_deadlocked() {
         "the consumer leased and ran"
     );
 
-    // Round 2 deadlocked here: the admitted provider amendment awaited the
-    // provider's reload, the provider's withdrawal awaited the consumer's
-    // lease, and the lease awaited this very teardown. A timeout is the
-    // honest failure mode for a regression.
+    // Round 3 deadlocked here: the spawned task carried no teardown marker,
+    // its admitted amendment awaited the provider's reload, the provider's
+    // withdrawal awaited the consumer's lease, and the lease awaited this
+    // very teardown. A timeout is the honest failure mode for a regression.
     tokio::time::timeout(
         Duration::from_secs(5),
         loader.dispose_entry::<u32>(&id("c")),
@@ -192,7 +198,7 @@ async fn consumer_teardown_amending_its_provider_is_refused_never_deadlocked() {
     assert_eq!(observed.len(), 1, "the teardown probed the provider once");
     assert!(
         observed[0].starts_with("provider: refused"),
-        "amending a provider from teardown context must be refused honestly, got: {}",
+        "a spawned amendment amid the withdrawal must be refused honestly, got: {}",
         observed[0]
     );
 

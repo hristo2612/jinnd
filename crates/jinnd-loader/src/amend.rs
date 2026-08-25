@@ -34,10 +34,11 @@ impl Loader {
     ///
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
     /// foreign config type, an operation already in flight for this entry or
-    /// the document, or a call from within a fiber's teardown context — the
-    /// profile is never amendable from teardown, so a re-entrant callback is
-    /// refused honestly, never deadlocked, from any task (R1, M1-P6b);
-    /// whatever the lane answers for a rejected or
+    /// the document, a call from within a fiber's teardown context, or —
+    /// when the entry is live — any tracked fiber's withdrawal replay in
+    /// flight: the amendment would await the fiber, so it is refused
+    /// retryably at the conflict point, never parked, from any task
+    /// (R1, M1-P6b); whatever the lane answers for a rejected or
     /// unstatable payload; whatever the attached store answers for a failed
     /// write-back. After any error exactly one of three states holds: both
     /// views at the prior state (the usual case — a staged config is
@@ -55,6 +56,12 @@ impl Loader {
         // entry's slice of the document stable for the operation's span.
         let staged = self.amended::<C>(entry, |persisted| persisted.config = config.clone())?;
         let handle = self.live_handle(entry);
+        // A live entry's amendment will await its fiber, so it never begins
+        // amid a withdrawal (round-4 law); the check precedes the restate —
+        // the first side effect — so a refusal commits nothing anywhere.
+        if handle.is_some() {
+            self.refuse_amid_withdrawal("the amendment")?;
+        }
         // The runtime is offered the change first: a rejection commits
         // nothing anywhere. No lock or permit is held here (R1).
         if let Some(handle) = &handle {
@@ -116,9 +123,10 @@ impl Loader {
     ///
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
     /// foreign config type, an operation already in flight for this entry or
-    /// the document, or a call from within a fiber's teardown context (a
-    /// re-entrant callback is refused honestly, never deadlocked, from any
-    /// task; R1, M1-P6b); whatever the handle
+    /// the document, a call from within a fiber's teardown context, or —
+    /// when the entry is live — any tracked fiber's withdrawal replay in
+    /// flight (refused retryably at the conflict point, never parked, from
+    /// any task; R1, M1-P6b); whatever the handle
     /// answers for a failed disposal (nothing is persisted or committed
     /// then). Disposal is irreversible at runtime, so a failed write-back is
     /// retried once; failing again, the divergence — runtime disposed,
@@ -131,6 +139,11 @@ impl Loader {
         // Validation and the reality snapshot for a recorded divergence.
         let staged = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
         let handle = self.live_handle(entry);
+        // A live entry's disposal awaits its fiber's withdrawal: it never
+        // begins amid another one already in flight (round-4 law).
+        if handle.is_some() {
+            self.refuse_amid_withdrawal("the disposal")?;
+        }
         // The runtime moves first: a refused disposal commits nothing. The
         // teardown replays plugin-owned inverses on the fiber's own task with
         // only the engagement marker held — a teardown calling back into the

@@ -133,8 +133,9 @@ impl Loader {
     /// loader is already committed to, when the attached store cannot
     /// write the document back — nothing is committed then — when any
     /// loader operation is already in flight, a re-entrant call from one of
-    /// this reconcile's own callbacks included, or when called from within a
-    /// fiber's teardown context (refused, never deadlocked; R1, M1-P6b).
+    /// this reconcile's own callbacks included, when called from within a
+    /// fiber's teardown context, or while any tracked fiber's withdrawal
+    /// replay is in flight (refused retryably, never parked; R1, M1-P6b).
     /// Per-entry problems are not errors: they are contained faults in
     /// the report (R11).
     pub async fn reconcile_with<C: LaneConfig>(
@@ -147,6 +148,10 @@ impl Loader {
         // lane constructors and fiber teardowns with only this marker held;
         // a callback re-entering the loader is refused honestly (R1, M1-P6b).
         let _engaged = self.gate.engage_document()?;
+        // A reconcile awaits fiber transitions, so it never begins while a
+        // withdrawal replay is already in flight (round-4 law): refused
+        // retryably, whichever task asks.
+        self.refuse_amid_withdrawal("reconcile")?;
         let old = self.applied::<C>()?;
         let erased = lock(&self.eqs).get(&TypeId::of::<C>()).cloned();
         let attested = erased.map(|eq| {
