@@ -14,10 +14,11 @@
 //! the lanes, so realm equality is exactly the visibility the runtime grants.
 
 use std::any::TypeId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use jinnd_api::{EntryFault, EntryId, ErrorCode, KernelError, Realm};
 
+use crate::diff::{Plan, Step, StepKind};
 use crate::lanes::PackageLane;
 use crate::loader::LaneConfig;
 use crate::tree::EntryIndex;
@@ -86,6 +87,45 @@ pub(crate) fn cycle_faults<C: LaneConfig>(
             },
         })
         .collect()
+}
+
+/// Rewrites the plan so every cycle member lands cleanly inactive (I3, R11;
+/// the round-2 blocker): a member with a live fiber is disposed-but-kept
+/// (`Disable`), any other member is merely tracked (`Track`) — and a member
+/// the diff left untouched gains a containment step, so entries replaced or
+/// drawn into a cycle never keep a previous runtime alive. No spawning step
+/// for a member survives; a member's rebind+restate pair collapses to one
+/// containment step.
+pub(crate) fn quarantine(plan: &mut Plan, members: &HashSet<&EntryId>, live: &HashSet<EntryId>) {
+    plan.unchanged.retain(|entry| !members.contains(entry));
+    let mut stepped: HashSet<EntryId> = HashSet::new();
+    plan.steps.retain_mut(|step| {
+        if !members.contains(&step.entry) {
+            return true;
+        }
+        if !stepped.insert(step.entry.clone()) {
+            return false;
+        }
+        step.kind = containment(&step.entry, live);
+        true
+    });
+    for member in members {
+        if !stepped.contains(*member) {
+            plan.steps.push(Step {
+                entry: (*member).clone(),
+                kind: containment(member, live),
+            });
+        }
+    }
+}
+
+/// The step that makes one cycle member cleanly inactive.
+fn containment(entry: &EntryId, live: &HashSet<EntryId>) -> StepKind {
+    if live.contains(entry) {
+        StepKind::Disable
+    } else {
+        StepKind::Track
+    }
 }
 
 /// The realm the entry's context will resolve `name` in: the nearest binding

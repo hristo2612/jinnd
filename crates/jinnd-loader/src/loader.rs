@@ -163,18 +163,23 @@ impl Loader {
             attested.as_ref().map(|eq| eq as &dyn Fn(&C, &C) -> bool),
         );
         // Static cycle detection over lane declarations (I3, M1-P6c): cycle
-        // members lose their steps — never spawned, cleanly inactive with the
-        // recorded fault — and acyclic siblings load untouched (R11).
+        // members are never spawned and any previous runtime of theirs is
+        // withdrawn — cleanly inactive with the recorded fault — while
+        // acyclic siblings load untouched (R11).
         let cyclic = {
             let lanes = lock(&self.lanes);
             crate::cycles::cycle_faults(&crate::tree::EntryIndex::new(&profile), &lanes)
         };
         if !cyclic.is_empty() {
-            {
-                let members: std::collections::HashSet<&EntryId> =
-                    cyclic.iter().map(|fault| &fault.entry).collect();
-                plan.steps.retain(|step| !members.contains(&step.entry));
-            }
+            let members: std::collections::HashSet<&EntryId> =
+                cyclic.iter().map(|fault| &fault.entry).collect();
+            let live: std::collections::HashSet<EntryId> = lock(&self.state)
+                .entries
+                .iter()
+                .filter(|(entry, runtime)| members.contains(entry) && runtime.live.is_some())
+                .map(|(entry, _)| entry.clone())
+                .collect();
+            crate::cycles::quarantine(&mut plan, &members, &live);
             plan.faults.extend(cyclic);
         }
         let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
