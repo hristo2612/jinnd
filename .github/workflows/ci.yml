@@ -23,6 +23,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace --exclude jinnd-invariants
+      - name: push two-key tripwire fixtures
+        run: bash .github/scripts/test-push-two-key.sh
 
   invariants:
     runs-on: ubuntu-latest
@@ -43,6 +45,7 @@ jobs:
         run: cargo test -p jinnd-fiber --features loom --release
 
   miri:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,3 +86,17 @@ jobs:
               exit 1
             }
           fi
+
+  # A push cannot be blocked retroactively. Red here means main requires investigation.
+  push-test-protection:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: two-key tripwire — verify independent invariant authorship
+        env:
+          BASE: ${{ github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: bash .github/scripts/check-push-two-key.sh "$BASE" "$HEAD"
