@@ -142,8 +142,7 @@ fn the_cell_refuses_a_second_transition_in_flight() {
         let cell = SteeringCell::new(None);
         cell.launch(aim(0));
         assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cell.launch(aim(1))))
-                .is_err()
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cell.launch(aim(1)))).is_err()
         );
     });
 }
