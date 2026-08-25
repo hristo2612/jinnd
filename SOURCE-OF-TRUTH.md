@@ -216,7 +216,7 @@ within a major version.
 - The old Node gateway keeps running ALL production until the new kernel proves parity;
   instances cut over one at a time. (The cutover rule — non-negotiable.)
 - Component budgets: context tree 0.5–0.7k · fiber lifecycle 0.8–1.2k · effects
-  0.3–0.4k · registry+gating 0.5–0.7k · event bus 0.4–0.6k · loader 1–1.5k ·
+  0.3–0.5k · registry+gating 0.5–0.7k · event bus 0.4–0.6k · loader 1–1.5k ·
   proc-macros 0.3–0.6k · tracing bridge 0.15–0.3k.
 
 ## 7. Roadmap (each milestone gated by a demo, not a claim)
@@ -310,6 +310,12 @@ Ordering rule: never touch a layer until the layer above it is already useful.
   R7 rewritten as "One contract, tiered containment" (Tiers A/B/C + transport-agnostic
   broker inline); R8's reload "tiers" renamed to *modes* so "tier" unambiguously means
   containment; §6 diagram and notes updated. Semantics identical to the entry above.
+
+- **2026-08-25** — M1-P2 budget amended 300–400 → 300–500 (COO; §6 effects estimate
+  synced to 0.3–0.5k). Round-1 verify blockers mandated containment machinery the
+  estimate didn't price in; verifier confirmed all else passes at 479 LOC. Rule for
+  future cards: budgets are estimates priced before adversarial findings — the COO
+  re-prices on evidence rather than incentivizing containment-code golf.
 
 - **2026-08-24** — M1-P1 delivered (jinnd-context, 468 LOC, miri clean) but exposed
   a P0 suite defect: cases never call the facade, so no packet can green a case
