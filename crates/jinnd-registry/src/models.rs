@@ -22,6 +22,12 @@ use jinnd_context::ContextTree;
 
 use crate::leases::LeaseCell;
 use crate::slots::{Address, SlotMap};
+use crate::vitality::VitalityCell;
+
+/// An always-active vitality, for models about the map alone.
+fn live() -> std::sync::Arc<VitalityCell> {
+    std::sync::Arc::new(VitalityCell::new(true))
+}
 
 fn address() -> Address {
     let tree: ContextTree = ContextTree::new();
@@ -66,11 +72,13 @@ fn a_stale_undo_never_removes_a_newer_generation() {
     loom::model(|| {
         let map = Arc::new(SlotMap::new());
         let address = address();
-        let first = map.insert(address, FiberId(1), std::sync::Arc::new(1_u8));
+        let first = map.insert(address, FiberId(1), std::sync::Arc::new(1_u8), live());
 
         let replacer = {
             let map = Arc::clone(&map);
-            thread::spawn(move || map.insert(address, FiberId(2), std::sync::Arc::new(2_u8)))
+            thread::spawn(move || {
+                map.insert(address, FiberId(2), std::sync::Arc::new(2_u8), live())
+            })
         };
         let removed_first = map.remove_if(&address, first.generation);
         let second = replacer.join().unwrap_or_else(|_| unreachable!());
@@ -95,7 +103,7 @@ fn a_lease_racing_removal_is_refused_or_drained() {
     loom::model(|| {
         let map = Arc::new(SlotMap::new());
         let address = address();
-        let entry = map.insert(address, FiberId(1), std::sync::Arc::new(1_u8));
+        let entry = map.insert(address, FiberId(1), std::sync::Arc::new(1_u8), live());
 
         let consumer = {
             let map = Arc::clone(&map);

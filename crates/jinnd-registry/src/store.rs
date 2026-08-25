@@ -10,6 +10,7 @@ use tokio::sync::watch;
 
 use crate::leases::LeaseCell;
 use crate::slots::SlotMap;
+use crate::vitality::Vitality;
 
 /// The slot map plus the change edge everything reactive subscribes to.
 #[derive(Debug)]
@@ -43,6 +44,11 @@ impl Store {
     /// A subscription to the store's change edge.
     pub(crate) fn watch(&self) -> watch::Receiver<u64> {
         self.version.subscribe()
+    }
+
+    /// Mints a vitality handle whose reports wake this store's subscribers.
+    pub(crate) fn vitality(&self, initially: bool) -> Vitality {
+        Vitality::new(initially, self.version.clone())
     }
 
     /// Wraps an acquired lease so its return wakes the store.

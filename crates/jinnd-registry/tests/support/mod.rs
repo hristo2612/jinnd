@@ -53,8 +53,13 @@ impl ServiceContract for Other {
 
 /// Provides an [`Other`] at `at` in the root realm, registered on `scope` (R5).
 pub fn provide_other<I>(registry: &Registry, scope: &mut EffectScope, at: &Context<I>, value: u8) {
-    let provision =
-        registry.provide::<Other, I>(at, &Realm::Root, KERNEL_SCOPE, Arc::new(Other(value)));
+    let provision = registry.provide::<Other, I>(
+        at,
+        &Realm::Root,
+        KERNEL_SCOPE,
+        Arc::new(Other(value)),
+        &registry.vitality(true),
+    );
     let registered = scope.register(format!("provide {}", Other::NAME), provision.undo);
     assert!(
         registered.is_ok(),
@@ -70,8 +75,24 @@ pub fn provide_counter<I>(
     at: &Context<I>,
     value: u8,
 ) -> Generation {
-    let provision =
-        registry.provide::<Counter, I>(at, &Realm::Root, KERNEL_SCOPE, Arc::new(Counter(value)));
+    provide_counter_guarded(registry, scope, at, value, &registry.vitality(true))
+}
+
+/// As [`provide_counter`], under a caller-owned vitality handle.
+pub fn provide_counter_guarded<I>(
+    registry: &Registry,
+    scope: &mut EffectScope,
+    at: &Context<I>,
+    value: u8,
+    vitality: &jinnd_registry::Vitality,
+) -> Generation {
+    let provision = registry.provide::<Counter, I>(
+        at,
+        &Realm::Root,
+        KERNEL_SCOPE,
+        Arc::new(Counter(value)),
+        vitality,
+    );
     let registered = scope.register(format!("provide {}", Counter::NAME), provision.undo);
     assert!(
         registered.is_ok(),

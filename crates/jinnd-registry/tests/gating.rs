@@ -224,3 +224,68 @@ fn injected_readiness_is_a_readiness_signal() {
     fn accepts<S: ReadinessSignal>() {}
     accepts::<InjectedReadiness>();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_provider_not_yet_reported_active_withholds_readiness() {
+    let tree: ContextTree = ContextTree::new();
+    let registry = Registry::new();
+    let mut scope = EffectScope::new();
+    let signal = registry.readiness(
+        &tree.root(),
+        Injection {
+            services: vec![counter_service()],
+        },
+    );
+
+    let vitality = registry.vitality(false);
+    support::provide_counter_guarded(&registry, &mut scope, &tree.root(), 3, &vitality);
+    breathe().await;
+    assert_eq!(
+        signal.epoch(),
+        None,
+        "a provider whose supervisor has not reported it Active is not available (§3)"
+    );
+
+    vitality.report(true);
+    breathe().await;
+    assert!(
+        signal.epoch().is_some(),
+        "an Active, checked provider completes the injection"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_provider_reported_inactive_unloads_its_consumers() {
+    let rig = rig();
+    let mut scope = EffectScope::new();
+
+    let vitality = rig.registry.vitality(true);
+    support::provide_counter_guarded(&rig.registry, &mut scope, &rig.tree.root(), 5, &vitality);
+    breathe().await;
+    rig.fiber.quiesce().await;
+    assert_eq!(rig.fiber.state(), FiberState::Active);
+
+    vitality.report(false);
+    breathe().await;
+    rig.fiber.quiesce().await;
+    assert_eq!(
+        rig.fiber.state(),
+        FiberState::Pending,
+        "a provider leaving Active withdraws availability without withdrawing the slot"
+    );
+    assert_eq!(
+        snapshot(&rig.torn_down),
+        vec![5],
+        "the consumer fully unloads, its teardown still answered by the value (I2)"
+    );
+
+    vitality.report(true);
+    breathe().await;
+    rig.fiber.quiesce().await;
+    assert_eq!(rig.fiber.state(), FiberState::Active);
+    assert_eq!(
+        snapshot(&rig.observed),
+        vec![5, 5],
+        "recovery is a fresh activation against the same generation, never a silent resume (R9)"
+    );
+}

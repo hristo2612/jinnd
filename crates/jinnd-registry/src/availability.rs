@@ -99,6 +99,11 @@ fn compute<I>(registry: &Registry, from: &Context<I>, injection: &Injection) -> 
     for service in &injection.services {
         let key = from.tree().key_for(service);
         let (address, entry) = registry.locate(from, key).ok()?;
+        // A slot is only available while its provider is Active and passing its
+        // check, as the provider's supervisor last reported (§3).
+        if !entry.vitality.active() {
+            return None;
+        }
         dependencies.push(DependencySnapshot {
             service: *service,
             provider: entry.provider,

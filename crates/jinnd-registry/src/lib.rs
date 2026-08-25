@@ -40,11 +40,14 @@ mod leases;
 mod models;
 mod slots;
 mod sync;
+mod vitality;
 
 #[cfg(not(feature = "loom"))]
 mod availability;
 #[cfg(not(feature = "loom"))]
 mod registry;
+#[cfg(not(feature = "loom"))]
+mod resolver;
 #[cfg(not(feature = "loom"))]
 mod store;
 
@@ -55,4 +58,8 @@ pub use availability::{InjectedReadiness, Injection};
 #[cfg(not(feature = "loom"))]
 pub use registry::{Provision, Registry};
 #[cfg(not(feature = "loom"))]
+pub use resolver::ActivationResolver;
+#[cfg(not(feature = "loom"))]
 pub use store::LeaseGuard;
+#[cfg(not(feature = "loom"))]
+pub use vitality::Vitality;

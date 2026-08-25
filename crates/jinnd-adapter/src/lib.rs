@@ -26,13 +26,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{
     ContextId, EffectDescriptor, EffectId, ErrorCode, Event, EventListener, FiberId, FiberState,
-    IsolationBinding, Kernel, KernelError, KernelFuture, PluginContract, Profile, Realm,
+    Inject, IsolationBinding, Kernel, KernelError, KernelFuture, PluginContract, Profile, Realm,
     ReconcileReport, ServiceContract, ServiceHandle, Transition, TransitionCause, Undo,
 };
 use jinnd_context::{Context, ContextTree};
 use jinnd_effects::{Disposer, EffectScope};
-use jinnd_fiber::{Fiber, ReadinessSource};
-use jinnd_registry::Registry;
+use jinnd_fiber::Fiber;
+use jinnd_registry::{Injection, Registry, Vitality};
 
 use crate::body::FacadeBody;
 
@@ -51,6 +51,8 @@ struct Adapter {
     fibers: Mutex<HashMap<FiberId, Arc<FiberEntry>>>,
     registry: Registry,
     kernel_scope: Mutex<EffectScope>,
+    /// The kernel pseudo-fiber's vitality: always Active, never reported away.
+    kernel_vitality: Vitality,
 }
 
 /// Returns the facade kernel used by verifier-owned invariant tests.
@@ -60,12 +62,15 @@ pub fn kernel() -> impl Kernel {
     let tree: ContextTree = ContextTree::new();
     let root = tree.root();
     let contexts = Mutex::new(HashMap::from([(root.id(), root.clone())]));
+    let registry = Registry::new();
+    let kernel_vitality = registry.vitality(true);
     Adapter {
         root,
         contexts,
         fibers: Mutex::new(HashMap::new()),
-        registry: Registry::new(),
+        registry,
         kernel_scope: Mutex::new(EffectScope::new()),
+        kernel_vitality,
     }
 }
 
@@ -114,18 +119,26 @@ impl Kernel for Adapter {
         config: P::Config,
     ) -> KernelFuture<'_, FiberId> {
         Box::pin(async move {
-            self.context(context)?;
-            let Some(body) = FacadeBody::conjure(plugin, context, config) else {
-                return Err(error(
-                    ErrorCode::MissingDependency,
-                    "the facade has no dependency declaration API; only a plugin \
-                     with `Dependencies = ()` can spawn through it",
-                ));
-            };
-            let body = Arc::new(body);
+            let at = self.context(context)?;
+            // Reactive availability (R1): the fiber activates only when every
+            // declared service has an Active, checked provider, and any provider
+            // change moves the epoch and forces a clean reload (R9).
+            let readiness = self.registry.readiness(
+                &at,
+                Injection {
+                    services: P::Dependencies::declare(),
+                },
+            );
+            let body = Arc::new(FacadeBody::new(
+                plugin,
+                context,
+                at,
+                self.registry.clone(),
+                config,
+            ));
             let fiber = Fiber::spawn(
                 Arc::clone(&body) as Arc<dyn jinnd_fiber::FiberBody>,
-                ReadinessSource::independent().signal(),
+                readiness,
             );
             let id = fiber.id();
             let entry = Arc::new(FiberEntry { fiber, body });
@@ -199,9 +212,13 @@ impl Kernel for Adapter {
     ) -> KernelFuture<'_, EffectId> {
         Box::pin(async move {
             let at = self.context(context)?;
-            let provision = self
-                .registry
-                .provide::<S, ()>(&at, &realm, KERNEL_SCOPE, value);
+            let provision = self.registry.provide::<S, ()>(
+                &at,
+                &realm,
+                KERNEL_SCOPE,
+                value,
+                &self.kernel_vitality,
+            );
             lock(&self.kernel_scope).register(format!("provide {}", S::NAME), provision.undo)
         })
     }
