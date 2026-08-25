@@ -136,18 +136,29 @@ impl Loader {
             })
         });
 
-        let mut state = lock(&self.state);
-        let runtime = state
-            .entries
-            .get_mut(entry)
-            .ok_or_else(|| error(ErrorCode::InvalidProfile, "the entry has no runtime"))?;
-        runtime.spec = Arc::new(spec.clone());
-        runtime.context = Some(context.clone());
-        if let (Some(live), Some(readiness)) = (runtime.live.as_mut(), readiness) {
-            live.proxy.attach(readiness);
-            live.handle.rebind(context);
+        // State moves under the lock; the handle calls run with it released —
+        // they reach lane-owned code, and no loader lock is ever held across
+        // a handle call (R1, M1-P6c; the proxy attach is kernel-owned).
+        let handle = {
+            let mut state = lock(&self.state);
+            let runtime = state
+                .entries
+                .get_mut(entry)
+                .ok_or_else(|| error(ErrorCode::InvalidProfile, "the entry has no runtime"))?;
+            runtime.spec = Arc::new(spec.clone());
+            runtime.context = Some(context.clone());
+            match (runtime.live.as_mut(), readiness) {
+                (Some(live), Some(readiness)) => {
+                    live.proxy.attach(readiness);
+                    Some(Arc::clone(&live.handle))
+                }
+                _ => None,
+            }
+        };
+        if let Some(handle) = handle {
+            handle.rebind(context);
             if realm_moved {
-                live.handle.restart(TransitionCause::DependencyChanged);
+                handle.restart(TransitionCause::DependencyChanged);
                 return Ok(Bucket::Restarted);
             }
         }

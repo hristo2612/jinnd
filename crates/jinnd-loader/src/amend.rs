@@ -35,7 +35,9 @@ impl Loader {
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
     /// foreign config type, an operation already in flight for this entry or
     /// the document, a call from within a fiber's teardown context, or —
-    /// when the entry is live — any tracked fiber's withdrawal replay in
+    /// when the entry is live — a call from the entry's own fiber task (the
+    /// amendment would await the calling task's own fiber, a self-deadlock;
+    /// M1-P6c) or any tracked fiber's withdrawal replay in
     /// flight: the amendment would await the fiber, so it is refused
     /// retryably at the conflict point, never parked, from any task
     /// (R1, M1-P6b); whatever the lane answers for a rejected or
@@ -57,9 +59,11 @@ impl Loader {
         let staged = self.amended::<C>(entry, |persisted| persisted.config = config.clone())?;
         let handle = self.live_handle(entry);
         // A live entry's amendment will await its fiber, so it never begins
-        // amid a withdrawal (round-4 law); the check precedes the restate —
-        // the first side effect — so a refusal commits nothing anywhere.
-        if handle.is_some() {
+        // on that fiber's own task (M1-P6c) nor amid a withdrawal (round-4
+        // law); both checks precede the restate — the first side effect — so
+        // a refusal commits nothing anywhere.
+        if let Some(handle) = &handle {
+            crate::gate::refuse_own_fiber(handle.as_ref(), "the amendment")?;
             self.refuse_amid_withdrawal("the amendment")?;
         }
         // The runtime is offered the change first: a rejection commits
@@ -124,7 +128,8 @@ impl Loader {
     /// [`ErrorCode::InvalidProfile`] for an unknown or faulted entry, a
     /// foreign config type, an operation already in flight for this entry or
     /// the document, a call from within a fiber's teardown context, or —
-    /// when the entry is live — any tracked fiber's withdrawal replay in
+    /// when the entry is live — a call from the entry's own fiber task
+    /// (M1-P6c) or any tracked fiber's withdrawal replay in
     /// flight (refused retryably at the conflict point, never parked, from
     /// any task; R1, M1-P6b); whatever the handle
     /// answers for a failed disposal (nothing is persisted or committed
@@ -140,8 +145,10 @@ impl Loader {
         let staged = self.amended::<C>(entry, |persisted| persisted.disabled = true)?;
         let handle = self.live_handle(entry);
         // A live entry's disposal awaits its fiber's withdrawal: it never
-        // begins amid another one already in flight (round-4 law).
-        if handle.is_some() {
+        // begins on that fiber's own task (M1-P6c) nor amid another
+        // withdrawal already in flight (round-4 law).
+        if let Some(handle) = &handle {
+            crate::gate::refuse_own_fiber(handle.as_ref(), "the disposal")?;
             self.refuse_amid_withdrawal("the disposal")?;
         }
         // The runtime moves first: a refused disposal commits nothing. The

@@ -159,6 +159,29 @@ impl Loader {
     }
 }
 
+/// Refuses `operation` when the calling task IS the fiber the operation would
+/// await (M1-P6c, extending the P6b conflict-point family): an entry's own
+/// activation amending or disposing its entry makes the loader wait for a
+/// fiber that cannot settle until this very call returns — a self-deadlock,
+/// not a race. Refused honestly and retryably, with no caller analysis beyond
+/// fiber identity ([`jinnd_fiber::current_fiber`]); the same operation against
+/// a SIBLING entry from the same activation stays admissible.
+pub(crate) fn refuse_own_fiber(
+    handle: &dyn EntryHandle,
+    operation: &str,
+) -> Result<(), KernelError> {
+    if jinnd_fiber::current_fiber() == Some(handle.id()) {
+        return Err(error(
+            ErrorCode::InvalidProfile,
+            &format!(
+                "{operation} refused: it would await the calling task's own fiber; \
+                 amend from outside the fiber"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Refuses `operation` when invoked from within a fiber's teardown context
 /// (M1-P6b): teardown is the wrong time to reshape the profile — I2 entitles
 /// a dying plugin to call the services it leases while unloading, never to
