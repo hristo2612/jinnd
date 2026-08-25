@@ -201,9 +201,11 @@ async fn an_unclean_disposal_rests_failed_and_reports_the_residue() {
     }));
     fiber.quiesce().await;
 
-    tokio::time::timeout(Duration::from_secs(5), fiber.dispose())
-        .await
-        .expect("dispose must resolve once the withdrawal has landed and reported");
+    let disposed = tokio::time::timeout(Duration::from_secs(5), fiber.dispose()).await;
+    assert!(
+        disposed.is_ok(),
+        "dispose must resolve once the withdrawal has landed and reported"
+    );
 
     assert_eq!(fiber.state(), FiberState::Failed);
     assert_eq!(trace.entries(), vec!["undo:stubborn"]);
@@ -213,9 +215,11 @@ async fn an_unclean_disposal_rests_failed_and_reports_the_residue() {
 
     // Terminal: the failed withdrawal is not replayed against an unchanged scope
     // (R9), and nothing later pretends the disposal succeeded.
-    tokio::time::timeout(Duration::from_secs(5), fiber.quiesce())
-        .await
-        .expect("a settled fiber must still answer quiescence");
+    let settled = tokio::time::timeout(Duration::from_secs(5), fiber.quiesce()).await;
+    assert!(
+        settled.is_ok(),
+        "a settled fiber must still answer quiescence"
+    );
     assert_eq!(fiber.state(), FiberState::Failed);
     assert_eq!(fiber.record().transitions, record.transitions);
     assert_eq!(trace.count("undo:stubborn"), 1);
@@ -246,13 +250,15 @@ async fn a_drop_panicking_plugin_future_is_contained_and_recorded() {
     let (fiber, _source) = ready(body(move |mut setup| {
         setup
             .effect("applied", undo(&recorded, "applied"))
-            .expect("the scope is live during construction");
+            .unwrap_or_else(|_| unreachable!("the scope is live during construction"));
         Box::pin(DropBomb)
     }));
 
-    tokio::time::timeout(Duration::from_secs(5), fiber.quiesce())
-        .await
-        .expect("quiesce must resolve: the Drop panic may not escape the fiber");
+    let quiesced = tokio::time::timeout(Duration::from_secs(5), fiber.quiesce()).await;
+    assert!(
+        quiesced.is_ok(),
+        "quiesce must resolve: the Drop panic may not escape the fiber"
+    );
 
     assert_eq!(fiber.state(), FiberState::Failed);
     assert_eq!(trace.entries(), vec!["undo:applied"]);
