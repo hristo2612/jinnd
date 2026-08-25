@@ -19,8 +19,9 @@
 //!   recorded, and the remaining inverses still run. Replay never aborts on the first
 //!   failure (R9) and no panic crosses this crate's boundary.
 //! * **Async-first (R1).** Replay is an ordinary future: no blocking executor, no
-//!   `block_on`, and no lock is held while an inverse runs — the whole tree is moved
-//!   out of the scope before the first inverse is touched.
+//!   `block_on`, and no lock is held while an inverse runs — a record is taken out of
+//!   the tree as its own inverse starts, leaving the effects behind it untouched and
+//!   still live until their turn comes.
 //!
 //! Replay returns a [`ReplayReport`]: one line per withdrawn effect, in the order
 //! their inverses ran. That report is the ledger's future feed (R6); this crate
