@@ -52,15 +52,20 @@ pub struct Plan {
     pub unchanged: Vec<EntryId>,
 }
 
+/// A config type's equality attestation, absent when none was registered.
+pub type Attestation<'a, C> = Option<&'a dyn Fn(&C, &C) -> bool>;
+
 /// Diffs the applied document (`old`, `None` before the first reconcile)
 /// against the desired one.
 ///
-/// Entry configs are compared in their canonical `Debug` rendering: config is
-/// plain data, never behavior (R9), so its rendering is a faithful canonical
-/// form — and the facade's `reconcile` bound stays exactly
-/// `Clone + Debug + Send + Sync` (R12).
+/// `config_eq` is the config type's equality attestation — its own
+/// `PartialEq`, captured where the type is statically known (lane
+/// registration), so the facade's `reconcile` bound stays exactly
+/// `Clone + Debug + Send + Sync` (R12). Without an attestation a change is
+/// assumed: an unnoticed config change would be silent replacement (R9), and
+/// no rendering (`Debug` included) carries an equality contract.
 #[must_use]
-pub fn plan<C: std::fmt::Debug>(old: Option<&Profile<C>>, new: &Profile<C>) -> Plan {
+pub fn plan<C>(old: Option<&Profile<C>>, new: &Profile<C>, config_eq: Attestation<'_, C>) -> Plan {
     let new_index = EntryIndex::new(new);
     let old_index = old.map(EntryIndex::new);
     let mut outcome = Plan {
@@ -107,9 +112,12 @@ pub fn plan<C: std::fmt::Debug>(old: Option<&Profile<C>>, new: &Profile<C>) -> P
                     continue;
                 }
                 let rebind = old_index.environment(&entry.id) != new_index.environment(&entry.id);
-                // The canonical comparison form: config is plain data (R9),
-                // so its Debug rendering is faithful.
-                let restate = format!("{:?}", previous.config) != format!("{:?}", entry.config);
+                // Only the type's own equality decides "unchanged"; without an
+                // attestation the change is assumed (R9).
+                let restate = match config_eq {
+                    Some(eq) => !eq(&previous.config, &entry.config),
+                    None => true,
+                };
                 if rebind {
                     rebinds.push((new_index.depth(&entry.id), StepKind::Rebind, &entry.id));
                 }

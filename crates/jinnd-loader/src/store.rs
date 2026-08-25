@@ -111,7 +111,9 @@ pub(crate) struct Persistence {
 impl Loader {
     /// Attaches the persistence store (LAW §3): every commit of the document
     /// of record — reconcile, update, dispose — writes back atomically
-    /// through `store` before the runtime moves. `encode` renders the
+    /// through `store`. A document-led reconcile persists before the runtime
+    /// converges on the document; a runtime-led amendment persists after the
+    /// runtime accepted the change (see `amend`). `encode` renders the
     /// committed profile; re-attaching replaces the previous store.
     pub fn attach_store<C: LaneConfig>(
         &self,

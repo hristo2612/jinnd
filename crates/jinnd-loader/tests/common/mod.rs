@@ -3,11 +3,12 @@
 
 #![allow(dead_code)]
 
+pub mod probe;
 pub mod support;
 
 pub use support::*;
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{
@@ -248,16 +249,14 @@ pub fn fixture() -> (Loader, Registry, Log) {
     let loader = Loader::new(root.clone(), registry.clone(), |_context| {});
     let service = ServiceType::of::<FixtureService>();
     loader
-        .register_lane(
+        .register_lane::<u32>(
             "test/count",
-            TypeId::of::<u32>(),
             lane(|| Role::Counter, Vec::new(), None, &registry, &root, &log),
         )
         .grab();
     loader
-        .register_lane(
+        .register_lane::<u32>(
             "test/provider",
-            TypeId::of::<u32>(),
             lane(
                 || Role::Provider,
                 Vec::new(),
@@ -269,9 +268,8 @@ pub fn fixture() -> (Loader, Registry, Log) {
         )
         .grab();
     loader
-        .register_lane(
+        .register_lane::<u32>(
             "test/consumer",
-            TypeId::of::<u32>(),
             lane(
                 || Role::Consumer,
                 vec![service],

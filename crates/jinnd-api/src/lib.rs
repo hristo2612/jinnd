@@ -372,9 +372,10 @@ pub trait Kernel: Send + Sync + 'static {
 
     /// Reconciles the runtime onto `profile` by entry id: only affected fibers
     /// move, and the profile becomes the committed document of record. Entry
-    /// configs are compared in their canonical `Debug` rendering — config is
-    /// plain data, never behavior (R9) — so this pre-existing surface keeps
-    /// its exact bound (R12).
+    /// configs are compared under the equality attestation their package
+    /// registration captured (`C`'s own `PartialEq`, where the type is
+    /// statically known); without one a change is assumed, never ignored (R9)
+    /// — so this pre-existing surface keeps its exact bound (R12).
     fn reconcile<C: Clone + Debug + Send + Sync + 'static>(
         &self,
         profile: Profile<C>,
@@ -423,19 +424,20 @@ pub trait Kernel: Send + Sync + 'static {
     /// delta: entry-to-fiber observation).
     fn entry_fiber(&self, entry: &EntryId) -> Option<FiberId>;
 
-    /// A runtime-originated config change: writes back to the committed
-    /// document atomically, then reloads the entry's fiber observing the new
-    /// config (LAW §3 bidirectional persistence; authorized M1-P6 additive
-    /// delta).
+    /// A runtime-originated config change: the entry's fiber validates and
+    /// stages the new config first, the committed document is then written
+    /// back atomically, and only then does the fiber reload to observe it. A
+    /// rejected or unpersistable change leaves both views at the prior state
+    /// (LAW §3 bidirectional persistence; authorized M1-P6 additive delta).
     fn update_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
         &self,
         entry: &EntryId,
         config: C,
     ) -> KernelFuture<'_, ()>;
 
-    /// A runtime-originated disposal: persists the entry as disabled with its
-    /// config retained, then disposes its fiber (authorized M1-P6 additive
-    /// delta).
+    /// A runtime-originated disposal: the entry's fiber is withdrawn first,
+    /// then the document persists the entry as disabled, config retained. A
+    /// refused disposal persists nothing (authorized M1-P6 additive delta).
     fn dispose_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
         &self,
         entry: &EntryId,

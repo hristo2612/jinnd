@@ -7,20 +7,25 @@ use std::sync::{Arc, Mutex};
 
 use jinnd_api::{
     EntryId, ErrorCode, FiberId, FiberState, KernelError, Profile, ProfileEntry, ReconcileReport,
-    TransitionCause,
 };
 use jinnd_context::Context;
 use jinnd_registry::Registry;
 use tokio_util::sync::CancellationToken;
 
 use crate::lanes::PackageLane;
-use crate::state::{EntryRuntime, State, error, lock};
+use crate::state::{State, error, lock};
 
 /// A config type usable at the loader's typed boundary (R3): profile config
-/// payloads are plain data, never behavior (R9), compared in their canonical
-/// `Debug` rendering — exactly the facade's `reconcile` bound (R12).
+/// payloads are plain data, never behavior (R9) — exactly the facade's
+/// `reconcile` bound (R12). Equality is attested separately, at lane
+/// registration, where the concrete type is statically known.
 pub trait LaneConfig: Clone + std::fmt::Debug + Send + Sync + 'static {}
 impl<C: Clone + std::fmt::Debug + Send + Sync + 'static> LaneConfig for C {}
+
+/// One config type's erased equality attestation: the type's own `PartialEq`,
+/// applied under its `TypeId`.
+pub(crate) type ConfigEq =
+    Arc<dyn Fn(&(dyn Any + Send + Sync), &(dyn Any + Send + Sync)) -> bool + Send + Sync>;
 
 /// The profile loader over one kernel assembly.
 pub struct Loader {
@@ -28,6 +33,8 @@ pub struct Loader {
     pub(crate) registry: Registry,
     pub(crate) on_context: Box<dyn Fn(Context<()>) + Send + Sync>,
     pub(crate) lanes: Mutex<HashMap<(String, TypeId), Arc<PackageLane>>>,
+    /// Per config type, the equality attestation the diff compares under.
+    pub(crate) eqs: Mutex<HashMap<TypeId, ConfigEq>>,
     pub(crate) state: Mutex<State>,
     /// The attached write-back store, if any (see [`Loader::attach_store`]).
     pub(crate) persist: Mutex<Option<Arc<crate::store::Persistence>>>,
@@ -51,6 +58,7 @@ impl Loader {
             registry,
             on_context: Box::new(on_context),
             lanes: Mutex::new(HashMap::new()),
+            eqs: Mutex::new(HashMap::new()),
             state: Mutex::new(State::default()),
             persist: Mutex::new(None),
             gate: tokio::sync::Mutex::new(()),
@@ -58,33 +66,46 @@ impl Loader {
     }
 
     /// Registers the lane that instantiates `package` entries whose config
-    /// payload is `config` (R3's string-keyed dynamic lane).
+    /// payload is `C` (R3's string-keyed dynamic lane), and with it `C`'s
+    /// equality attestation — the comparator reconcile-by-id diffs under.
     ///
     /// # Errors
     ///
     /// [`ErrorCode::InvalidProfile`] when the package is already registered for
     /// that config type — silent replacement stays dead (R9).
-    pub fn register_lane(
+    pub fn register_lane<C: LaneConfig + PartialEq>(
         &self,
         package: &str,
-        config: TypeId,
         lane: PackageLane,
     ) -> Result<(), KernelError> {
-        let mut lanes = lock(&self.lanes);
-        let key = (package.to_owned(), config);
-        if lanes.contains_key(&key) {
-            return Err(error(
-                ErrorCode::InvalidProfile,
-                &format!("package {package:?} is already registered for this config type"),
-            ));
+        {
+            let mut lanes = lock(&self.lanes);
+            let key = (package.to_owned(), TypeId::of::<C>());
+            if lanes.contains_key(&key) {
+                return Err(error(
+                    ErrorCode::InvalidProfile,
+                    &format!("package {package:?} is already registered for this config type"),
+                ));
+            }
+            lanes.insert(key, Arc::new(lane));
         }
-        lanes.insert(key, Arc::new(lane));
+        // The attestation is the type's own equality; it outlives the lane —
+        // a type's equality does not change when a lane retires.
+        lock(&self.eqs).entry(TypeId::of::<C>()).or_insert_with(|| {
+            Arc::new(
+                |a, b| match (a.downcast_ref::<C>(), b.downcast_ref::<C>()) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                },
+            )
+        });
         Ok(())
     }
 
-    /// Withdraws one registered lane; idempotent.
-    pub fn unregister_lane(&self, package: &str, config: TypeId) {
-        lock(&self.lanes).remove(&(package.to_owned(), config));
+    /// Withdraws one registered lane; idempotent. The config type's equality
+    /// attestation is deliberately retained.
+    pub fn unregister_lane<C: 'static>(&self, package: &str) {
+        lock(&self.lanes).remove(&(package.to_owned(), TypeId::of::<C>()));
     }
 
     /// Reconciles the runtime onto `profile` (see [`Loader::reconcile_with`]).
@@ -118,7 +139,15 @@ impl Loader {
     ) -> Result<ReconcileReport, KernelError> {
         let _gate = self.gate.lock().await;
         let old = self.applied::<C>()?;
-        let plan = crate::diff::plan(old.as_ref(), &profile);
+        let erased = lock(&self.eqs).get(&TypeId::of::<C>()).cloned();
+        let attested = erased.map(|eq| {
+            move |a: &C, b: &C| eq(a as &(dyn Any + Send + Sync), b as &(dyn Any + Send + Sync))
+        });
+        let plan = crate::diff::plan(
+            old.as_ref(),
+            &profile,
+            attested.as_ref().map(|eq| eq as &dyn Fn(&C, &C) -> bool),
+        );
         let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
         // The document of record moves to disk before the runtime (LAW §3).
         self.persist(&committed).await?;
@@ -130,100 +159,6 @@ impl Loader {
         let report = self.apply(plan, &profile, &cancel).await;
         self.settle().await;
         Ok(report)
-    }
-
-    /// A runtime-originated config change: writes back to the committed
-    /// document first — through the attached store when one is present — then
-    /// reloads the entry's fiber with the new config.
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorCode::InvalidProfile`] for an unknown entry or a foreign config
-    /// type; whatever the attached store answers for a failed write-back
-    /// (nothing is committed then); whatever the lane answers for an
-    /// unstatable payload.
-    pub async fn update_entry<C: LaneConfig>(
-        &self,
-        entry: &EntryId,
-        config: C,
-    ) -> Result<(), KernelError> {
-        let _gate = self.gate.lock().await;
-        let change = |persisted: &mut ProfileEntry<C>| persisted.config = config.clone();
-        let handle = self
-            .commit_amended::<C, _>(entry, change, |runtime| {
-                runtime.live.as_ref().map(|live| Arc::clone(&live.handle))
-            })
-            .await?;
-        if let Some(handle) = handle {
-            handle.restate(&config)?;
-            handle.restart(TransitionCause::ConfigChanged);
-            handle.quiesce().await?;
-        }
-        Ok(())
-    }
-
-    /// A runtime-originated disposal: persists the entry as disabled (config
-    /// retained) — through the attached store when one is present — then
-    /// disposes its fiber.
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorCode::InvalidProfile`] for an unknown entry or a foreign config
-    /// type; whatever the attached store answers for a failed write-back
-    /// (nothing is committed then).
-    pub async fn dispose_entry<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
-        let _gate = self.gate.lock().await;
-        let change = |persisted: &mut ProfileEntry<C>| persisted.disabled = true;
-        let live = self
-            .commit_amended::<C, _>(entry, change, |runtime| {
-                runtime.context = None;
-                runtime.live.take()
-            })
-            .await?;
-        if let Some(live) = live {
-            live.handle.dispose().await?;
-        }
-        Ok(())
-    }
-
-    /// Computes one entry's amended committed document, persists it (LAW §3:
-    /// the document of record moves first), then commits it and answers with
-    /// `then` applied to the entry's runtime. A failed write-back commits
-    /// nothing. `then` is loader code under the state lock, never plugin code
-    /// (R1).
-    async fn commit_amended<C: LaneConfig, T>(
-        &self,
-        entry: &EntryId,
-        change: impl FnOnce(&mut ProfileEntry<C>),
-        then: impl FnOnce(&mut EntryRuntime) -> T,
-    ) -> Result<T, KernelError> {
-        let missing = || error(ErrorCode::InvalidProfile, "the entry has no runtime");
-        let (committed, spec) = {
-            let state = lock(&self.state);
-            if !state.entries.contains_key(entry) {
-                return Err(missing());
-            }
-            let committed = state
-                .committed
-                .as_ref()
-                .and_then(|committed| committed.downcast_ref::<Profile<C>>())
-                .ok_or_else(|| error(ErrorCode::InvalidProfile, "foreign config type"))?;
-            let mut profile = committed.clone();
-            let persisted = profile
-                .entries
-                .iter_mut()
-                .find(|candidate| candidate.id == *entry)
-                .ok_or_else(|| error(ErrorCode::InvalidProfile, "no such entry"))?;
-            change(persisted);
-            let spec = Arc::new(persisted.clone()) as Arc<dyn Any + Send + Sync>;
-            (Arc::new(profile) as Arc<dyn Any + Send + Sync>, spec)
-        };
-        self.persist(&committed).await?;
-        let mut state = lock(&self.state);
-        state.committed = Some(committed);
-        let runtime = state.entries.get_mut(entry).ok_or_else(missing)?;
-        runtime.spec = spec;
-        Ok(then(runtime))
     }
 
     /// The fiber currently hosting `entry`, if any.

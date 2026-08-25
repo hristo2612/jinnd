@@ -154,27 +154,26 @@ impl Adapter {
     }
 
     /// Registers a loader lane as a kernel-scope effect (R5): withdrawing the
-    /// effect unregisters the package.
-    fn register_lane_effect<C: 'static>(
+    /// effect unregisters the package. `C`'s `PartialEq` is the equality
+    /// attestation reconcile-by-id diffs configs under.
+    fn register_lane_effect<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
         &self,
         package: &str,
         lane: jinnd_loader::PackageLane,
     ) -> Result<EffectId, KernelError> {
-        use std::any::TypeId;
-        self.loader
-            .register_lane(package, TypeId::of::<C>(), lane)?;
+        self.loader.register_lane::<C>(package, lane)?;
         let loader = Arc::clone(&self.loader);
         let name = package.to_owned();
         let registered = lock(&self.kernel_scope).register(
             format!("package {package}"),
             Disposer::sync(move || {
-                loader.unregister_lane(&name, TypeId::of::<C>());
+                loader.unregister_lane::<C>(&name);
                 Ok(())
             }),
         );
         if registered.is_err() {
             // A lane whose undo cannot be held may not outlive this call (R5).
-            self.loader.unregister_lane(package, TypeId::of::<C>());
+            self.loader.unregister_lane::<C>(package);
         }
         registered
     }

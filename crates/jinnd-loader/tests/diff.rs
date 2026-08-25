@@ -2,7 +2,7 @@
 //! minimal plan; only affected entries appear in it (LAW §3, I1/I4 seeds).
 
 use jinnd_api::{EntryId, ErrorCode, IsolationBinding, PluginRef, Profile, ProfileEntry, Realm};
-use jinnd_loader::{Step, StepKind, plan};
+use jinnd_loader::{Step, StepKind};
 
 fn id(text: &str) -> EntryId {
     EntryId(text.to_owned())
@@ -35,10 +35,20 @@ fn kinds(steps: &[Step], entry: &str) -> Vec<StepKind> {
         .collect()
 }
 
-/// A config carrying no `PartialEq` at all: the facade's `reconcile` bound is
-/// `Clone + Debug + Send + Sync` and nothing more (R12 — the round-2 ruling),
-/// so the diff compares configs in their canonical `Debug` rendering. The
-/// field is read only through that rendering.
+/// The plain equality attestation the `u32` fixtures diff under.
+fn eq(a: &u32, b: &u32) -> bool {
+    a == b
+}
+
+fn plan(old: Option<&Profile<u32>>, new: &Profile<u32>) -> jinnd_loader::Plan {
+    jinnd_loader::plan(old, new, Some(&eq))
+}
+
+/// A config carrying no equality attestation at all: the facade's `reconcile`
+/// bound is `Clone + Debug + Send + Sync` and nothing more (R12 — the round-2
+/// ruling), so without an attested comparator the diff must assume a change —
+/// an unnoticed config change would be silent replacement (R9). The rendering
+/// of the field is never consulted.
 #[derive(Clone, Debug)]
 struct Opaque(#[allow(dead_code)] u32);
 
@@ -58,31 +68,33 @@ fn opaque(name: &str, config: u32) -> ProfileEntry<Opaque> {
 }
 
 #[test]
-fn configs_without_partial_eq_are_compared_canonically() {
+fn configs_without_an_attestation_assume_change() {
     let old = Profile {
         entries: vec![opaque("foo", 1), opaque("bar", 2)],
     };
     let same = Profile {
         entries: vec![opaque("foo", 1), opaque("bar", 2)],
     };
-    let outcome = plan(Some(&old), &same);
-    assert!(outcome.steps.is_empty(), "identical renderings are inert");
-    assert_eq!(outcome.unchanged.len(), 2);
-
-    let changed = Profile {
-        entries: vec![opaque("foo", 9), opaque("bar", 2)],
-    };
-    let outcome = plan(Some(&old), &changed);
+    let outcome = jinnd_loader::plan(Some(&old), &same, None);
     assert_eq!(
         outcome
             .steps
             .iter()
             .map(|step| (step.entry.clone(), step.kind))
             .collect::<Vec<_>>(),
-        vec![(id("foo"), StepKind::Restate)],
-        "a changed rendering restates exactly its own entry"
+        vec![
+            (id("foo"), StepKind::Restate),
+            (id("bar"), StepKind::Restate),
+        ],
+        "without an attestation every carried-over entry restates"
     );
-    assert_eq!(outcome.unchanged, vec![id("bar")]);
+    assert!(outcome.unchanged.is_empty());
+
+    // An attested comparator makes the identical documents inert again.
+    let attested = |a: &Opaque, b: &Opaque| a.0 == b.0;
+    let outcome = jinnd_loader::plan(Some(&old), &same, Some(&attested));
+    assert!(outcome.steps.is_empty(), "attested equality is inert");
+    assert_eq!(outcome.unchanged.len(), 2);
 }
 
 #[test]
