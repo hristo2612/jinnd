@@ -6,6 +6,7 @@ members = [
     "crates/jinnd-context",
     "crates/jinnd-effects",
     "crates/jinnd-fiber",
+    "crates/jinnd-registry",
     "tests/invariants",
 ]
 # Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):

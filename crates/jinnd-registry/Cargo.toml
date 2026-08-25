@@ -1,0 +1,25 @@
+[package]
+name = "jinnd-registry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Model checking only: swaps the lease/slot cells' primitives for loom's and drops
+# the tokio-facing layers from the build. Off by default, never a runtime dependency.
+loom = ["dep:loom"]
+
+[dependencies]
+jinnd-api = { path = "../jinnd-api" }
+jinnd-context = { path = "../jinnd-context" }
+jinnd-effects = { path = "../jinnd-effects" }
+jinnd-fiber = { path = "../jinnd-fiber" }
+loom = { version = "0.7.2", optional = true }
+tokio = { version = "1.47.1", features = ["macros", "rt", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }
