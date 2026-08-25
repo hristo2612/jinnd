@@ -245,6 +245,19 @@ pub struct PluginRef {
     pub artifact_hash: String,
 }
 
+/// The reserved package naming a pure grouping entry: it spawns no fiber and
+/// exists to carry children, disablement, and isolation directives (authorized
+/// M1-P6 additive delta; LAW §3 "Profiles & loader").
+pub const GROUP_PACKAGE: &str = "jinn.profile/group";
+
+/// One contained per-entry failure of a reconciliation (R11: good entries
+/// load, bad entries surface recorded errors; authorized M1-P6 additive delta).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntryFault {
+    pub entry: EntryId,
+    pub error: KernelError,
+}
+
 /// Isolation mapping applied to one profile entry or group.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IsolationBinding {
@@ -276,6 +289,9 @@ pub struct ReconcileReport {
     pub restarted: Vec<EntryId>,
     pub disposed: Vec<EntryId>,
     pub unchanged: Vec<EntryId>,
+    /// Contained per-entry faults (R11); never a whole-reconcile failure
+    /// (authorized M1-P6 additive delta).
+    pub errors: Vec<EntryFault>,
 }
 
 /// Types-only surface the future kernel must satisfy for verifier-owned tests.
