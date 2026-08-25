@@ -6,11 +6,11 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{EntryId, ErrorCode, FiberId, FiberState, KernelError, Profile, ProfileEntry};
+use jinnd_api::{EntryId, ErrorCode, FiberId, FiberState, KernelError};
 use jinnd_context::Context;
 
 use crate::lanes::{EntryHandle, PackageLane};
-use crate::loader::{LaneConfig, Loader};
+use crate::loader::Loader;
 use crate::proxy::ReadinessProxy;
 
 /// One entry's runtime.
@@ -36,31 +36,6 @@ pub(crate) struct State {
     /// The committed document, an `Arc<Profile<C>>` — the persisted view.
     pub(crate) committed: Option<Arc<dyn Any + Send + Sync>>,
     pub(crate) entries: HashMap<EntryId, EntryRuntime>,
-}
-
-/// Computes one entry's amended committed document without committing it:
-/// the caller persists the amended profile first, then commits it (LAW §3 —
-/// the document of record moves before the runtime). Also returns the new
-/// spec `Arc` for the runtime.
-pub(crate) fn amended<C: LaneConfig>(
-    state: &State,
-    entry: &EntryId,
-    change: impl FnOnce(&mut ProfileEntry<C>),
-) -> Result<(Profile<C>, Arc<dyn Any + Send + Sync>), KernelError> {
-    let committed = state
-        .committed
-        .as_ref()
-        .and_then(|committed| committed.downcast_ref::<Profile<C>>())
-        .ok_or_else(|| error(ErrorCode::InvalidProfile, "foreign config type"))?;
-    let mut profile = committed.clone();
-    let persisted = profile
-        .entries
-        .iter_mut()
-        .find(|candidate| candidate.id == *entry)
-        .ok_or_else(|| error(ErrorCode::InvalidProfile, "no such entry"))?;
-    change(persisted);
-    let spec = Arc::new(persisted.clone()) as Arc<dyn Any + Send + Sync>;
-    Ok((profile, spec))
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

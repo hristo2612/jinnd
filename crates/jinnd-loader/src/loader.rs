@@ -14,7 +14,7 @@ use jinnd_registry::Registry;
 use tokio_util::sync::CancellationToken;
 
 use crate::lanes::PackageLane;
-use crate::state::{State, amended, error, lock};
+use crate::state::{EntryRuntime, State, error, lock};
 
 /// A config type usable at the loader's typed boundary (R3): profile config
 /// payloads are plain data, never behavior (R9), compared in their canonical
@@ -30,7 +30,7 @@ pub struct Loader {
     pub(crate) lanes: Mutex<HashMap<(String, TypeId), Arc<PackageLane>>>,
     pub(crate) state: Mutex<State>,
     /// The attached write-back store, if any (see [`Loader::attach_store`]).
-    pub(crate) persist: Mutex<Option<Arc<crate::persist::Persistence>>>,
+    pub(crate) persist: Mutex<Option<Arc<crate::store::Persistence>>>,
     /// Serializes reconcile/update/dispose. Held across plan application —
     /// loader operations are never reachable from plugin code, so no lock is
     /// ever held across a call into a plugin (R1).
@@ -148,20 +148,12 @@ impl Loader {
         config: C,
     ) -> Result<(), KernelError> {
         let _gate = self.gate.lock().await;
-        let committed = self.amend::<C>(entry, |persisted| {
-            persisted.config = config.clone();
-        })?;
-        self.persist(&committed.profile).await?;
-        let handle = {
-            let mut state = lock(&self.state);
-            state.committed = Some(committed.profile);
-            let runtime = state
-                .entries
-                .get_mut(entry)
-                .ok_or_else(|| error(ErrorCode::InvalidProfile, "the entry has no runtime"))?;
-            runtime.spec = committed.spec;
-            runtime.live.as_ref().map(|live| Arc::clone(&live.handle))
-        };
+        let change = |persisted: &mut ProfileEntry<C>| persisted.config = config.clone();
+        let handle = self
+            .commit_amended::<C, _>(entry, change, |runtime| {
+                runtime.live.as_ref().map(|live| Arc::clone(&live.handle))
+            })
+            .await?;
         if let Some(handle) = handle {
             handle.restate(&config)?;
             handle.restart(TransitionCause::ConfigChanged);
@@ -181,43 +173,57 @@ impl Loader {
     /// (nothing is committed then).
     pub async fn dispose_entry<C: LaneConfig>(&self, entry: &EntryId) -> Result<(), KernelError> {
         let _gate = self.gate.lock().await;
-        let committed = self.amend::<C>(entry, |persisted| {
-            persisted.disabled = true;
-        })?;
-        self.persist(&committed.profile).await?;
-        let live = {
-            let mut state = lock(&self.state);
-            state.committed = Some(committed.profile);
-            let runtime = state
-                .entries
-                .get_mut(entry)
-                .ok_or_else(|| error(ErrorCode::InvalidProfile, "the entry has no runtime"))?;
-            runtime.spec = committed.spec;
-            runtime.context = None;
-            runtime.live.take()
-        };
+        let change = |persisted: &mut ProfileEntry<C>| persisted.disabled = true;
+        let live = self
+            .commit_amended::<C, _>(entry, change, |runtime| {
+                runtime.context = None;
+                runtime.live.take()
+            })
+            .await?;
         if let Some(live) = live {
             live.handle.dispose().await?;
         }
         Ok(())
     }
 
-    /// Computes one amended committed document, validating the entry has a
-    /// runtime, without committing anything yet.
-    fn amend<C: LaneConfig>(
+    /// Computes one entry's amended committed document, persists it (LAW §3:
+    /// the document of record moves first), then commits it and answers with
+    /// `then` applied to the entry's runtime. A failed write-back commits
+    /// nothing. `then` is loader code under the state lock, never plugin code
+    /// (R1).
+    async fn commit_amended<C: LaneConfig, T>(
         &self,
         entry: &EntryId,
         change: impl FnOnce(&mut ProfileEntry<C>),
-    ) -> Result<Amended, KernelError> {
-        let state = lock(&self.state);
-        if !state.entries.contains_key(entry) {
-            return Err(error(ErrorCode::InvalidProfile, "the entry has no runtime"));
-        }
-        let (profile, spec) = amended::<C>(&state, entry, change)?;
-        Ok(Amended {
-            profile: Arc::new(profile) as Arc<dyn Any + Send + Sync>,
-            spec,
-        })
+        then: impl FnOnce(&mut EntryRuntime) -> T,
+    ) -> Result<T, KernelError> {
+        let missing = || error(ErrorCode::InvalidProfile, "the entry has no runtime");
+        let (committed, spec) = {
+            let state = lock(&self.state);
+            if !state.entries.contains_key(entry) {
+                return Err(missing());
+            }
+            let committed = state
+                .committed
+                .as_ref()
+                .and_then(|committed| committed.downcast_ref::<Profile<C>>())
+                .ok_or_else(|| error(ErrorCode::InvalidProfile, "foreign config type"))?;
+            let mut profile = committed.clone();
+            let persisted = profile
+                .entries
+                .iter_mut()
+                .find(|candidate| candidate.id == *entry)
+                .ok_or_else(|| error(ErrorCode::InvalidProfile, "no such entry"))?;
+            change(persisted);
+            let spec = Arc::new(persisted.clone()) as Arc<dyn Any + Send + Sync>;
+            (Arc::new(profile) as Arc<dyn Any + Send + Sync>, spec)
+        };
+        self.persist(&committed).await?;
+        let mut state = lock(&self.state);
+        state.committed = Some(committed);
+        let runtime = state.entries.get_mut(entry).ok_or_else(missing)?;
+        runtime.spec = spec;
+        Ok(then(runtime))
     }
 
     /// The fiber currently hosting `entry`, if any.
@@ -280,11 +286,4 @@ impl Loader {
         }
         Ok(Some(Profile { entries }))
     }
-}
-
-/// One amended committed document, computed but not yet committed: it is
-/// persisted first, committed second (LAW §3).
-struct Amended {
-    profile: Arc<dyn Any + Send + Sync>,
-    spec: Arc<dyn Any + Send + Sync>,
 }

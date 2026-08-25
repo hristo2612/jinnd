@@ -107,7 +107,9 @@ pub fn plan<C: std::fmt::Debug>(old: Option<&Profile<C>>, new: &Profile<C>) -> P
                     continue;
                 }
                 let rebind = old_index.environment(&entry.id) != new_index.environment(&entry.id);
-                let restate = canonical(&previous.config) != canonical(&entry.config);
+                // The canonical comparison form: config is plain data (R9),
+                // so its Debug rendering is faithful.
+                let restate = format!("{:?}", previous.config) != format!("{:?}", entry.config);
                 if rebind {
                     rebinds.push((new_index.depth(&entry.id), StepKind::Rebind, &entry.id));
                 }
@@ -150,11 +152,6 @@ pub fn plan<C: std::fmt::Debug>(old: Option<&Profile<C>>, new: &Profile<C>) -> P
     }));
     steps.extend(step_of(creations));
     outcome
-}
-
-/// One config's canonical comparison form at this boundary.
-fn canonical<C: std::fmt::Debug>(config: &C) -> String {
-    format!("{config:?}")
 }
 
 fn step_of<'a>(ranked: Vec<(usize, StepKind, &'a EntryId)>) -> impl Iterator<Item = Step> + 'a {
