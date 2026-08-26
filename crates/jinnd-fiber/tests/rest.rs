@@ -35,6 +35,27 @@ async fn a_fiber_rests_between_transitions_and_never_during_one() {
     assert!(fiber.resting(), "a disposed fiber owes nothing");
 }
 
+/// The round-3 law (M1-P6c): rest lowers ATOMICALLY with the target write —
+/// in restart's own critical section, never deferred to supervisor
+/// scheduling. The assert runs with no await after the restart, so on a
+/// current-thread runtime the supervisor provably has not run: the answer
+/// must already be `false` the moment `restart` returns.
+#[tokio::test]
+async fn a_restated_target_is_never_observed_at_rest() {
+    let (fiber, _source) = ready(body(|_setup| Box::pin(async { Ok(()) })));
+    fiber.quiesce().await;
+    assert!(fiber.resting(), "a settled fiber is at rest");
+
+    fiber.restart(jinnd_api::TransitionCause::ExplicitRestart);
+    assert!(
+        !fiber.resting(),
+        "the moment restart returns, committed != target: never at rest"
+    );
+
+    fiber.quiesce().await;
+    assert!(fiber.resting(), "the reload landed: at rest again");
+}
+
 type Slot = Arc<Mutex<Option<Arc<Fiber>>>>;
 
 /// The awaited-helper deadlock shape (M1-P6c round 2): the body spawns a task

@@ -1,100 +1,87 @@
-//! The rest-observation cell (M1-P6c round 2).
+//! The rest gate's loom models (M1-P6c).
 //!
-//! "At rest" is the supervisor's own verdict: the last transition landed and
-//! the committed state equals the latest desired one — nothing in flight,
-//! nothing owed. The profile loader begins a fiber-awaiting amendment only
-//! against a resting fiber (the round-2 law): refusal is decided entirely
-//! from this kernel-owned bit, never from task-locals or caller identity.
+//! "At rest" means the fiber owes no transition: the last one landed and the
+//! committed state equals the latest desired one. The profile loader begins a
+//! fiber-awaiting amendment only against a resting fiber (the round-2 law);
+//! refusal is decided entirely from kernel-owned state, never from
+//! task-locals or caller identity.
 //!
-//! The guarantee is causal, exactly like the withdrawal cell's: the bit is
-//! lowered `SeqCst` *before* the supervisor runs any transition and raised
-//! only at a settle point, so work a transition launches — the body, the
-//! inverses, and tasks they spawn — happens-after the lower and never
-//! observes its own fiber at rest. An observer outside those spans may see
-//! either value; a refusal built on the bit is honest and retryable, never a
-//! lock.
-
-#[cfg(feature = "loom")]
-use loom::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(feature = "loom"))]
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// One fiber's observable "every owed transition has landed" bit.
-#[derive(Debug)]
-pub(crate) struct RestCell {
-    resting: AtomicBool,
-}
-
-impl RestCell {
-    /// A fresh fiber still owes its first reconciliation pass: not yet at rest.
-    pub(crate) fn new() -> Self {
-        Self {
-            resting: AtomicBool::new(false),
-        }
-    }
-
-    /// Lowered before a transition runs: anything the transition reaches
-    /// happens-after this store.
-    pub(crate) fn lower(&self) {
-        self.resting.store(false, Ordering::SeqCst);
-    }
-
-    /// Raised at a settle point: nothing owed, nothing in flight.
-    pub(crate) fn raise(&self) {
-        self.resting.store(true, Ordering::SeqCst);
-    }
-
-    /// True while the fiber owes no transition.
-    pub(crate) fn observed(&self) -> bool {
-        self.resting.load(Ordering::SeqCst)
-    }
-}
-
-#[cfg(all(test, not(feature = "loom")))]
-mod tests {
-    use super::RestCell;
-
-    #[test]
-    fn the_bit_tracks_lower_and_raise_and_starts_lowered() {
-        let cell = RestCell::new();
-        assert!(!cell.observed(), "a fresh fiber owes its first pass");
-        cell.raise();
-        assert!(cell.observed());
-        cell.lower();
-        assert!(!cell.observed());
-    }
-}
+//! Since round 3 the bit lives inside [`crate::steering::SteeringCell`]'s
+//! critical section: every target write (restart, dispose, epoch change)
+//! lowers it atomically with the write, and the supervisor's settle raises it
+//! only when the movement stamp it observed is still current. Rest and target
+//! can therefore never be observed out of sync — the window the round-2
+//! deferred-lowering left open (restart landed, bit still raised until the
+//! supervisor scheduled) is closed at the mutation site. The models below
+//! claim exactly that window.
 
 #[cfg(all(test, feature = "loom"))]
 mod models {
+    use jinnd_api::TransitionCause;
     use loom::sync::Arc;
     use loom::thread;
 
-    use super::RestCell;
+    use crate::steering::SteeringCell;
 
-    /// The causal edge the loader's rest gate is built on (M1-P6c round 2):
-    /// the supervisor lowers the bit before running a transition, and raises
-    /// it only after the transition's work completed (the join models the
-    /// body landing). A task the transition spawns therefore never observes
-    /// its own fiber at rest, however the threads interleave.
+    /// The verifier's round-2 window, claimed shut: the moment `restart`
+    /// returns, `resting()` answers `false` — even against a racing stale
+    /// settle by the supervisor, whichever way the threads interleave.
     #[test]
-    fn a_task_spawned_by_a_transition_never_observes_rest() {
+    fn a_restart_is_never_observed_at_rest() {
         loom::model(|| {
-            let cell = Arc::new(RestCell::new());
-            cell.raise();
-            cell.lower();
-            let helper = {
+            let cell = Arc::new(SteeringCell::new(None));
+            let (_, observed) = cell.observed();
+            assert!(cell.settle_rest(observed), "a fiber owing nothing rests");
+            let supervisor = {
                 let cell = Arc::clone(&cell);
-                // What a body spawns mid-transition: strictly after `lower`.
-                thread::spawn(move || cell.observed())
+                // The supervisor's settle, stamped BEFORE the restart: stale.
+                thread::spawn(move || cell.settle_rest(observed))
             };
-            let observed = helper.join().unwrap_or_else(|_| unreachable!());
+            cell.restart(TransitionCause::ExplicitRestart);
             assert!(
-                !observed,
-                "work launched by a transition saw its own fiber at rest"
+                !cell.resting(),
+                "the moment restart returns, committed != target: never at rest"
             );
-            cell.raise();
-            assert!(cell.observed(), "the settle point raises the bit again");
+            let raised = supervisor.join().unwrap_or_else(|_| unreachable!());
+            assert!(
+                !raised || !cell.resting(),
+                "a stale settle raised rest over a moved target"
+            );
+        });
+    }
+
+    /// The same window, disposal lane: a first disposal request lowers rest
+    /// in its own critical section, and no stale settle can raise it back.
+    #[test]
+    fn a_disposal_request_is_never_observed_at_rest() {
+        loom::model(|| {
+            let cell = Arc::new(SteeringCell::new(None));
+            let (_, observed) = cell.observed();
+            assert!(cell.settle_rest(observed), "a fiber owing nothing rests");
+            let supervisor = {
+                let cell = Arc::clone(&cell);
+                thread::spawn(move || cell.settle_rest(observed))
+            };
+            cell.dispose();
+            assert!(
+                !cell.resting(),
+                "the moment dispose returns, a withdrawal is owed: never at rest"
+            );
+            supervisor.join().unwrap_or_else(|_| unreachable!());
+            assert!(!cell.resting(), "a stale settle outlived the disposal");
+        });
+    }
+
+    /// Only a settle whose stamp is current raises rest: after the writes it
+    /// observed, a fresh observation settles, and the fiber rests again.
+    #[test]
+    fn a_current_settle_raises_rest_exactly_once_the_target_is_served() {
+        loom::model(|| {
+            let cell = SteeringCell::new(None);
+            cell.restart(TransitionCause::ExplicitRestart);
+            let (_, observed) = cell.observed();
+            assert!(cell.settle_rest(observed), "the served target rests");
+            assert!(cell.resting());
         });
     }
 }

@@ -62,14 +62,18 @@ pub(crate) async fn supervise(mut cell: Cell) {
     loop {
         let asked = cell.shared.probe.load(Ordering::SeqCst);
         cell.sync_signal();
-        if let Some(step) = cell.next_step() {
-            // Lowered before any transition work runs (M1-P6c round 2): code
-            // the transition reaches never observes its own fiber at rest.
-            cell.shared.rest.lower();
+        // Rest was already lowered by whatever target write owes this step —
+        // atomically, in the steering cell's own critical section (M1-P6c
+        // round 3) — so code a transition reaches never observes its own
+        // fiber at rest. The settle below presents the stamp this read
+        // observed: a target that moves meanwhile makes the settle stale and
+        // rest stays lowered until the next round serves it.
+        let (desired, observed) = cell.shared.steering.observed();
+        if let Some(step) = plan(&cell.committed, &desired) {
             cell.run(step).await;
             continue;
         }
-        cell.shared.rest.raise();
+        cell.shared.steering.settle_rest(observed);
         cell.shared.settle(asked);
         if cell.committed.state == FiberState::Disposed || cell.committed.disposal_failed {
             // Settled for good: no probe will ever go unanswered again.
