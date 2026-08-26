@@ -31,7 +31,7 @@ mod tree;
 
 pub use diff::{Attestation, Plan, Step, StepKind, plan};
 pub use document::{Document, DocumentEntry, RawEntry};
+pub use file_store::FileStore;
 pub use lanes::{EntryHandle, PackageLane, SpawnFn, SpawnRequest};
 pub use loader::{LaneConfig, Loader};
-pub use file_store::FileStore;
 pub use store::DocumentStore;

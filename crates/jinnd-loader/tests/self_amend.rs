@@ -57,9 +57,8 @@ impl FiberBody for SelfAmendBody {
                     if self.via_spawn {
                         // The awaited helper escapes any task-local: only
                         // kernel-owned state can refuse this shape.
-                        let helper = tokio::spawn(async move {
-                            loader.update_entry(&entry, 5_u32).await
-                        });
+                        let helper =
+                            tokio::spawn(async move { loader.update_entry(&entry, 5_u32).await });
                         helper.await.unwrap_or_else(|join| {
                             Err(KernelError {
                                 code: jinnd_api::ErrorCode::InvalidProfile,

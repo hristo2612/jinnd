@@ -142,4 +142,3 @@ pub fn plain_spawn(
         fiber: Arc::new(Fiber::spawn(body, signal)),
     }) as Arc<dyn EntryHandle>
 }
-

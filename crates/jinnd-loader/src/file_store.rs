@@ -100,4 +100,3 @@ fn fault(message: String) -> KernelError {
         fiber: None,
     }
 }
-

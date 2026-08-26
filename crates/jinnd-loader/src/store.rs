@@ -210,8 +210,9 @@ fn contained_value<C: serde::Serialize>(
     subject: &str,
     config: &C,
 ) -> Result<serde_json::Value, KernelError> {
-    let outcome =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serde_json::to_value(config)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        serde_json::to_value(config)
+    }));
     match outcome {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(cause)) => Err(error(

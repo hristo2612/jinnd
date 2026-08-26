@@ -85,7 +85,9 @@ impl Loader {
         // The document follows; a failed write-back withdraws the staged
         // config so both views stay at the prior state.
         if let Err(fault) = self
-            .persist_amendment::<C>(entry, encoded, |persisted| persisted.config = config.clone())
+            .persist_amendment::<C>(entry, encoded, |persisted| {
+                persisted.config = config.clone()
+            })
             .await
         {
             let withdrawal = match &handle {

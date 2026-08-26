@@ -161,10 +161,7 @@ impl serde::Serialize for PanickySerialize {
 }
 
 fn panicky(value: u32) -> PanickySerialize {
-    PanickySerialize {
-        value,
-        panic_on: 9,
-    }
+    PanickySerialize { value, panic_on: 9 }
 }
 
 /// Round-2 blocker: a panicking caller-authored serializer must surface as an
@@ -205,7 +202,10 @@ async fn a_caller_authored_serializer_panic_is_contained() {
 
     // Nothing was committed or staged anywhere: both views at the prior
     // state, the runtime never offered the change.
-    assert_eq!(committed_entry_of::<PanickySerialize>(&loader, "one").value, 1);
+    assert_eq!(
+        committed_entry_of::<PanickySerialize>(&loader, "one").value,
+        1
+    );
     assert_eq!(disk_entry(&path, "one").await.config, 1);
     assert!(stated(&log).is_empty(), "the runtime observed nothing");
 

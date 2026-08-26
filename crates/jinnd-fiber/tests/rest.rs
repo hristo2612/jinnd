@@ -61,9 +61,7 @@ async fn a_task_spawned_and_awaited_by_the_body_never_observes_rest() {
                 };
                 let probe = tokio::spawn(async move { fiber.resting() });
                 let seen = probe.await.unwrap_or(true);
-                *observed
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner()) = Some(seen);
+                *observed.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(seen);
                 Ok(())
             })
         })
@@ -77,11 +75,12 @@ async fn a_task_spawned_and_awaited_by_the_body_never_observes_rest() {
     fiber.quiesce().await;
 
     assert_eq!(
-        *observed
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()),
+        *observed.lock().unwrap_or_else(|poison| poison.into_inner()),
         Some(false),
         "work launched and awaited by an activation saw its own fiber at rest"
     );
-    assert!(fiber.resting(), "the fiber rests once the activation landed");
+    assert!(
+        fiber.resting(),
+        "the fiber rests once the activation landed"
+    );
 }
