@@ -155,6 +155,18 @@ pub fn probe_entry<C>(name: &str, config: C) -> ProfileEntry<C> {
     }
 }
 
+/// A store path whose directory does not exist, so every save fails.
+pub fn broken_path() -> PathBuf {
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir()
+        .join(format!(
+            "jinnd-loader-amend-missing-{}-{}",
+            std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
+        ))
+        .join("profile.json")
+}
+
 static SCRATCH: AtomicU64 = AtomicU64::new(0);
 
 pub fn scratch_path() -> PathBuf {

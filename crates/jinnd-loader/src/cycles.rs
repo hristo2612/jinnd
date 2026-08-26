@@ -20,14 +20,43 @@ use jinnd_api::{EntryFault, EntryId, ErrorCode, KernelError, Realm};
 
 use crate::diff::{Plan, Step, StepKind};
 use crate::lanes::PackageLane;
-use crate::loader::LaneConfig;
+use crate::loader::{LaneConfig, Loader};
+use crate::state::lock;
 use crate::tree::EntryIndex;
+
+impl Loader {
+    /// Detects declared dependency cycles over the desired `profile` and
+    /// quarantines every member out of `plan`: never spawned, any previous
+    /// runtime withdrawn, the fault recorded (I3, R11).
+    pub(crate) fn quarantine_cycles<C: LaneConfig>(
+        &self,
+        plan: &mut Plan,
+        profile: &jinnd_api::Profile<C>,
+    ) {
+        let cyclic = {
+            let lanes = lock(&self.lanes);
+            cycle_faults(&EntryIndex::new(profile), &lanes)
+        };
+        if cyclic.is_empty() {
+            return;
+        }
+        let members: HashSet<&EntryId> = cyclic.iter().map(|fault| &fault.entry).collect();
+        let live: HashSet<EntryId> = lock(&self.state)
+            .entries
+            .iter()
+            .filter(|(entry, runtime)| members.contains(entry) && runtime.live.is_some())
+            .map(|(entry, _)| entry.clone())
+            .collect();
+        quarantine(plan, &members, &live);
+        plan.faults.extend(cyclic);
+    }
+}
 
 /// The faults for every entry involved in a declared dependency cycle: the
 /// plan drops these entries' steps, so cycle members are never spawned —
 /// cleanly inactive with the recorded error (I3, R11) — and their acyclic
 /// siblings load untouched.
-pub(crate) fn cycle_faults<C: LaneConfig>(
+fn cycle_faults<C: LaneConfig>(
     index: &EntryIndex<'_, C>,
     lanes: &HashMap<(String, TypeId), std::sync::Arc<PackageLane>>,
 ) -> Vec<EntryFault> {
@@ -96,7 +125,7 @@ pub(crate) fn cycle_faults<C: LaneConfig>(
 /// drawn into a cycle never keep a previous runtime alive. No spawning step
 /// for a member survives; a member's rebind+restate pair collapses to one
 /// containment step.
-pub(crate) fn quarantine(plan: &mut Plan, members: &HashSet<&EntryId>, live: &HashSet<EntryId>) {
+fn quarantine(plan: &mut Plan, members: &HashSet<&EntryId>, live: &HashSet<EntryId>) {
     plan.unchanged.retain(|entry| !members.contains(entry));
     let mut stepped: HashSet<EntryId> = HashSet::new();
     plan.steps.retain_mut(|step| {

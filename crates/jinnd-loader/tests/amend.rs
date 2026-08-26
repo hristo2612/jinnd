@@ -9,10 +9,10 @@ mod common;
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::probe::{
-    Probe, committed_entry, disk_entry, probe_entry as entry, probe_loader, scratch_path, stated,
+    Probe, broken_path, committed_entry, disk_entry, probe_entry as entry, probe_loader,
+    scratch_path, stated,
 };
 use common::{Grab, id};
 use jinnd_api::{ErrorCode, Profile};
@@ -62,10 +62,7 @@ async fn a_failed_write_back_withdraws_the_staged_config() {
         .grab();
 
     // Every save through this store fails: its directory does not exist.
-    let broken = std::env::temp_dir()
-        .join(format!("jinnd-loader-amend-missing-{}", std::process::id()))
-        .join("profile.json");
-    loader.attach_store::<u32>(FileStore::new(broken), Document::default());
+    loader.attach_store::<u32>(FileStore::new(broken_path()), Document::default());
 
     assert!(loader.update_entry(&id("one"), 2u32).await.is_err());
     // The committed view stayed at the prior state...
@@ -73,44 +70,6 @@ async fn a_failed_write_back_withdraws_the_staged_config() {
     // ...and the staged config was withdrawn: offered 2, restored to 1.
     assert_eq!(stated(&log), vec![2, 1]);
     let _ = std::fs::remove_dir_all(path.parent().grab());
-}
-
-#[tokio::test]
-async fn a_refused_disposal_leaves_the_document_at_the_prior_state() {
-    let (loader, _log) = probe_loader::<u32>(
-        |value| *value,
-        Probe {
-            refuse_disposal: true,
-            ..Probe::default()
-        },
-    );
-    let path = scratch_path();
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
-    loader
-        .reconcile(Profile {
-            entries: vec![entry("one", 1u32)],
-        })
-        .await
-        .grab();
-
-    assert!(loader.dispose_entry::<u32>(&id("one")).await.is_err());
-    // Neither view records the disposal, and the runtime is still there.
-    assert!(!committed_entry(&loader, "one").disabled);
-    assert!(!disk_entry(&path, "one").await.disabled);
-    assert!(loader.entry_fiber(&id("one")).is_some());
-    let _ = std::fs::remove_dir_all(path.parent().grab());
-}
-
-/// A store path whose directory does not exist, so every save fails.
-fn broken_path() -> std::path::PathBuf {
-    static SERIAL: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir()
-        .join(format!(
-            "jinnd-loader-amend-missing-{}-{}",
-            std::process::id(),
-            SERIAL.fetch_add(1, Ordering::Relaxed)
-        ))
-        .join("profile.json")
 }
 
 #[tokio::test]
@@ -176,102 +135,132 @@ async fn a_failed_withdrawal_records_the_divergence() {
     let _ = std::fs::remove_dir_all(path.parent().grab());
 }
 
-#[tokio::test]
-async fn a_disposal_whose_write_back_fails_records_the_divergence() {
-    let (loader, _log) = probe_loader::<u32>(|value| *value, Probe::default());
-    let path = scratch_path();
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
-    loader
-        .reconcile(Profile {
-            entries: vec![entry("one", 1u32)],
-        })
-        .await
-        .grab();
-    loader.attach_store::<u32>(FileStore::new(broken_path()), Document::default());
-
-    // Disposal is irreversible at runtime; the failed write-back leaves the
-    // document enabled — the divergence is recorded, never silent.
-    let Err(divergence) = loader.dispose_entry::<u32>(&id("one")).await else {
-        panic!("a diverged disposal must fail loudly");
-    };
-    assert!(divergence.message.contains("diverged"), "{divergence:?}");
-    assert!(loader.entry_fiber(&id("one")).is_none(), "runtime disposed");
-    assert!(!disk_entry(&path, "one").await.disabled, "document enabled");
-    let faults = loader.entry_faults();
-    assert_eq!(faults.len(), 1);
-    assert_eq!(faults[0].entry, id("one"));
-
-    // The next reconcile of the still-enabled document reconverges: the entry
-    // respawns, and the drained divergence surfaces in the report.
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
-    let report = loader
-        .reconcile(Profile {
-            entries: vec![entry("one", 1u32)],
-        })
-        .await
-        .grab();
-    assert!(report.created.contains(&id("one")), "respawned: {report:?}");
-    assert_eq!(report.errors.len(), 1, "the divergence surfaced");
-    assert!(loader.entry_fiber(&id("one")).is_some());
-    assert!(loader.entry_faults().is_empty(), "reconverged");
-    let _ = std::fs::remove_dir_all(path.parent().grab());
-}
-
-/// A config whose serialization fails exactly on its Nth call: the only
-/// caller-controlled seam left in the save path, since encoding itself is
-/// kernel-owned (M1-P6c).
+/// A config whose `Serialize` panics on a designated value: caller-authored
+/// code the save path must contain at the kernel boundary (R11) — and must
+/// never run inside the persist permit's span (R1, PLA-270).
 #[derive(Clone, Debug)]
-struct FlakySerialize {
+struct PanickySerialize {
     value: u32,
-    calls: Arc<AtomicU64>,
-    fail_on: u64,
+    panic_on: u32,
 }
 
-impl PartialEq for FlakySerialize {
+impl PartialEq for PanickySerialize {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
 
-impl serde::Serialize for FlakySerialize {
+impl serde::Serialize for PanickySerialize {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_on {
-            return Err(serde::ser::Error::custom("the config refuses to render"));
-        }
+        assert!(
+            self.value != self.panic_on,
+            "the config panics while rendering"
+        );
         serializer.serialize_u32(self.value)
     }
 }
 
+fn panicky(value: u32) -> PanickySerialize {
+    PanickySerialize {
+        value,
+        panic_on: 9,
+    }
+}
+
+/// Round-2 blocker: a panicking caller-authored serializer must surface as an
+/// honest per-entry error from the amendment — never escape the kernel
+/// boundary as a task panic (R11).
 #[tokio::test]
-async fn a_disposal_write_back_is_retried_before_recording_divergence() {
-    let (loader, _log) = probe_loader::<FlakySerialize>(|flaky| flaky.value, Probe::default());
+async fn a_caller_authored_serializer_panic_is_contained() {
+    let (loader, log) = probe_loader::<PanickySerialize>(|config| config.value, Probe::default());
+    let loader = Arc::new(loader);
     let path = scratch_path();
-    loader.attach_store::<FlakySerialize>(FileStore::new(path.clone()), Document::default());
-    let calls = Arc::new(AtomicU64::new(0));
-    // Serialization 1 is the reconcile's save; 2 is the disposal's first
-    // write-back, made to fail; 3 is the retry, which lands.
+    loader.attach_store::<PanickySerialize>(FileStore::new(path.clone()), Document::default());
     loader
         .reconcile(Profile {
-            entries: vec![entry(
-                "one",
-                FlakySerialize {
-                    value: 1,
-                    calls: Arc::clone(&calls),
-                    fail_on: 2,
-                },
-            )],
+            entries: vec![entry("one", panicky(1))],
         })
         .await
         .grab();
 
-    loader
-        .dispose_entry::<FlakySerialize>(&id("one"))
-        .await
-        .grab();
-    assert_eq!(calls.load(Ordering::SeqCst), 3, "retried exactly once");
-    assert!(disk_entry(&path, "one").await.disabled);
-    assert!(loader.entry_faults().is_empty(), "no divergence remains");
+    // Spawned so an escaping panic reads as a JoinError, not a dead suite.
+    let amended = tokio::spawn({
+        let loader = Arc::clone(&loader);
+        async move { loader.update_entry(&id("one"), panicky(9)).await }
+    })
+    .await;
+    let outcome = match amended {
+        Ok(outcome) => outcome,
+        Err(join) => panic!("caller-authored Serialize escaped the kernel boundary: {join}"),
+    };
+    let Err(refusal) = outcome else {
+        panic!("a panicking serializer must be an honest error");
+    };
+    assert_eq!(refusal.code, ErrorCode::InvalidProfile);
+    assert!(
+        refusal.message.contains("panic"),
+        "the error names the panic, got: {}",
+        refusal.message
+    );
+
+    // Nothing was committed or staged anywhere: both views at the prior
+    // state, the runtime never offered the change.
+    assert_eq!(committed_entry_of::<PanickySerialize>(&loader, "one").value, 1);
+    assert_eq!(disk_entry(&path, "one").await.config, 1);
+    assert!(stated(&log).is_empty(), "the runtime observed nothing");
+
+    // The loader is not poisoned: a serializable amendment still lands.
+    loader.update_entry(&id("one"), panicky(2)).await.grab();
+    assert_eq!(disk_entry(&path, "one").await.config, 2);
     let _ = std::fs::remove_dir_all(path.parent().grab());
+}
+
+/// The reconcile-path twin: a panicking serializer fails the commit honestly
+/// — nothing lands on disk, no runtime spawns, no panic escapes (R11).
+#[tokio::test]
+async fn a_serializer_panic_during_reconcile_commits_nothing() {
+    let (loader, _log) = probe_loader::<PanickySerialize>(|config| config.value, Probe::default());
+    let loader = Arc::new(loader);
+    let path = scratch_path();
+    loader.attach_store::<PanickySerialize>(FileStore::new(path.clone()), Document::default());
+
+    let reconciled = tokio::spawn({
+        let loader = Arc::clone(&loader);
+        async move {
+            loader
+                .reconcile(Profile {
+                    entries: vec![entry("one", panicky(9))],
+                })
+                .await
+        }
+    })
+    .await;
+    let outcome = match reconciled {
+        Ok(outcome) => outcome,
+        Err(join) => panic!("caller-authored Serialize escaped the kernel boundary: {join}"),
+    };
+    let Err(refusal) = outcome else {
+        panic!("a panicking serializer must fail the commit");
+    };
+    assert_eq!(refusal.code, ErrorCode::InvalidProfile);
+    assert!(FileStore::new(path.clone()).load().await.grab().is_none());
+    assert!(loader.entry_fiber(&id("one")).is_none());
+    let _ = std::fs::remove_dir_all(path.parent().grab());
+}
+
+/// The named entry's typed committed config.
+fn committed_entry_of<C: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static>(
+    loader: &jinnd_loader::Loader,
+    name: &str,
+) -> C {
+    let committed: Profile<C> = loader.persisted().grab();
+    committed
+        .entries
+        .iter()
+        .find(|entry| entry.id == id(name))
+        .cloned()
+        .grab()
+        .config
 }
 
 /// A config whose `Debug` rendering never changes, while its value does: only

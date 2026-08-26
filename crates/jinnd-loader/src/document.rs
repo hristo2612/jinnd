@@ -159,46 +159,28 @@ impl Document {
     /// [`Document::merge_profile`] instead, which preserves both.
     #[must_use]
     pub fn from_profile(profile: &Profile<serde_json::Value>) -> Self {
-        Self::merge_profile(profile, &Self::default()).unwrap_or_default()
+        Self::merge_profile(profile, &Self::default())
     }
 
-    /// Renders a typed profile over `baseline`, the committed document being
-    /// replaced: the kernel-owned raw-merge (M1-P6c). Every typed entry is
-    /// re-encoded mechanically; unknown fields of a baseline entry with the
-    /// same id are carried over verbatim, and the baseline's raw entries
-    /// re-enter at their recorded positions — a save never erases what it did
-    /// not understand (LAW §3; v0.1 bounds).
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorCode::InvalidProfile`] when an entry's config does not
-    /// serialize — an honest failure, never a silent skip.
-    pub fn merge_profile<C: serde::Serialize>(
-        profile: &Profile<C>,
-        baseline: &Document,
-    ) -> Result<Self, KernelError> {
-        let mut entries = Vec::with_capacity(profile.entries.len());
-        for entry in &profile.entries {
-            let config = serde_json::to_value(&entry.config).map_err(|error| KernelError {
-                code: ErrorCode::InvalidProfile,
-                message: format!(
-                    "the config of entry {:?} does not serialize: {error}",
-                    entry.id
-                ),
-                fiber: None,
-            })?;
-            let extra = baseline
-                .entries
-                .iter()
-                .find(|persisted| persisted.id == entry.id.0)
-                .map(|persisted| persisted.extra.clone())
-                .unwrap_or_default();
-            entries.push(DocumentEntry {
+    /// Renders a value-form profile over `baseline`, the committed document
+    /// being replaced: the kernel-owned raw-merge (M1-P6c). Mechanical by
+    /// type — configs arrive as plain `serde_json::Value`, so no
+    /// caller-authored code can run here, and the persist permit may span
+    /// this safely (R1, PLA-270). Unknown fields of a baseline entry with
+    /// the same id are carried over verbatim, and the baseline's raw entries
+    /// re-enter at their recorded positions — a save never erases what it
+    /// did not understand (LAW §3; v0.1 bounds).
+    #[must_use]
+    pub fn merge_profile(profile: &Profile<serde_json::Value>, baseline: &Document) -> Self {
+        let entries = profile
+            .entries
+            .iter()
+            .map(|entry| DocumentEntry {
                 id: entry.id.0.clone(),
                 package: entry.plugin.package.clone(),
                 version: entry.plugin.version.clone(),
                 hash: entry.plugin.artifact_hash.clone(),
-                config,
+                config: entry.config.clone(),
                 disabled: entry.disabled,
                 parent: entry.parent.as_ref().map(|parent| parent.0.clone()),
                 isolate: entry
@@ -206,13 +188,54 @@ impl Document {
                     .iter()
                     .map(|binding| (binding.service.clone(), directive(&binding.realm)))
                     .collect(),
-                extra,
-            });
-        }
-        Ok(Self {
+                extra: baseline
+                    .entries
+                    .iter()
+                    .find(|persisted| persisted.id == entry.id.0)
+                    .map(|persisted| persisted.extra.clone())
+                    .unwrap_or_default(),
+            })
+            .collect();
+        Self {
             entries,
             raw: baseline.raw.clone(),
-        })
+        }
+    }
+
+    /// Rewrites one persisted entry — a new config value and/or the disabled
+    /// flag — leaving every other byte of the document as it was: the
+    /// runtime-led amendment's save path, mechanical by construction
+    /// (M1-P6c; R1). Sibling amendments already saved stay untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] when the document holds no such entry:
+    /// the disk may never silently drift from the committed view.
+    pub(crate) fn amended(
+        &self,
+        entry: &str,
+        config: Option<serde_json::Value>,
+        disabled: Option<bool>,
+    ) -> Result<Self, KernelError> {
+        let mut document = self.clone();
+        let Some(persisted) = document
+            .entries
+            .iter_mut()
+            .find(|candidate| candidate.id == entry)
+        else {
+            return Err(KernelError {
+                code: ErrorCode::InvalidProfile,
+                message: format!("entry {entry:?} is not in the persisted document"),
+                fiber: None,
+            });
+        };
+        if let Some(config) = config {
+            persisted.config = config;
+        }
+        if let Some(disabled) = disabled {
+            persisted.disabled = disabled;
+        }
+        Ok(document)
     }
 }
 

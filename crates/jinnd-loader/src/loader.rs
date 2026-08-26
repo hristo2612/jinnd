@@ -166,28 +166,22 @@ impl Loader {
         // members are never spawned and any previous runtime of theirs is
         // withdrawn — cleanly inactive with the recorded fault — while
         // acyclic siblings load untouched (R11).
-        let cyclic = {
-            let lanes = lock(&self.lanes);
-            crate::cycles::cycle_faults(&crate::tree::EntryIndex::new(&profile), &lanes)
-        };
-        if !cyclic.is_empty() {
-            let members: std::collections::HashSet<&EntryId> =
-                cyclic.iter().map(|fault| &fault.entry).collect();
-            let live: std::collections::HashSet<EntryId> = lock(&self.state)
-                .entries
-                .iter()
-                .filter(|(entry, runtime)| members.contains(entry) && runtime.live.is_some())
-                .map(|(entry, _)| entry.clone())
-                .collect();
-            crate::cycles::quarantine(&mut plan, &members, &live);
-            plan.faults.extend(cyclic);
-        }
+        self.quarantine_cycles(&mut plan, &profile);
         let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
+        // The configs' caller-authored `Serialize` runs here — outside the
+        // persist permit, contained, before anything commits: a failing or
+        // panicking serializer fails the reconcile with nothing committed
+        // anywhere (R1, R11, PLA-270).
+        let encoded = self.encode_committed(&committed)?;
         // The document of record moves to disk before the runtime (LAW §3),
-        // under the one persist permit every write-back and commit runs under.
+        // under the one persist permit every write-back and commit runs
+        // under; the permit's span is mechanical — merge and write of plain
+        // values only.
         let drained: Vec<EntryFault> = {
             let _permit = self.gate.persist_permit().await?;
-            self.persist(&committed).await?;
+            if let Some((persistence, values)) = &encoded {
+                persistence.save_committed(values).await?;
+            }
             // Committing the new document reconverges every recorded
             // divergence: the drained faults surface in the report, never
             // dropped (LAW §3).
