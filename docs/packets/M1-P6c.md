@@ -2,9 +2,13 @@
 
 **Milestone:** M1 · **Owner:** kernel-dev · **Status:** ready ·
 **Binding rules:** R1, R3, R5, R9, R10, R11 (+ I2/I3 conformance) · **LOC ceiling:**
-delta ≤500 across `crates/jinnd-registry` + `crates/jinnd-fiber` +
-`crates/jinnd-loader` + `crates/jinnd-adapter` (ceiling, not a floor). Metric: src
-LOC excluding cfg(test), blanks, comments.
+delta ≤650 across `crates/jinnd-registry` + `crates/jinnd-fiber` +
+`crates/jinnd-loader` + `crates/jinnd-adapter` + `crates/jinnd-effects` (COO
+amendments 2026-08-25/26: effects added for the draining-effect seam; ceiling
+re-priced 500→650 on round-2 verifier evidence per the M1-P2 precedent — the
+estimate predated the adversarial findings whose fixes and cap-mandated module
+splits the packet must absorb; the verifier's canonical meter is authoritative).
+Ceiling, not a floor. Metric: src LOC excluding cfg(test), blanks, comments.
 
 Source findings: 2026-08-25 decision-log entry (dual audits). Fix packet — every
 item below is a demonstrated divergence from the paper, the reference
