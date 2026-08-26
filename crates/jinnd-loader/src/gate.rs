@@ -16,7 +16,11 @@
 //! - **The persist permit** — a one-permit semaphore serializing every
 //!   write-back and commit of the document of record. Its critical section
 //!   re-derives, persists, and commits — no plugin-facing call, no wait on
-//!   engagement — so every holder finishes and every waiter is served.
+//!   engagement — so every holder finishes and every waiter is served. The
+//!   save it awaits is kernel-authored BY CONSTRUCTION: the store seam is
+//!   sealed (`DocumentStore` is crate-internal; the public surface accepts a
+//!   path), so no caller-authorable code can ever run under the permit
+//!   (M1-P6c round 3).
 //!
 //! The conflict-point refusals live in [`crate::refuse`] (split by
 //! responsibility, R10): the withdrawal-conflict refusal (the round-4 law),

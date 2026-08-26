@@ -100,3 +100,154 @@ impl Loader {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use jinnd_api::{
+        EntryId, ErrorCode, FiberId, FiberState, KernelError, KernelFuture, PluginRef, Profile,
+        ProfileEntry, TransitionCause,
+    };
+
+    use crate::document::Document;
+    use crate::lanes::{EntryHandle, PackageLane, SpawnRequest};
+    use crate::loader::Loader;
+    use crate::store::DocumentStore;
+
+    /// The crate-owned fail-exactly-Nth-save double (M1-P6c round 3): the
+    /// disposal save path is mechanical — no caller-authored code runs in it
+    /// — so the sealed store seam itself is what proves the retry.
+    struct FlakyStore {
+        saves: Arc<AtomicU64>,
+        fail_on: u64,
+        last: Arc<Mutex<Option<Document>>>,
+    }
+
+    impl DocumentStore for FlakyStore {
+        fn save<'a>(&'a self, document: &'a Document) -> KernelFuture<'a, ()> {
+            Box::pin(async move {
+                if self.saves.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_on {
+                    return Err(KernelError {
+                        code: ErrorCode::InvalidProfile,
+                        message: "the store refuses this save".to_owned(),
+                        fiber: None,
+                    });
+                }
+                *self
+                    .last
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) = Some(document.clone());
+                Ok(())
+            })
+        }
+    }
+
+    /// A handle that never transitions: honestly at rest, disposes cleanly.
+    struct RestingHandle;
+
+    impl EntryHandle for RestingHandle {
+        fn id(&self) -> FiberId {
+            FiberId(1)
+        }
+        fn state(&self) -> FiberState {
+            FiberState::Active
+        }
+        fn withdrawing(&self) -> bool {
+            false
+        }
+        fn resting(&self) -> bool {
+            true
+        }
+        fn restart(&self, _cause: TransitionCause) {}
+        fn restate(&self, _config: &(dyn std::any::Any + Send + Sync)) -> Result<(), KernelError> {
+            Ok(())
+        }
+        fn rebind(&self, _at: jinnd_context::Context<()>) {}
+        fn dispose(&self) -> KernelFuture<'static, ()> {
+            Box::pin(async { Ok(()) })
+        }
+        fn quiesce(&self) -> KernelFuture<'static, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn entry(name: &str) -> ProfileEntry<u32> {
+        ProfileEntry {
+            id: EntryId(name.to_owned()),
+            plugin: PluginRef {
+                package: "double/plugin".to_owned(),
+                version: "1".to_owned(),
+                artifact_hash: String::new(),
+            },
+            config: 1,
+            disabled: false,
+            parent: None,
+            isolation: Vec::new(),
+        }
+    }
+
+    fn grab<T, E: std::fmt::Debug>(outcome: Result<T, E>) -> T {
+        match outcome {
+            Ok(value) => value,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+
+    /// Disposal is irreversible at runtime, so a failed write-back is retried
+    /// exactly once before any divergence is recorded (LAW §3).
+    #[tokio::test]
+    async fn a_disposal_write_back_is_retried_before_recording_divergence() {
+        let tree = jinnd_context::ContextTree::new();
+        let loader = Loader::new(tree.root(), jinnd_registry::Registry::new(), |_context| {});
+        grab(loader.register_lane::<u32>(
+            "double/plugin",
+            PackageLane {
+                injects: Vec::new(),
+                provides: None,
+                spawn: Box::new(|_request: SpawnRequest<'_>| {
+                    Ok(Arc::new(RestingHandle) as Arc<dyn EntryHandle>)
+                }),
+            },
+        ));
+        let saves = Arc::new(AtomicU64::new(0));
+        let last = Arc::new(Mutex::new(None));
+        // Save 1 is the reconcile's; 2 is the disposal's first write-back,
+        // made to fail; 3 is the retry, which lands.
+        loader.attach_store_with::<u32>(
+            Box::new(FlakyStore {
+                saves: Arc::clone(&saves),
+                fail_on: 2,
+                last: Arc::clone(&last),
+            }),
+            Document::default(),
+        );
+        grab(
+            loader
+                .reconcile(Profile {
+                    entries: vec![entry("one")],
+                })
+                .await,
+        );
+
+        grab(
+            loader
+                .dispose_entry::<u32>(&EntryId("one".to_owned()))
+                .await,
+        );
+        assert_eq!(saves.load(Ordering::SeqCst), 3, "retried exactly once");
+        let saved = last
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        let Some(saved) = saved else {
+            panic!("the retry saved no document");
+        };
+        let Some(persisted) = saved.entries.iter().find(|entry| entry.id == "one") else {
+            panic!("the entry did not persist");
+        };
+        assert!(persisted.disabled, "the retried save landed the disposal");
+        assert!(loader.entry_faults().is_empty(), "no divergence remains");
+    }
+}

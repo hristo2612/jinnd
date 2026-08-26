@@ -66,7 +66,7 @@ async fn a_caller_authored_serializer_panic_is_contained() {
     let (loader, log) = probe_loader::<PanickySerialize>(|config| config.value, Probe::default());
     let loader = Arc::new(loader);
     let path = scratch_path();
-    loader.attach_store::<PanickySerialize>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<PanickySerialize>(path.clone(), Document::default());
     loader
         .reconcile(Profile {
             entries: vec![entry("one", panicky(1))],
@@ -116,7 +116,7 @@ async fn a_serializer_panic_during_reconcile_commits_nothing() {
     let (loader, _log) = probe_loader::<PanickySerialize>(|config| config.value, Probe::default());
     let loader = Arc::new(loader);
     let path = scratch_path();
-    loader.attach_store::<PanickySerialize>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<PanickySerialize>(path.clone(), Document::default());
 
     let reconciled = tokio::spawn({
         let loader = Arc::clone(&loader);

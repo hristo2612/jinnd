@@ -19,10 +19,14 @@ use crate::document::Document;
 use crate::loader::{LaneConfig, Loader};
 use crate::state::{error, lock};
 
-/// Where the committed document persists. [`crate::FileStore`] is the standard
-/// medium; the seam exists so hosts (and tests) can place the document
-/// elsewhere without the loader caring (R10).
-pub trait DocumentStore: Send + Sync + 'static {
+/// Where the committed document persists. Kernel-internal BY DESIGN (M1-P6c
+/// round 3): the persist permit awaits `save`, so every implementation must
+/// be kernel-authored for the permit's no-caller-code guarantee to be
+/// structural rather than conventional. [`crate::FileStore`] is the standard
+/// medium; the only other impls are this crate's own test doubles. The
+/// public surface accepts a path, never a store implementation
+/// ([`Loader::attach_store`]).
+pub(crate) trait DocumentStore: Send + Sync + 'static {
     /// Saves one whole document; atomic per the implementation's medium.
     ///
     /// # Errors
@@ -110,10 +114,24 @@ impl Loader {
     /// fields are carried through every save verbatim (M1-P6c). `C`'s
     /// `Serialize` — caller-authored code — runs only inside the encoders
     /// captured here: outside the persist permit, behind panic containment
-    /// (R1, R11, PLA-270). Re-attaching replaces the previous store.
+    /// (R1, R11, PLA-270). The surface accepts a path, never a store
+    /// implementation: every [`DocumentStore`] is kernel-authored, so the
+    /// permit structurally cannot span caller-authorable code (round 3).
+    /// Re-attaching replaces the previous store.
     pub fn attach_store<C: LaneConfig + serde::Serialize>(
         &self,
-        store: impl DocumentStore,
+        path: std::path::PathBuf,
+        baseline: Document,
+    ) {
+        self.attach_store_with::<C>(Box::new(crate::FileStore::new(path)), baseline);
+    }
+
+    /// The sealed lane [`Loader::attach_store`] narrows to: `store` must be
+    /// one of this crate's own [`DocumentStore`] impls — [`crate::FileStore`]
+    /// or a crate-owned test double (M1-P6c round 3).
+    pub(crate) fn attach_store_with<C: LaneConfig + serde::Serialize>(
+        &self,
+        store: Box<dyn DocumentStore>,
         baseline: Document,
     ) {
         let encode_profile: EncodeProfile = Box::new(|committed| {
@@ -131,7 +149,7 @@ impl Loader {
             contained_value("the amended entry", config)
         });
         *lock(&self.persist) = Some(Arc::new(Persistence {
-            store: Box::new(store),
+            store,
             encode_profile,
             encode_config,
             baseline: std::sync::Mutex::new(baseline),

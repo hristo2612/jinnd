@@ -34,4 +34,3 @@ pub use document::{Document, DocumentEntry, RawEntry};
 pub use file_store::FileStore;
 pub use lanes::{EntryHandle, PackageLane, SpawnFn, SpawnRequest};
 pub use loader::{LaneConfig, Loader};
-pub use store::DocumentStore;

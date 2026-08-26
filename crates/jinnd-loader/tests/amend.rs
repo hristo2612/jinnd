@@ -15,7 +15,7 @@ use common::probe::{
 };
 use common::{Grab, id};
 use jinnd_api::{ErrorCode, Profile};
-use jinnd_loader::{Document, FileStore};
+use jinnd_loader::Document;
 
 #[tokio::test]
 async fn a_rejected_update_leaves_both_views_at_the_prior_state() {
@@ -27,7 +27,7 @@ async fn a_rejected_update_leaves_both_views_at_the_prior_state() {
         },
     );
     let path = scratch_path();
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<u32>(path.clone(), Document::default());
     loader
         .reconcile(Profile {
             entries: vec![entry("one", 1u32)],
@@ -52,7 +52,7 @@ async fn a_rejected_update_leaves_both_views_at_the_prior_state() {
 async fn a_failed_write_back_withdraws_the_staged_config() {
     let (loader, log) = probe_loader::<u32>(|value| *value, Probe::default());
     let path = scratch_path();
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<u32>(path.clone(), Document::default());
     loader
         .reconcile(Profile {
             entries: vec![entry("one", 1u32)],
@@ -61,7 +61,7 @@ async fn a_failed_write_back_withdraws_the_staged_config() {
         .grab();
 
     // Every save through this store fails: its directory does not exist.
-    loader.attach_store::<u32>(FileStore::new(broken_path()), Document::default());
+    loader.attach_store::<u32>(broken_path(), Document::default());
 
     assert!(loader.update_entry(&id("one"), 2u32).await.is_err());
     // The committed view stayed at the prior state...
@@ -82,14 +82,14 @@ async fn a_failed_withdrawal_records_the_divergence() {
         },
     );
     let path = scratch_path();
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<u32>(path.clone(), Document::default());
     loader
         .reconcile(Profile {
             entries: vec![entry("one", 1u32)],
         })
         .await
         .grab();
-    loader.attach_store::<u32>(FileStore::new(broken_path()), Document::default());
+    loader.attach_store::<u32>(broken_path(), Document::default());
 
     // Write-back fails AND the withdrawal fails: the views diverged, and the
     // divergence is loud — an error naming it plus a recorded fault carrying
@@ -115,7 +115,7 @@ async fn a_failed_withdrawal_records_the_divergence() {
 
     // Reconciling the document reconverges (here: the document catches up to
     // the runtime) and surfaces the drained fault in the report.
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<u32>(path.clone(), Document::default());
     let report = loader
         .reconcile(Profile {
             entries: vec![entry("one", 2u32)],

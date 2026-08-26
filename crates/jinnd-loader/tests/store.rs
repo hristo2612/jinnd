@@ -119,7 +119,7 @@ fn persisted_entry(document: &Document, name: &str) -> DocumentEntry {
 async fn runtime_changes_write_back_through_the_attached_store() {
     let (loader, _registry, _log) = fixture();
     let path = scratch_path();
-    loader.attach_store::<u32>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<u32>(path.clone(), Document::default());
 
     // Committing a document of record persists it.
     loader
@@ -158,7 +158,7 @@ async fn a_foreign_typed_store_is_an_honest_error_not_a_silent_skip() {
     let (loader, _registry, _log) = fixture();
     let path = scratch_path();
     // The store encodes `String` profiles; the loader runs on `u32` ones.
-    loader.attach_store::<String>(FileStore::new(path.clone()), Document::default());
+    loader.attach_store::<String>(path.clone(), Document::default());
     let Err(error) = loader
         .reconcile(profile(vec![entry("one", "test/count", 1)]))
         .await
@@ -203,7 +203,7 @@ async fn raw_entries_and_unknown_fields_survive_load_amend_write_back() {
         |value| value.as_u64().unwrap_or(0) as u32,
         Probe::default(),
     );
-    loader.attach_store::<serde_json::Value>(store, document);
+    loader.attach_store::<serde_json::Value>(path.clone(), document);
     loader.reconcile(profile).await.grab();
 
     // A runtime-led amendment writes back; nothing unknown may be erased.
