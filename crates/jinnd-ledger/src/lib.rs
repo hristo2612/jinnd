@@ -43,6 +43,7 @@
 #![cfg_attr(feature = "loom", allow(dead_code))]
 
 mod claim;
+mod hydrate;
 mod revert;
 mod store;
 mod writer;

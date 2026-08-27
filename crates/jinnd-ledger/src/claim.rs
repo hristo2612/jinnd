@@ -21,6 +21,11 @@ pub(crate) struct Branch {
     pub(crate) key: RevertKey,
     pub(crate) state: RevertResolution,
     pub(crate) witness: Witness,
+    /// True only for a branch hydrated from a durable intent that never
+    /// completed: the next same-key claimant resumes it (constitution 03 —
+    /// exactly-once is durable at-least-once intent plus idempotent same-key
+    /// completion; an interrupted inverse may run again under its key).
+    pub(crate) resumable: bool,
 }
 
 /// What one claim attempt observed.
@@ -28,6 +33,10 @@ pub(crate) struct Branch {
 pub enum Claim {
     /// The caller owns the branch: it alone may run the inverse.
     Fresh,
+    /// The caller resumes an interrupted branch whose intent is already
+    /// durable: it alone may run the inverse, and no new intent is appended
+    /// (constitution 03 crash safety — same key, at-least-once intent).
+    Resumed,
     /// The branch exists; the recorded state is returned without re-running
     /// anything (same-key retry idempotency).
     Recorded(RevertResolution),
@@ -47,8 +56,16 @@ impl Branches {
     /// claim is fresh.
     pub(crate) fn claim(&self, effect: EffectId, key: &RevertKey, witness: &Witness) -> Claim {
         let mut branches = lock(&self.branches);
-        match branches.get(&effect) {
+        match branches.get_mut(&effect) {
             Some(branch) if branch.key != *key => Claim::Refused,
+            Some(branch) if branch.resumable => {
+                // Exactly one claimant wins the resume; the hydrated witness
+                // died with its process, so the resuming caller's verifiable
+                // one replaces it.
+                branch.resumable = false;
+                branch.witness = witness.clone();
+                Claim::Resumed
+            }
             Some(branch) => Claim::Recorded(branch.state),
             None => {
                 branches.insert(
@@ -57,6 +74,7 @@ impl Branches {
                         key: key.clone(),
                         state: RevertResolution::PendingRevert,
                         witness: witness.clone(),
+                        resumable: false,
                     },
                 );
                 Claim::Fresh
@@ -160,6 +178,7 @@ mod loom_model {
                                 key: RevertKey("k".to_owned()),
                                 state: jinnd_api::RevertResolution::Reverted,
                                 witness: witness.clone(),
+                                resumable: false,
                             },
                         );
                         matches!(
@@ -175,6 +194,45 @@ mod loom_model {
                 .filter(|fresh| *fresh)
                 .count();
             assert_eq!(fresh, 0, "a hydrated branch never re-runs its inverse");
+        });
+    }
+
+    #[test]
+    fn exactly_one_same_key_claimant_resumes_an_interrupted_branch() {
+        // Crash-resume race (PLA-276 round 3): both claimants hydrate the
+        // same durable intent-without-completion, then claim. Whatever the
+        // interleaving, exactly one wins the resume — the inverse still runs
+        // at most once per reopened process.
+        loom::model(|| {
+            let branches = Arc::new(Branches::default());
+            let witness: Witness = Arc::new(|| true);
+            let contenders: Vec<_> = (0..2)
+                .map(|_| {
+                    let branches = Arc::clone(&branches);
+                    let witness = witness.clone();
+                    loom::thread::spawn(move || {
+                        branches.seed(
+                            EffectId(1),
+                            super::Branch {
+                                key: RevertKey("k".to_owned()),
+                                state: jinnd_api::RevertResolution::PendingRevert,
+                                witness: witness.clone(),
+                                resumable: true,
+                            },
+                        );
+                        matches!(
+                            branches.claim(EffectId(1), &RevertKey("k".to_owned()), &witness),
+                            Claim::Resumed
+                        )
+                    })
+                })
+                .collect();
+            let resumed = contenders
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(false))
+                .filter(|resumed| *resumed)
+                .count();
+            assert_eq!(resumed, 1, "exactly one claimant resumes the branch");
         });
     }
 

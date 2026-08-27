@@ -8,16 +8,19 @@
 //!
 //! Crash safety: the claim IS a ledger event. Intent, completion, and
 //! resolution all carry the effect they concern, so a lane reopened over the
-//! same ledger reconstructs every branch before claiming — a same-key retry
-//! after a process death answers from the record without re-running the
-//! inverse, and a distinct key is refused (PLA-276 round-2 blocker 3).
+//! same ledger reconstructs every branch before claiming. A same-key retry
+//! after a process death answers from the record when completion is durable
+//! — the inverse never re-runs — and *resumes to completion* when the death
+//! interrupted the branch between intent and completion: exactly-once is
+//! durable at-least-once intent plus idempotent same-key completion (PLA-276
+//! round-2 blocker 3, round-3 item 2). A distinct key is refused either way.
 
 use jinnd_api::{
     EffectId, EntryId, ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind, RevertKey,
     RevertResolution, Witness,
 };
 
-use crate::claim::{Branch, Branches, Claim};
+use crate::claim::{Branches, Claim};
 use crate::store::Ledger;
 
 /// One branch's inverse (or compensator), executable exactly once. Panic
@@ -86,41 +89,64 @@ impl RevertLane {
                     fiber,
                 )
                 .await?;
-                match inverse().await {
-                    Ok(()) => {
-                        let clean = passes(&witness);
-                        self.append(
-                            LedgerEventKind::RevertCompleted {
-                                key: key.0.clone(),
-                                effect,
-                                clean,
-                            },
-                            entry.clone(),
-                            fiber,
-                        )
-                        .await?;
-                        let state = if clean {
-                            RevertResolution::Reverted
-                        } else {
-                            // A completed-looking inverse whose witness fails
-                            // is a failed inverse (03 step 3).
-                            RevertResolution::PendingRevert
-                        };
-                        self.resolve(effect, state, entry, fiber).await?;
-                        Ok(state)
-                    }
-                    Err(error) => {
-                        self.append(
-                            LedgerEventKind::ErrorRecorded { error },
-                            entry.clone(),
-                            fiber,
-                        )
-                        .await?;
-                        self.resolve(effect, RevertResolution::PendingRevert, entry, fiber)
-                            .await?;
-                        Ok(RevertResolution::PendingRevert)
-                    }
-                }
+                self.complete(effect, key, witness, inverse, entry, fiber)
+                    .await
+            }
+            // The interrupted branch's intent is already durable; the retry
+            // runs the inverse to completion under the same key without
+            // appending a second intent (constitution 03 crash safety).
+            Claim::Resumed => {
+                self.complete(effect, key, witness, inverse, entry, fiber)
+                    .await
+            }
+        }
+    }
+
+    /// Runs the claimed branch's inverse and records its outcome: completion
+    /// with the witness verdict, then the resolution — `Reverted` only on a
+    /// clean pass, `PendingRevert` visibly otherwise (03 step 3).
+    async fn complete(
+        &self,
+        effect: EffectId,
+        key: RevertKey,
+        witness: Witness,
+        inverse: Inverse,
+        entry: Option<EntryId>,
+        fiber: Option<FiberId>,
+    ) -> Result<RevertResolution, KernelError> {
+        match inverse().await {
+            Ok(()) => {
+                let clean = passes(&witness);
+                self.append(
+                    LedgerEventKind::RevertCompleted {
+                        key: key.0.clone(),
+                        effect,
+                        clean,
+                    },
+                    entry.clone(),
+                    fiber,
+                )
+                .await?;
+                let state = if clean {
+                    RevertResolution::Reverted
+                } else {
+                    // A completed-looking inverse whose witness fails is a
+                    // failed inverse (03 step 3).
+                    RevertResolution::PendingRevert
+                };
+                self.resolve(effect, state, entry, fiber).await?;
+                Ok(state)
+            }
+            Err(error) => {
+                self.append(
+                    LedgerEventKind::ErrorRecorded { error },
+                    entry.clone(),
+                    fiber,
+                )
+                .await?;
+                self.resolve(effect, RevertResolution::PendingRevert, entry, fiber)
+                    .await?;
+                Ok(RevertResolution::PendingRevert)
             }
         }
     }
@@ -192,12 +218,8 @@ impl RevertLane {
     }
 
     /// Reconstructs `effect`'s branch from the ledger when this process holds
-    /// none: the bound key is the first durable intent's, the state is the
-    /// last recorded resolution — `PendingRevert` when intent landed and no
-    /// resolution did. The seed never overwrites a live branch, and the
-    /// witness of a hydrated branch is unverifiable by construction (it died
-    /// with its process), so it reads as failing rather than vacuously
-    /// passing.
+    /// none (the fold's semantics live in [`crate::hydrate`]). The seed never
+    /// overwrites a live branch.
     async fn hydrate(&self, effect: EffectId) -> Result<(), KernelError> {
         if self.branches.state(effect).is_some() {
             return Ok(());
@@ -207,32 +229,8 @@ impl RevertLane {
             .events(jinnd_api::LedgerQuery::default())
             .await
             .map_err(|error| refused(&error.to_string()))?;
-        let mut bound: Option<RevertKey> = None;
-        let mut state: Option<RevertResolution> = None;
-        for record in records {
-            match record.kind {
-                LedgerEventKind::RevertIntent { key, effect: at } if at == effect => {
-                    bound.get_or_insert(RevertKey(key));
-                    state.get_or_insert(RevertResolution::PendingRevert);
-                }
-                LedgerEventKind::RevertResolved {
-                    effect: at,
-                    resolution,
-                } if at == effect => {
-                    state = Some(resolution);
-                }
-                _ => {}
-            }
-        }
-        if let (Some(key), Some(state)) = (bound, state) {
-            self.branches.seed(
-                effect,
-                Branch {
-                    key,
-                    state,
-                    witness: std::sync::Arc::new(|| false),
-                },
-            );
+        if let Some(branch) = crate::hydrate::branch_from(records, effect) {
+            self.branches.seed(effect, branch);
         }
         Ok(())
     }

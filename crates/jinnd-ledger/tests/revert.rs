@@ -383,6 +383,158 @@ async fn a_reopened_lane_answers_a_same_key_retry_without_rerunning() {
 }
 
 #[tokio::test]
+async fn a_durable_intent_without_completion_resumes_under_the_same_key() {
+    // Constitution 03 crash safety (PLA-276 round-3 item 2): exactly-once is
+    // durable at-least-once intent + idempotent same-key completion. A crash
+    // after the intent landed but before completion must leave the branch
+    // resumable: the same-key retry runs the inverse to completion and
+    // resolves `Reverted` — it is never refused and never answered
+    // `PendingRevert` from a seed.
+    let dir = std::env::temp_dir().join(format!(
+        "jinnd-ledger-resume-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("mkdir: {error}"));
+    let path = dir.join("ledger.sqlite3");
+    {
+        let ledger = Ledger::open(&path).unwrap_or_else(|error| panic!("open: {error}"));
+        ledger
+            .append(
+                LedgerEventKind::RevertIntent {
+                    key: "k".to_owned(),
+                    effect: EffectId(1),
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("append: {error}"));
+        // Process death: intent is durable, completion never happened.
+    }
+    let reopened =
+        RevertLane::new(Ledger::open(&path).unwrap_or_else(|error| panic!("reopen: {error}")));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let witness: Witness = Arc::new(|| true);
+    let resumed = reopened
+        .revert(
+            EffectId(1),
+            key("k"),
+            witness.clone(),
+            counting_inverse(&runs),
+            None,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("resume: {error:?}"));
+    assert_eq!(
+        resumed,
+        RevertResolution::Reverted,
+        "the same-key retry resumes the interrupted branch to completion"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    let again = reopened
+        .revert(
+            EffectId(1),
+            key("k"),
+            witness.clone(),
+            counting_inverse(&runs),
+            None,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("retry: {error:?}"));
+    assert_eq!(again, RevertResolution::Reverted);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "after completion the recorded state answers; the inverse never re-runs"
+    );
+    assert!(
+        reopened
+            .revert(
+                EffectId(1),
+                key("other"),
+                witness,
+                counting_inverse(&runs),
+                None,
+                None,
+            )
+            .await
+            .is_err(),
+        "the durable intent binds the key; a distinct key stays refused"
+    );
+    std::fs::remove_dir_all(&dir).unwrap_or_else(|error| panic!("cleanup: {error}"));
+}
+
+#[tokio::test]
+async fn a_crash_between_completion_and_resolution_never_reruns_the_inverse() {
+    // The dual guard: once completion is durable, the inverse ran — a reopen
+    // that finds `RevertCompleted` derives the resolution from it instead of
+    // re-running (at-most-one completed execution per key).
+    let dir = std::env::temp_dir().join(format!(
+        "jinnd-ledger-completed-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("mkdir: {error}"));
+    let path = dir.join("ledger.sqlite3");
+    {
+        let ledger = Ledger::open(&path).unwrap_or_else(|error| panic!("open: {error}"));
+        ledger
+            .append(
+                LedgerEventKind::RevertIntent {
+                    key: "k".to_owned(),
+                    effect: EffectId(1),
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("append: {error}"));
+        ledger
+            .append(
+                LedgerEventKind::RevertCompleted {
+                    key: "k".to_owned(),
+                    effect: EffectId(1),
+                    clean: true,
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("append: {error}"));
+        // Process death between completion and resolution.
+    }
+    let reopened =
+        RevertLane::new(Ledger::open(&path).unwrap_or_else(|error| panic!("reopen: {error}")));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let witness: Witness = Arc::new(|| true);
+    let retry = reopened
+        .revert(
+            EffectId(1),
+            key("k"),
+            witness,
+            counting_inverse(&runs),
+            None,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("retry: {error:?}"));
+    assert_eq!(
+        retry,
+        RevertResolution::Reverted,
+        "a clean durable completion resolves the branch"
+    );
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "a completed inverse never re-runs"
+    );
+    std::fs::remove_dir_all(&dir).unwrap_or_else(|error| panic!("cleanup: {error}"));
+}
+
+#[tokio::test]
 async fn revert_events_carry_their_effect_and_attribution() {
     // Card requirement (PLA-276 round-2 blocker 4): revert events are
     // traceable — the effect identifier rides the event, the entry/fiber
