@@ -10,15 +10,18 @@ use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine};
 
 use crate::artifact::{self, PinnedArtifact};
-use crate::bindings::Plugin;
+use crate::bindings::{Plugin, PluginPre};
 use crate::handle::InstanceHandle;
 use crate::instance::{HostState, Seat, spawn};
 use crate::peer::LedgerSink;
 
-/// One compiled component, still carrying the pin it was admitted under.
+/// One compiled component, world-typechecked at admission and still carrying
+/// the pin it was admitted under: the held [`PluginPre`] IS the proof that
+/// the component implements the `jinn:plugin` world — instantiation reuses
+/// it instead of re-deriving trust (Law 5).
 #[derive(Clone)]
 pub struct LoadedComponent {
-    component: Component,
+    pre: PluginPre<HostState>,
     hash: String,
 }
 
@@ -31,8 +34,9 @@ impl LoadedComponent {
 
 /// The engine and the one linker every instance shares. The linker binds the
 /// `jinn:plugin` world's kernel surfaces; nothing else is linkable, so a
-/// component importing anything beyond the world fails to instantiate —
-/// mechanical closure at the imports (constitution 01).
+/// component importing anything beyond the world — or not exporting the
+/// world — is refused at load, before any registration: mechanical closure
+/// at both directions of the contract (constitution 01).
 pub struct WasmHost {
     engine: Engine,
     linker: Arc<Linker<HostState>>,
@@ -70,8 +74,11 @@ impl WasmHost {
     }
 
     /// Admits `bytes` under `expected_hash` (Law 5 pin-by-hash — a mismatch
-    /// refuses to load, recorded) and compiles the component. A malformed
-    /// component is refused and recorded the same way.
+    /// refuses to load, recorded), compiles the component, and typechecks it
+    /// against the `jinn:plugin` world: its imports must be satisfiable by
+    /// the world linker AND its exports must implement the world. A valid
+    /// component that is not a plugin is refused exactly as a malformed one
+    /// — refused and recorded, never admitted (round-2 blocker 1).
     ///
     /// # Errors
     ///
@@ -84,35 +91,34 @@ impl WasmHost {
         ledger: &dyn LedgerSink,
     ) -> Result<LoadedComponent, KernelError> {
         let pinned: PinnedArtifact = artifact::admit(bytes, expected_hash, ledger)?;
-        match Component::new(&self.engine, pinned.bytes()) {
-            Ok(component) => Ok(LoadedComponent {
-                component,
-                hash: pinned.hash().to_owned(),
-            }),
-            Err(error) => {
-                ledger.append(
-                    LedgerEventKind::ArtifactRefused {
-                        detail: format!("not a loadable component: {error:#}"),
-                    },
-                    None,
-                );
-                Err(KernelError {
-                    code: ErrorCode::InvalidProfile,
-                    message: "artifact is not a loadable component".to_owned(),
-                    fiber: None,
-                })
+        let refuse = |detail: String| {
+            ledger.append(LedgerEventKind::ArtifactRefused { detail }, None);
+            KernelError {
+                code: ErrorCode::InvalidProfile,
+                message: "artifact is not a loadable component of the plugin world".to_owned(),
+                fiber: None,
             }
-        }
+        };
+        let component = Component::new(&self.engine, pinned.bytes())
+            .map_err(|error| refuse(format!("not a loadable component: {error:#}")))?;
+        let pre = self
+            .linker
+            .instantiate_pre(&component)
+            .and_then(PluginPre::new)
+            .map_err(|error| {
+                refuse(format!(
+                    "component does not implement the jinn:plugin world: {error:#}"
+                ))
+            })?;
+        Ok(LoadedComponent {
+            pre,
+            hash: pinned.hash().to_owned(),
+        })
     }
 
     /// Instantiates one supervised instance of `component` — one per fiber,
     /// disposed instantly and completely with it (R7, I1).
     pub fn instantiate(&self, component: &LoadedComponent, seat: Seat) -> InstanceHandle {
-        spawn(
-            self.engine.clone(),
-            component.component.clone(),
-            Arc::clone(&self.linker),
-            seat,
-        )
+        spawn(self.engine.clone(), component.pre.clone(), seat)
     }
 }

@@ -13,9 +13,8 @@ use jinnd_api::{ErrorCode, FiberId, KernelError};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use wasmtime::Store;
-use wasmtime::component::{Component, Linker};
 
-use crate::bindings::{Plugin, lifecycle};
+use crate::bindings::{Plugin, PluginPre, lifecycle};
 use crate::broker::Broker;
 use crate::handle::{ActivationOutcome, Command, InstanceHandle, gone, pair, peer_face};
 use crate::peer::PeerId;
@@ -61,17 +60,13 @@ pub(crate) struct HostState {
     pub(crate) outcome: ActivationOutcome,
 }
 
-/// Spawns the supervisor for one instance of `component` and returns its
-/// handle. Instantiation happens inside the task, under the deadline.
-pub(crate) fn spawn(
-    engine: wasmtime::Engine,
-    component: Component,
-    linker: Arc<Linker<HostState>>,
-    seat: Seat,
-) -> InstanceHandle {
+/// Spawns the supervisor for one instance of a world-typechecked component
+/// and returns its handle. Instantiation happens inside the task, under the
+/// deadline, from the [`PluginPre`] the load-time validation produced.
+pub(crate) fn spawn(engine: wasmtime::Engine, pre: PluginPre<HostState>, seat: Seat) -> InstanceHandle {
     let (handle, rx) = pair();
     let face = peer_face(&handle);
-    tokio::spawn(run(engine, component, linker, seat, face, rx));
+    tokio::spawn(run(engine, pre, seat, face, rx));
     handle
 }
 
@@ -122,8 +117,7 @@ async fn settle<T>(
 
 async fn run(
     engine: wasmtime::Engine,
-    component: Component,
-    linker: Arc<Linker<HostState>>,
+    pre: PluginPre<HostState>,
     seat: Seat,
     face: Arc<crate::handle::InstancePeer>,
     mut rx: mpsc::Receiver<Command>,
@@ -144,11 +138,7 @@ async fn run(
         refuse_all(&mut rx, gone()).await;
         return;
     }
-    let instantiated = timeout(
-        deadline,
-        Plugin::instantiate_async(&mut store, &component, &linker),
-    )
-    .await;
+    let instantiated = timeout(deadline, pre.instantiate_async(&mut store)).await;
     let plugin = match instantiated {
         Ok(Ok(plugin)) => plugin,
         Ok(Err(trap)) => {
