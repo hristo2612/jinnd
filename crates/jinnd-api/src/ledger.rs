@@ -85,8 +85,10 @@ pub struct LedgerQuery {
     pub from_sequence: Option<u64>,
 }
 
-/// The idempotency key of one revert operation: a same-key retry returns the
-/// recorded outcome without re-running the inverse; a distinct key against the
+/// The idempotency key of one revert operation: a same-key retry of a
+/// recorded completion returns that outcome without re-running the inverse,
+/// a same-key retry of a crash-interrupted branch resumes it — running the
+/// inverse to completion under this key — and a distinct key against the
 /// same branch is refused (constitution 03, keyed exactly-once).
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct RevertKey(pub String);

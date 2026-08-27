@@ -528,10 +528,14 @@ pub trait Kernel: Send + Sync + 'static {
     fn ledger_events(&self, query: LedgerQuery) -> KernelFuture<'_, Vec<LedgerRecord>>;
 
     /// Reverts one settled effect under the keyed exactly-once protocol
-    /// (constitution 03, Law 3): intent is durably recorded first, the
-    /// inverse runs at most once per key, and `witness` is checked before
-    /// completion is recorded. A same-key retry returns the recorded outcome
-    /// without re-running the inverse; a witness failure leaves the branch
+    /// (constitution 03, Law 3): intent is durably recorded before the
+    /// inverse runs, and `witness` is checked before completion is recorded.
+    /// A same-key retry of a branch whose completion is recorded returns the
+    /// recorded outcome without re-running the inverse; a same-key retry
+    /// that finds a durable intent with no recorded completion — a reopen
+    /// after a crash — resumes the branch and runs the inverse to completion
+    /// under that key (exactly-once is durable at-least-once intent plus
+    /// idempotent same-key completion). A witness failure leaves the branch
     /// `PendingRevert`, visibly (authorized M1-P7 additive delta).
     ///
     /// # Errors

@@ -28,7 +28,9 @@
 //!
 //! **Revert (constitution 03).** [`RevertLane`] drives the keyed exactly-once
 //! protocol over ledger events and effect inverses: durable intent before the
-//! inverse may run, at-most-one inverse execution per branch, the executable
+//! inverse may run, at most one claimant running the inverse at a time (a
+//! crash-interrupted branch resumes under its same key; a durable completion
+//! is never re-run), the executable
 //! witness checked before completion is recorded, and the normative
 //! three-state resolution machine — `PendingRevert` is not closable by
 //! declaration; only a same-key inverse success with a passing witness makes

@@ -1,7 +1,8 @@
 //! The keyed exactly-once revert protocol (constitution 03, Law 3).
 //!
 //! Order is the contract: durable intent lands in the ledger *before* the
-//! inverse may run; the inverse runs at most once per branch (the claim step
+//! inverse may run; at most one claimant per branch may run the inverse at a
+//! time, and never again once completion is durable (the claim step
 //! guarantees it); completion is recorded only after the executable witness
 //! passes; and the three resolution states are exactly the ratified ones.
 //! Reverts are events, never erasures — every step of the protocol appends.
@@ -55,11 +56,15 @@ impl RevertLane {
     /// protocol's ledger events to `entry`/`fiber` (R6: every event traceable
     /// to the entry/fiber that caused it).
     ///
-    /// A same-key retry — in-process or after a reopen — returns the recorded
-    /// state without re-running the inverse; a fresh claim records intent
-    /// durably, runs the inverse once, checks `witness`, and resolves
-    /// `Reverted` only on a clean pass — anything else stays `PendingRevert`,
-    /// visibly.
+    /// A fresh claim records intent durably, runs the inverse, checks
+    /// `witness`, and resolves `Reverted` only on a clean pass — anything
+    /// else stays `PendingRevert`, visibly. A same-key retry of a branch
+    /// whose completion is recorded — in-process or after a reopen — returns
+    /// the recorded state without re-running the inverse; a same-key retry
+    /// that finds a durable intent with no completion (a reopen after a
+    /// crash) resumes the branch: it alone runs the inverse to completion
+    /// under that key (constitution 03 — exactly-once is durable
+    /// at-least-once intent plus idempotent same-key completion).
     ///
     /// # Errors
     ///

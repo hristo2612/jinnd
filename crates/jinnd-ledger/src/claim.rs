@@ -4,8 +4,12 @@
 //! one mutex that is never held across an await or an inverse (R1): exactly
 //! one caller wins a fresh branch; everyone else observes the recorded state
 //! or is refused for bringing a distinct key. The async protocol built on top
-//! (`revert.rs`) runs no inverse without a `Claim::Fresh` in hand, which is
-//! what makes at-most-one inverse execution structural (constitution 03).
+//! (`revert.rs`) runs no inverse without a `Claim::Fresh` or `Claim::Resumed`
+//! in hand — and the claim step grants exactly one of them per branch per
+//! process — which is what makes at-most-one live inverse execution
+//! structural (constitution 03: exactly-once is durable at-least-once intent
+//! plus idempotent same-key completion; a crash-interrupted inverse may run
+//! again under its key, on resume, never concurrently).
 
 use std::collections::HashMap;
 
