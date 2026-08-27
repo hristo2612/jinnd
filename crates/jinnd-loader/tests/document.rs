@@ -79,6 +79,26 @@ fn a_malformed_entry_survives_write_back_verbatim() {
 }
 
 #[test]
+fn unknown_fields_and_raw_entries_round_trip_byte_for_byte() {
+    // "Verbatim" means bytes, not value-equivalence (v0.1 bounds; PLA-276
+    // round-2 blocker 2): a normalizing parse→Value→pretty pipeline is the
+    // silent-rewrite class the constitution bans.
+    let json = r#"{"entries":[{"id":"known","package":"test/known","config":1,"note":{"spacing":"keep"}},{"id":"future","package":42,"payload":{"raw":[1,2,3]}}]}"#;
+    let document = Document::parse(json).grab();
+    let rendered = document.render();
+    assert!(
+        rendered.contains(r#""note":{"spacing":"keep"}"#),
+        "the unknown known-entry field must round-trip byte-for-byte: {rendered}"
+    );
+    assert!(
+        rendered.contains(r#"{"id":"future","package":42,"payload":{"raw":[1,2,3]}}"#),
+        "the opaque future entry must round-trip byte-for-byte: {rendered}"
+    );
+    let again = Document::parse(&rendered).grab();
+    assert_eq!(document, again);
+}
+
+#[test]
 fn parse_refuses_documents_that_are_not_json() {
     let Err(error) = Document::parse("entries: nope") else {
         panic!("a non-document must not parse");

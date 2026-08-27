@@ -5,7 +5,10 @@
 //! Config is data, mechanically (R9): the model holds `serde_json::Value`
 //! payloads and nothing here evaluates anything. A malformed directive is a
 //! contained per-entry fault (R11): good entries load, bad entries surface
-//! recorded errors.
+//! recorded errors. What the kernel does not understand — unknown fields,
+//! undecodable entries — keeps its source *bytes* (see [`crate::raw`]) and
+//! re-emits verbatim: "verbatim" means bytes, not value-equivalence (v0.1
+//! bounds).
 
 use std::collections::BTreeMap;
 
@@ -13,55 +16,25 @@ use jinnd_api::{
     EntryFault, EntryId, ErrorCode, IsolationBinding, KernelError, PluginRef, Profile,
     ProfileEntry, Realm,
 };
-use serde::{Deserialize, Serialize};
+
+pub use crate::raw::RawEntry;
 
 /// One profile entry as persisted.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DocumentEntry {
     pub id: String,
     pub package: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hash: String,
-    #[serde(default)]
     pub config: serde_json::Value,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub isolate: BTreeMap<String, String>,
-    /// Fields this kernel does not understand, captured verbatim and re-emitted
-    /// unchanged on every save (v0.1: no destructive compaction — a write-back
-    /// never erases what it did not understand).
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, serde_json::Value>,
-}
-
-/// One entry that did not decode, preserved verbatim so a later write-back
-/// re-emits it unchanged (v0.1: no destructive compaction — a save never
-/// erases what it did not understand).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RawEntry {
-    /// The entry's position in the persisted `entries` array.
-    pub index: usize,
-    /// The verbatim value [`Document::render`] re-emits.
-    pub value: serde_json::Value,
-    /// Why the entry did not decode.
-    pub error: KernelError,
-}
-
-impl RawEntry {
-    /// The faulted entry's best identity: its `id` when one is legible, its
-    /// position otherwise.
-    #[must_use]
-    pub fn entry_id(&self) -> EntryId {
-        match self.value.get("id").and_then(serde_json::Value::as_str) {
-            Some(id) => EntryId(id.to_owned()),
-            None => EntryId(format!("entries[{}]", self.index)),
-        }
-    }
+    /// Fields this kernel does not understand, as `(key, verbatim value
+    /// bytes)` in source order, re-emitted unchanged on every save (v0.1: no
+    /// destructive compaction — a write-back never erases, and never
+    /// rewrites, what it did not understand).
+    pub extra: Vec<(String, String)>,
 }
 
 /// An ordered profile document.
@@ -90,41 +63,58 @@ impl Document {
         };
         let value: serde_json::Value = serde_json::from_str(text)
             .map_err(|error| shape(format!("the profile document does not parse: {error}")))?;
-        let Some(items) = value.get("entries").and_then(serde_json::Value::as_array) else {
+        if value
+            .get("entries")
+            .and_then(serde_json::Value::as_array)
+            .is_none()
+        {
             return Err(shape(
                 "the profile document has no `entries` array".to_owned(),
             ));
-        };
-        let mut entries = Vec::with_capacity(items.len());
+        }
+        // The shell re-reads the same text with entry bytes intact: unknown
+        // fields and undecodable entries keep their source bytes, so a later
+        // save re-emits them verbatim rather than value-normalized.
+        let shell: crate::raw::RawShell = serde_json::from_str(text)
+            .map_err(|error| shape(format!("the profile document does not parse: {error}")))?;
+        let mut entries = Vec::with_capacity(shell.entries.len());
         let mut raw = Vec::new();
-        for (index, item) in items.iter().enumerate() {
-            match serde_json::from_value::<DocumentEntry>(item.clone()) {
+        for (index, item) in shell.entries.iter().enumerate() {
+            match crate::raw::decode_entry(item.get()) {
                 Ok(entry) => entries.push(entry),
-                Err(error) => raw.push(RawEntry {
+                Err(reason) => raw.push(RawEntry {
                     index,
-                    value: item.clone(),
-                    error: shape(format!("the entry does not decode: {error}")),
+                    text: item.get().to_owned(),
+                    error: shape(format!("the entry does not decode: {reason}")),
                 }),
             }
         }
         Ok(Self { entries, raw })
     }
 
-    /// Renders the document for persistence. Preserved raw entries re-enter at
-    /// their recorded positions, verbatim.
+    /// Renders the document for persistence: known fields pretty-printed,
+    /// unknown fields and preserved raw entries re-emitted byte-for-byte at
+    /// their recorded positions.
     #[must_use]
     pub fn render(&self) -> String {
-        // A struct of plain data serializes; there is no failing path.
-        let mut items: Vec<serde_json::Value> = self
-            .entries
-            .iter()
-            .map(|entry| serde_json::to_value(entry).unwrap_or_default())
-            .collect();
+        let mut items: Vec<String> = self.entries.iter().map(crate::raw::render_entry).collect();
         // Ascending recorded indexes: each insert restores one original slot.
         for raw in &self.raw {
-            items.insert(raw.index.min(items.len()), raw.value.clone());
+            items.insert(raw.index.min(items.len()), raw.text.clone());
         }
-        serde_json::to_string_pretty(&serde_json::json!({ "entries": items })).unwrap_or_default()
+        let mut text = String::from("{\n  \"entries\": [");
+        for (position, item) in items.iter().enumerate() {
+            if position > 0 {
+                text.push(',');
+            }
+            text.push_str("\n    ");
+            text.push_str(item);
+        }
+        if !items.is_empty() {
+            text.push_str("\n  ");
+        }
+        text.push_str("]\n}");
+        text
     }
 
     /// Resolves the document into the typed profile plus per-entry faults —

@@ -23,6 +23,7 @@ mod loader;
 #[cfg(all(test, feature = "loom"))]
 mod models;
 mod proxy;
+mod raw;
 mod rebind;
 mod refuse;
 mod state;
