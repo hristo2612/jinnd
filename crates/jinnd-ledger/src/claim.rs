@@ -83,6 +83,14 @@ impl Branches {
             branch.state = state;
         }
     }
+
+    /// Seeds a branch reconstructed from the ledger, keeping any branch this
+    /// process already holds: memory is never overwritten by hydration, so a
+    /// concurrent live claim and a hydration of the same effect still admit at
+    /// most one inverse execution (constitution 03).
+    pub(crate) fn seed(&self, effect: EffectId, branch: Branch) {
+        lock(&self.branches).entry(effect).or_insert(branch);
+    }
 }
 
 #[cfg(not(feature = "loom"))]
@@ -129,6 +137,44 @@ mod loom_model {
                 .filter(|fresh| *fresh)
                 .count();
             assert_eq!(fresh, 1, "exactly one claimant may run the inverse");
+        });
+    }
+
+    #[test]
+    fn a_hydrated_branch_never_grants_a_fresh_claim() {
+        // Reopen semantics (constitution 03): intent is durable before any
+        // inverse runs, so every claimant that found ledger history seeds
+        // before claiming. Whatever the interleaving of two such claimants,
+        // no one wins Fresh — the recorded state answers instead.
+        loom::model(|| {
+            let branches = Arc::new(Branches::default());
+            let witness: Witness = Arc::new(|| true);
+            let contenders: Vec<_> = (0..2)
+                .map(|_| {
+                    let branches = Arc::clone(&branches);
+                    let witness = witness.clone();
+                    loom::thread::spawn(move || {
+                        branches.seed(
+                            EffectId(1),
+                            super::Branch {
+                                key: RevertKey("k".to_owned()),
+                                state: jinnd_api::RevertResolution::Reverted,
+                                witness: witness.clone(),
+                            },
+                        );
+                        matches!(
+                            branches.claim(EffectId(1), &RevertKey("k".to_owned()), &witness),
+                            Claim::Fresh
+                        )
+                    })
+                })
+                .collect();
+            let fresh = contenders
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(true))
+                .filter(|fresh| *fresh)
+                .count();
+            assert_eq!(fresh, 0, "a hydrated branch never re-runs its inverse");
         });
     }
 

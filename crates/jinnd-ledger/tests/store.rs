@@ -76,6 +76,40 @@ async fn a_reopened_ledger_replays_identically() {
 }
 
 #[tokio::test]
+async fn every_record_is_timestamped() {
+    // Card requirement (PLA-276 round-2 blocker 4): typed events carry a
+    // timestamp. Ordering authority stays with the sequence.
+    let ledger = open();
+    for label in ["one", "two"] {
+        ledger
+            .append(
+                LedgerEventKind::EffectRegistered {
+                    label: label.to_owned(),
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("append: {error}"));
+    }
+    let records = ledger
+        .events(LedgerQuery::default())
+        .await
+        .unwrap_or_else(|error| panic!("events: {error}"));
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert!(
+            record.timestamp > 0,
+            "the writer stamps wall-clock milliseconds at commit"
+        );
+    }
+    assert!(
+        records[0].timestamp <= records[1].timestamp,
+        "timestamps never run backwards within one writer"
+    );
+}
+
+#[tokio::test]
 async fn queries_attribute_errors_to_their_entry() {
     let ledger = open();
     ledger

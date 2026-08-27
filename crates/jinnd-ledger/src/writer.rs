@@ -18,6 +18,7 @@ use crate::store::{Ledger, LedgerError, Op};
 /// this crate contains no UPDATE and no DELETE statement).
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS events (
     seq   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts    INTEGER NOT NULL,
     entry TEXT,
     fiber INTEGER,
     kind  TEXT NOT NULL
@@ -88,8 +89,9 @@ fn append(
         serde_json::to_string(kind).map_err(|error| LedgerError::Storage(error.to_string()))?;
     connection
         .execute(
-            "INSERT INTO events (entry, fiber, kind) VALUES (?1, ?2, ?3)",
+            "INSERT INTO events (ts, entry, fiber, kind) VALUES (?1, ?2, ?3, ?4)",
             (
+                now_millis(),
                 entry.map(|entry| entry.0.as_str()),
                 fiber.map(|fiber| i64::try_from(fiber.0).unwrap_or(i64::MAX)),
                 encoded,
@@ -103,7 +105,7 @@ fn append(
 fn select(connection: &Connection, query: &LedgerQuery) -> Result<Vec<LedgerRecord>, LedgerError> {
     let mut statement = connection
         .prepare(
-            "SELECT seq, entry, fiber, kind FROM events
+            "SELECT seq, ts, entry, fiber, kind FROM events
              WHERE (?1 IS NULL OR entry = ?1)
                AND (?2 IS NULL OR fiber = ?2)
                AND (?3 IS NULL OR seq >= ?3)
@@ -123,27 +125,39 @@ fn select(connection: &Connection, query: &LedgerQuery) -> Result<Vec<LedgerReco
             ),
             |row| {
                 let sequence: i64 = row.get(0)?;
-                let entry: Option<String> = row.get(1)?;
-                let fiber: Option<i64> = row.get(2)?;
-                let kind: String = row.get(3)?;
-                Ok((sequence, entry, fiber, kind))
+                let timestamp: i64 = row.get(1)?;
+                let entry: Option<String> = row.get(2)?;
+                let fiber: Option<i64> = row.get(3)?;
+                let kind: String = row.get(4)?;
+                Ok((sequence, timestamp, entry, fiber, kind))
             },
         )
         .map_err(storage)?;
 
     let mut records = Vec::new();
     for row in rows {
-        let (sequence, entry, fiber, kind) = row.map_err(storage)?;
+        let (sequence, timestamp, entry, fiber, kind) = row.map_err(storage)?;
         let kind: LedgerEventKind =
             serde_json::from_str(&kind).map_err(|error| LedgerError::Storage(error.to_string()))?;
         records.push(LedgerRecord {
             sequence: u64::try_from(sequence).unwrap_or(0),
+            timestamp: u64::try_from(timestamp).unwrap_or(0),
             kind,
             entry: entry.map(jinnd_api::EntryId),
             fiber: fiber.and_then(|fiber| u64::try_from(fiber).ok().map(jinnd_api::FiberId)),
         });
     }
     Ok(records)
+}
+
+/// Milliseconds since the Unix epoch, stamped as the event commits. A clock
+/// before the epoch reads 0 rather than failing an append: the timestamp is
+/// observational; `seq` alone carries ordering authority.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 fn storage(error: rusqlite::Error) -> LedgerError {
