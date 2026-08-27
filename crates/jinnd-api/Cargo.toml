@@ -7,3 +7,8 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# R3: ledger events are serde-typed at the contract boundary (M1-P7; the
+# preferred-set dependency named by AGENTS.md, no new crate class).
+serde = { version = "1.0.219", features = ["derive"] }

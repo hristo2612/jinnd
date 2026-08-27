@@ -5,14 +5,22 @@
 
 #![forbid(unsafe_code)]
 
+mod forward;
 mod inject;
+mod ledger;
 
+pub use forward::{EffectHost, ForwardAction, ForwardEffect};
 pub use inject::{Inject, ServiceResolver, ServiceType};
+pub use ledger::{
+    LedgerEventKind, LedgerQuery, LedgerRecord, Receipt, RevertKey, RevertResolution, Witness,
+};
 
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
 
 /// A sendable future returned by an asynchronous kernel contract.
 pub type KernelFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, KernelError>> + Send + 'a>>;
@@ -22,7 +30,7 @@ pub type KernelFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, KernelError
 pub struct ContextId(pub u64);
 
 /// Stable identity of a fiber while it is live.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FiberId(pub u64);
 
 /// Stable identity of a reversible effect.
@@ -30,7 +38,7 @@ pub struct FiberId(pub u64);
 pub struct EffectId(pub u64);
 
 /// Stable identity of a profile entry across reconciliations.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct EntryId(pub String);
 
 /// Provider generation. Values are monotonic and never reused for one service slot.
@@ -46,7 +54,7 @@ pub enum Realm {
 }
 
 /// Observable lifecycle state of one fiber.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum FiberState {
     Pending,
     Loading,
@@ -57,7 +65,7 @@ pub enum FiberState {
 }
 
 /// Why a fiber's desired activation changed.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum TransitionCause {
     InitialLoad,
     DependencyChanged,
@@ -68,7 +76,7 @@ pub enum TransitionCause {
 }
 
 /// One committed transition recorded for observation and the ledger.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Transition {
     pub fiber: FiberId,
     pub from: FiberState,
@@ -77,7 +85,7 @@ pub struct Transition {
 }
 
 /// Stable error classes exposed by the kernel boundary.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ErrorCode {
     InactiveContext,
     MissingDependency,
@@ -94,7 +102,7 @@ pub enum ErrorCode {
 }
 
 /// Structured error value. Plugin panics are converted before crossing this boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct KernelError {
     pub code: ErrorCode,
     pub message: String,
@@ -156,11 +164,23 @@ pub struct ActivationReceipt {
 }
 
 /// Context and dependency snapshot handed to a plugin body once per activation.
-#[derive(Debug)]
 pub struct Activation<'a, D> {
     pub context: ContextId,
     pub fiber: FiberId,
     pub dependencies: &'a D,
+    /// Teardown-effect registrar charged to this activation's fiber
+    /// (authorized M1-P7 additive delta: I2 teardown-time observation).
+    pub effects: &'a dyn EffectHost,
+}
+
+impl<D: Debug> Debug for Activation<'_, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Activation")
+            .field("context", &self.context)
+            .field("fiber", &self.fiber)
+            .field("dependencies", &self.dependencies)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Typed plugin contract. Implementations execute only behind a sandboxed host.
@@ -454,4 +474,121 @@ pub trait Kernel: Send + Sync + 'static {
     fn persisted_profile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
         &self,
     ) -> Option<Profile<C>>;
+
+    /// Begins one forward effect on `context`: the id is minted immediately,
+    /// the actions run behind the boundary, and the inverse installs per the
+    /// effect's atomicity contract — a plain effect all-or-none, a stepwise
+    /// effect with the staleness guard at every yield boundary (paper Def
+    /// 51/52 + Alg 1; authorized M1-P7 additive delta; R5).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InactiveContext`] for a context this kernel did not mint.
+    fn begin_effect(
+        &self,
+        context: ContextId,
+        label: String,
+        forward: ForwardEffect,
+    ) -> Result<EffectId, KernelError>;
+
+    /// Resolves when `effect`'s forward walk settled: `Ok` when the effect is
+    /// installed or was cleanly diverted, the original error when a forward
+    /// action failed — in which case nothing was installed (authorized M1-P7
+    /// additive delta). `Ok` immediately for an effect id not begun through
+    /// [`Kernel::begin_effect`].
+    fn effect_outcome(&self, effect: EffectId) -> KernelFuture<'_, ()>;
+
+    /// Withdraws one live effect by id, with its whole subtree, running its
+    /// inverse exactly once; an in-flight forward effect is diverted at its
+    /// next yield boundary — the launched action lands first — and its
+    /// yielded prefix rolls back. Idempotent: an unknown or already-withdrawn
+    /// id is a no-op (authorized M1-P7 additive delta; R5).
+    fn dispose_effect(&self, effect: EffectId) -> KernelFuture<'_, ()>;
+
+    /// Reads the append-only ledger (R6, Law 2): every kernel-boundary event,
+    /// in monotonic sequence order, filtered by `query` (authorized M1-P7
+    /// additive delta: ledger read surface).
+    fn ledger_events(&self, query: LedgerQuery) -> KernelFuture<'_, Vec<LedgerRecord>>;
+
+    /// Reverts one settled effect under the keyed exactly-once protocol
+    /// (constitution 03, Law 3): intent is durably recorded first, the
+    /// inverse runs at most once per key, and `witness` is checked before
+    /// completion is recorded. A same-key retry returns the recorded outcome
+    /// without re-running the inverse; a witness failure leaves the branch
+    /// `PendingRevert`, visibly (authorized M1-P7 additive delta).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::EffectFailed`] for an unknown effect, an in-flight
+    /// forward effect, or a distinct key against an existing branch.
+    fn revert_effect(
+        &self,
+        effect: EffectId,
+        key: RevertKey,
+        witness: Witness,
+    ) -> KernelFuture<'_, RevertResolution>;
+
+    /// The recorded resolution state of `effect`'s revert branch, if one
+    /// exists (authorized M1-P7 additive delta: resolution observation).
+    fn revert_resolution(&self, effect: EffectId) -> Option<RevertResolution>;
+
+    /// Runs an operator-confirmed declared compensator against a
+    /// `PendingRevert` branch. The branch resolves `Compensated`, never
+    /// `Reverted`; unless the compensation satisfies the branch's original
+    /// witness it stays marked unclean (constitution 03; authorized M1-P7
+    /// additive delta).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::EffectFailed`] without operator confirmation, for an
+    /// unknown branch, or for a branch not in `PendingRevert`.
+    fn compensate_effect(
+        &self,
+        effect: EffectId,
+        key: RevertKey,
+        compensator: Box<dyn Undo>,
+        operator_confirmed: bool,
+    ) -> KernelFuture<'_, RevertResolution>;
+
+    /// Registers a package lane that both injects `P`'s declared dependencies
+    /// and provides `S` from each activation — the lane shape a dependency
+    /// cycle is expressed through (I3; authorized M1-P7 additive delta per
+    /// the invariant_progress IOU). `build` maps an entry's config to the
+    /// plugin, its typed config, and the provided value.
+    ///
+    /// # Errors
+    ///
+    /// As [`Kernel::register_package`].
+    fn register_providing_package<C, S, P, F>(
+        &self,
+        package: &str,
+        build: F,
+    ) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        S: ServiceContract,
+        P: PluginContract,
+        F: Fn(C) -> Result<(P, P::Config, Arc<S>), KernelError> + Send + Sync + 'static;
+
+    /// Attaches the raw persisted document: `baseline` is parsed as the
+    /// document being taken over — its opaque raw entries and unknown fields
+    /// survive every later write-back byte-for-byte — and `path` is where the
+    /// document of record persists (LAW §3 bidirectional persistence;
+    /// authorized M1-P7 additive delta per the loader_reconcile IOU).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] for an unparseable baseline.
+    fn attach_document<C>(
+        &self,
+        path: std::path::PathBuf,
+        baseline: &str,
+    ) -> Result<(), KernelError>
+    where
+        C: Clone + Debug + PartialEq + serde::Serialize + Send + Sync + 'static;
+
+    /// The persisted raw document text, exactly as last written back; `None`
+    /// before any write-back or when no document is attached (authorized
+    /// M1-P7 additive delta: raw persistence observation).
+    fn document_text(&self) -> Option<String>;
 }

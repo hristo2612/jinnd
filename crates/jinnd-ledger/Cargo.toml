@@ -1,0 +1,28 @@
+[package]
+name = "jinnd-ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Model checking only: pins the keyed exactly-once claim step of the revert
+# lane under loom. Off by default, never a runtime dependency.
+loom = ["dep:loom"]
+
+[dependencies]
+jinnd-api = { path = "../jinnd-api" }
+loom = { version = "0.7.2", optional = true }
+# R6 names SQLite append-only as the ledger substrate; bundled so the build
+# vendors its own libsqlite3 (M1-P7 pre-authorized dependency; no ORM, no
+# second storage crate).
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.142"
+tokio = { version = "1.47.1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }

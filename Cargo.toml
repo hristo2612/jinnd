@@ -7,6 +7,7 @@ members = [
     "crates/jinnd-effects",
     "crates/jinnd-events",
     "crates/jinnd-fiber",
+    "crates/jinnd-ledger",
     "crates/jinnd-loader",
     "crates/jinnd-registry",
     "tests/invariants",
