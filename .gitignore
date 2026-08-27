@@ -4,3 +4,5 @@ Cargo.lock.orig
 .DS_Store
 /.claude/settings.local.json
 fixtures/*/target/
+demo/plugins/*/target/
+demo/builder/target/

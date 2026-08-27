@@ -1,0 +1,18 @@
+# The M1 demo kit builder: compiles the three demo plugins for
+# wasm32-unknown-unknown, encodes each core module to a component, computes
+# its sha-256 pin, and generates demo/profile.json with the honest pins
+# (Law 5: pin-by-hash). A demo fixture tool — deliberately NOT a member of
+# the kernel workspace; none of its dependencies enter the kernel graph (R10).
+[package]
+name = "demo-builder"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde_json = "1.0"
+sha2 = "0.10"
+wit-component = "0.233.0"
+
+[workspace]
