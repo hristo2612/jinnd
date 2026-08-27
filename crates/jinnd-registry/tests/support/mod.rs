@@ -53,14 +53,20 @@ impl ServiceContract for Other {
 
 /// Provides an [`Other`] at `at` in the root realm, registered on `scope` (R5).
 pub fn provide_other<I>(registry: &Registry, scope: &mut EffectScope, at: &Context<I>, value: u8) {
-    let provision = registry.provide::<Other, I>(
-        at,
-        &Realm::Root,
-        KERNEL_SCOPE,
-        Arc::new(Other(value)),
-        &registry.vitality(true),
+    let provision = registry
+        .provide::<Other, I>(
+            at,
+            &Realm::Root,
+            KERNEL_SCOPE,
+            Arc::new(Other(value)),
+            &registry.vitality(true),
+        )
+        .unwrap_or_else(|error| panic!("the provision must land: {error:?}"));
+    let registered = scope.register_draining(
+        format!("provide {}", Other::NAME),
+        provision.drain,
+        provision.undo,
     );
-    let registered = scope.register(format!("provide {}", Other::NAME), provision.undo);
     assert!(
         registered.is_ok(),
         "the provision undo must register: {registered:?}"
@@ -86,14 +92,20 @@ pub fn provide_counter_guarded<I>(
     value: u8,
     vitality: &jinnd_registry::Vitality,
 ) -> Generation {
-    let provision = registry.provide::<Counter, I>(
-        at,
-        &Realm::Root,
-        KERNEL_SCOPE,
-        Arc::new(Counter(value)),
-        vitality,
+    let provision = registry
+        .provide::<Counter, I>(
+            at,
+            &Realm::Root,
+            KERNEL_SCOPE,
+            Arc::new(Counter(value)),
+            vitality,
+        )
+        .unwrap_or_else(|error| panic!("the provision must land: {error:?}"));
+    let registered = scope.register_draining(
+        format!("provide {}", Counter::NAME),
+        provision.drain,
+        provision.undo,
     );
-    let registered = scope.register(format!("provide {}", Counter::NAME), provision.undo);
     assert!(
         registered.is_ok(),
         "the provision undo must register: {registered:?}"

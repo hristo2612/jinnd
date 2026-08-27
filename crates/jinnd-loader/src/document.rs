@@ -16,7 +16,7 @@ use jinnd_api::{
 use serde::{Deserialize, Serialize};
 
 /// One profile entry as persisted.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DocumentEntry {
     pub id: String,
     pub package: String,
@@ -32,6 +32,11 @@ pub struct DocumentEntry {
     pub parent: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub isolate: BTreeMap<String, String>,
+    /// Fields this kernel does not understand, captured verbatim and re-emitted
+    /// unchanged on every save (v0.1: no destructive compaction — a write-back
+    /// never erases what it did not understand).
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// One entry that did not decode, preserved verbatim so a later write-back
@@ -149,9 +154,24 @@ impl Document {
     }
 
     /// Rebuilds the persistable document from a typed profile, unparsing realm
-    /// bindings back into their directive syntax.
+    /// bindings back into their directive syntax. Starts from an empty
+    /// baseline: no raw entries, no unknown fields. The save path uses
+    /// [`Document::merge_profile`] instead, which preserves both.
     #[must_use]
     pub fn from_profile(profile: &Profile<serde_json::Value>) -> Self {
+        Self::merge_profile(profile, &Self::default())
+    }
+
+    /// Renders a value-form profile over `baseline`, the committed document
+    /// being replaced: the kernel-owned raw-merge (M1-P6c). Mechanical by
+    /// type — configs arrive as plain `serde_json::Value`, so no
+    /// caller-authored code can run here, and the persist permit may span
+    /// this safely (R1, PLA-270). Unknown fields of a baseline entry with
+    /// the same id are carried over verbatim, and the baseline's raw entries
+    /// re-enter at their recorded positions — a save never erases what it
+    /// did not understand (LAW §3; v0.1 bounds).
+    #[must_use]
+    pub fn merge_profile(profile: &Profile<serde_json::Value>, baseline: &Document) -> Self {
         let entries = profile
             .entries
             .iter()
@@ -168,12 +188,54 @@ impl Document {
                     .iter()
                     .map(|binding| (binding.service.clone(), directive(&binding.realm)))
                     .collect(),
+                extra: baseline
+                    .entries
+                    .iter()
+                    .find(|persisted| persisted.id == entry.id.0)
+                    .map(|persisted| persisted.extra.clone())
+                    .unwrap_or_default(),
             })
             .collect();
         Self {
             entries,
-            raw: Vec::new(),
+            raw: baseline.raw.clone(),
         }
+    }
+
+    /// Rewrites one persisted entry — a new config value and/or the disabled
+    /// flag — leaving every other byte of the document as it was: the
+    /// runtime-led amendment's save path, mechanical by construction
+    /// (M1-P6c; R1). Sibling amendments already saved stay untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidProfile`] when the document holds no such entry:
+    /// the disk may never silently drift from the committed view.
+    pub(crate) fn amended(
+        &self,
+        entry: &str,
+        config: Option<serde_json::Value>,
+        disabled: Option<bool>,
+    ) -> Result<Self, KernelError> {
+        let mut document = self.clone();
+        let Some(persisted) = document
+            .entries
+            .iter_mut()
+            .find(|candidate| candidate.id == entry)
+        else {
+            return Err(KernelError {
+                code: ErrorCode::InvalidProfile,
+                message: format!("entry {entry:?} is not in the persisted document"),
+                fiber: None,
+            });
+        };
+        if let Some(config) = config {
+            persisted.config = config;
+        }
+        if let Some(disabled) = disabled {
+            persisted.disabled = disabled;
+        }
+        Ok(document)
     }
 }
 

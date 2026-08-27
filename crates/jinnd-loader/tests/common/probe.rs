@@ -15,9 +15,7 @@ use jinnd_api::{
     ErrorCode, FiberId, FiberState, KernelError, KernelFuture, PluginRef, Profile, ProfileEntry,
     TransitionCause,
 };
-use jinnd_loader::{
-    Document, DocumentEntry, EntryHandle, FileStore, Loader, PackageLane, SpawnRequest,
-};
+use jinnd_loader::{DocumentEntry, EntryHandle, FileStore, Loader, PackageLane, SpawnRequest};
 
 use super::{Grab, id};
 
@@ -61,6 +59,11 @@ impl<C: Send + Sync + 'static> EntryHandle for ProbeHandle<C> {
     // another operation's wait, so it is honestly never withdrawing.
     fn withdrawing(&self) -> bool {
         false
+    }
+
+    // The probe never transitions: honestly always at rest.
+    fn resting(&self) -> bool {
+        true
     }
 
     fn restart(&self, _cause: TransitionCause) {}
@@ -152,6 +155,18 @@ pub fn probe_entry<C>(name: &str, config: C) -> ProfileEntry<C> {
     }
 }
 
+/// A store path whose directory does not exist, so every save fails.
+pub fn broken_path() -> PathBuf {
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir()
+        .join(format!(
+            "jinnd-loader-amend-missing-{}-{}",
+            std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
+        ))
+        .join("profile.json")
+}
+
 static SCRATCH: AtomicU64 = AtomicU64::new(0);
 
 pub fn scratch_path() -> PathBuf {
@@ -163,27 +178,6 @@ pub fn scratch_path() -> PathBuf {
     let directory = std::env::temp_dir().join(unique);
     std::fs::create_dir_all(&directory).grab();
     directory.join("profile.json")
-}
-
-/// Encodes `u32`-config profiles into a persistable document.
-pub fn encode(profile: &Profile<u32>) -> Document {
-    Document {
-        entries: profile
-            .entries
-            .iter()
-            .map(|entry| DocumentEntry {
-                id: entry.id.0.clone(),
-                package: entry.plugin.package.clone(),
-                version: entry.plugin.version.clone(),
-                hash: entry.plugin.artifact_hash.clone(),
-                config: serde_json::json!(entry.config),
-                disabled: entry.disabled,
-                parent: entry.parent.as_ref().map(|parent| parent.0.clone()),
-                isolate: Default::default(),
-            })
-            .collect(),
-        raw: Vec::new(),
-    }
 }
 
 /// The named entry as the document on disk records it.

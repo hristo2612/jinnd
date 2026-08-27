@@ -3,17 +3,16 @@
 
 #![allow(dead_code)]
 
+pub mod handles;
 pub mod probe;
 pub mod support;
 
+pub use handles::*;
 pub use support::*;
 
-use std::any::Any;
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::{
-    ErrorCode, FiberId, KernelError, KernelFuture, ServiceContract, ServiceType, TransitionCause,
-};
+use jinnd_api::{ErrorCode, KernelError, KernelFuture, ServiceContract, ServiceType};
 use jinnd_context::Context;
 use jinnd_effects::Disposer;
 use jinnd_fiber::{Fiber, FiberBody, Setup};
@@ -35,13 +34,13 @@ impl ServiceContract for FixtureService {
 }
 
 /// What a fixture body needs to run and to be rebound/restated later.
-struct Cell {
+pub(crate) struct Cell {
     entry: String,
     log: Log,
     registry: Registry,
     root: Context<()>,
-    at: Mutex<Context<()>>,
-    config: Mutex<u32>,
+    pub(crate) at: Mutex<Context<()>>,
+    pub(crate) config: Mutex<u32>,
 }
 
 impl Cell {
@@ -66,8 +65,8 @@ enum Role {
     Consumer,
 }
 
-struct FixtureBody {
-    cell: Cell,
+pub(crate) struct FixtureBody {
+    pub(crate) cell: Cell,
     role: Role,
 }
 
@@ -108,8 +107,12 @@ impl FiberBody for FixtureBody {
                         fiber,
                         Arc::new(FixtureService(config)),
                         &vitality,
-                    );
-                    setup.effect("provide svc.fixture", provision.undo)?;
+                    )?;
+                    setup.draining_effect(
+                        "provide svc.fixture",
+                        provision.drain,
+                        provision.undo,
+                    )?;
                 }
                 Role::Consumer => {
                     let at = cell.context();
@@ -131,71 +134,6 @@ impl FiberBody for FixtureBody {
                     )?;
                 }
             }
-            Ok(())
-        })
-    }
-}
-
-struct TestHandle {
-    fiber: Arc<Fiber>,
-    body: Arc<FixtureBody>,
-}
-
-impl EntryHandle for TestHandle {
-    fn id(&self) -> FiberId {
-        self.fiber.id()
-    }
-
-    fn state(&self) -> jinnd_api::FiberState {
-        self.fiber.state()
-    }
-
-    fn withdrawing(&self) -> bool {
-        self.fiber.withdrawing()
-    }
-
-    fn restart(&self, cause: TransitionCause) {
-        self.fiber.restart(cause);
-    }
-
-    fn restate(&self, config: &(dyn Any + Send + Sync)) -> Result<(), KernelError> {
-        let Some(config) = config.downcast_ref::<u32>() else {
-            return Err(KernelError {
-                code: ErrorCode::InvalidProfile,
-                message: "fixture config must be u32".to_owned(),
-                fiber: Some(self.fiber.id()),
-            });
-        };
-        *self
-            .body
-            .cell
-            .config
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = *config;
-        Ok(())
-    }
-
-    fn rebind(&self, at: Context<()>) {
-        *self
-            .body
-            .cell
-            .at
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = at;
-    }
-
-    fn dispose(&self) -> KernelFuture<'static, ()> {
-        let fiber = Arc::clone(&self.fiber);
-        Box::pin(async move {
-            fiber.dispose().await;
-            Ok(())
-        })
-    }
-
-    fn quiesce(&self) -> KernelFuture<'static, ()> {
-        let fiber = Arc::clone(&self.fiber);
-        Box::pin(async move {
-            fiber.quiesce().await;
             Ok(())
         })
     }

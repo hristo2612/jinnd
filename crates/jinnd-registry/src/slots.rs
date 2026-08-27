@@ -67,16 +67,19 @@ impl SlotMap {
 
     /// Publishes `value` at `address`, returning the new entry.
     ///
-    /// A previous entry at the address is superseded: its lease cell is closed in
-    /// the same critical section, and the new generation is strictly greater than
-    /// every generation this map has ever minted.
+    /// An address occupied by ANOTHER provider refuses the provision — a live
+    /// binding is never silently replaced (paper Def 23, R9) — answering the
+    /// occupant. The SAME provider supersedes its own binding (the hot-swap
+    /// lane): the superseded lease cell is closed in the same critical
+    /// section, and the new generation is strictly greater than every
+    /// generation this map has ever minted.
     pub(crate) fn insert(
         &self,
         address: Address,
         provider: FiberId,
         value: Arc<dyn Any + Send + Sync>,
         vitality: Arc<VitalityCell>,
-    ) -> SlotEntry {
+    ) -> Result<SlotEntry, FiberId> {
         let entry = SlotEntry {
             provider,
             generation: Generation(self.generations.fetch_add(1, Ordering::Relaxed) + 1),
@@ -85,11 +88,16 @@ impl SlotMap {
             vitality,
         };
         self.with(|slots| {
+            if let Some(occupant) = slots.get(&address) {
+                if occupant.provider != provider {
+                    return Err(occupant.provider);
+                }
+            }
             if let Some(superseded) = slots.insert(address, entry.clone()) {
                 superseded.leases.close();
             }
-        });
-        entry
+            Ok(entry)
+        })
     }
 
     /// The current entry at `address`, if any.
@@ -141,120 +149,5 @@ impl SlotMap {
 }
 
 #[cfg(all(test, not(feature = "loom")))]
-mod tests {
-    use std::sync::Arc;
-
-    use jinnd_api::{ContextId, FiberId};
-    use jinnd_context::ContextTree;
-
-    use super::{Address, SlotMap};
-    use crate::vitality::VitalityCell;
-
-    /// An always-active vitality, for tests about the map alone.
-    fn live() -> Arc<VitalityCell> {
-        Arc::new(VitalityCell::new(true))
-    }
-
-    fn address(tree: &ContextTree) -> Address {
-        Address {
-            context: ContextId(0),
-            key: tree.dynamic_key("jinn.test/slot"),
-            realm: jinnd_context::RealmId::ROOT,
-        }
-    }
-
-    #[test]
-    fn a_missing_slot_resolves_to_nothing() {
-        let map = SlotMap::new();
-        assert!(map.get(&address(&ContextTree::new())).is_none());
-    }
-
-    #[test]
-    fn insertion_publishes_the_value_under_a_fresh_generation() {
-        let map = SlotMap::new();
-        let address = address(&ContextTree::new());
-        let entry = map.insert(address, FiberId(7), Arc::new(41_u8), live());
-        let found = map.get(&address).into_iter().next();
-        let found = found.as_ref();
-        assert_eq!(found.map(|found| found.generation), Some(entry.generation));
-        assert_eq!(found.map(|found| found.provider), Some(FiberId(7)));
-        assert_eq!(
-            found.and_then(|found| found.value.downcast_ref::<u8>().copied()),
-            Some(41)
-        );
-    }
-
-    #[test]
-    fn replacement_mints_a_strictly_newer_generation_and_closes_the_old_leases() {
-        let map = SlotMap::new();
-        let address = address(&ContextTree::new());
-        let first = map.insert(address, FiberId(1), Arc::new(1_u8), live());
-        assert!(first.leases.acquire());
-        let second = map.insert(address, FiberId(2), Arc::new(2_u8), live());
-        assert!(second.generation > first.generation);
-        assert!(
-            !first.leases.acquire(),
-            "a superseded generation must accept no new dependents"
-        );
-        assert!(second.leases.acquire());
-    }
-
-    #[test]
-    fn leasing_honors_the_generation_the_epoch_captured() {
-        let map = SlotMap::new();
-        let address = address(&ContextTree::new());
-        let first = map.insert(address, FiberId(1), Arc::new(1_u8), live());
-        assert!(map.lease(&address, first.generation).is_some());
-        let second = map.insert(address, FiberId(2), Arc::new(2_u8), live());
-        assert!(
-            map.lease(&address, first.generation).is_none(),
-            "a stale epoch must not lease the replacement generation"
-        );
-        assert!(map.lease(&address, second.generation).is_some());
-    }
-
-    #[test]
-    fn removal_is_generation_guarded() {
-        let map = SlotMap::new();
-        let address = address(&ContextTree::new());
-        let first = map.insert(address, FiberId(1), Arc::new(1_u8), live());
-        let second = map.insert(address, FiberId(2), Arc::new(2_u8), live());
-        assert!(
-            !map.remove_if(&address, first.generation),
-            "a stale undo must not withdraw a newer provider's slot"
-        );
-        assert!(map.get(&address).is_some());
-        assert!(map.remove_if(&address, second.generation));
-        assert!(map.get(&address).is_none());
-    }
-
-    #[test]
-    fn removal_closes_the_leases_it_withdraws() {
-        let map = SlotMap::new();
-        let address = address(&ContextTree::new());
-        let entry = map.insert(address, FiberId(1), Arc::new(1_u8), live());
-        assert!(entry.leases.acquire());
-        assert!(map.remove_if(&address, entry.generation));
-        assert!(!entry.leases.acquire());
-        assert!(!entry.leases.is_drained());
-        assert_eq!(entry.leases.release(), 0);
-        assert!(entry.leases.is_drained());
-    }
-
-    #[test]
-    fn generations_stay_monotonic_across_distinct_slots() {
-        let map = SlotMap::new();
-        let tree = ContextTree::new();
-        let first = Address {
-            key: tree.dynamic_key("jinn.test/first"),
-            ..address(&tree)
-        };
-        let second = Address {
-            key: tree.dynamic_key("jinn.test/second"),
-            ..address(&tree)
-        };
-        let earlier = map.insert(first, FiberId(1), Arc::new(1_u8), live());
-        let later = map.insert(second, FiberId(2), Arc::new(2_u8), live());
-        assert!(later.generation > earlier.generation);
-    }
-}
+#[path = "slots_tests.rs"]
+mod tests;

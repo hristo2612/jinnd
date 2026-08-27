@@ -19,9 +19,9 @@ use crate::withdrawal::Withdrawal;
 /// not a guard that undoes it, because withdrawal is async and a destructor cannot
 /// await (R1).
 pub struct EffectScope {
-    roots: Vec<Record>,
-    withdrawn: Vec<EffectReport>,
-    replayed: bool,
+    pub(crate) roots: Vec<Record>,
+    pub(crate) withdrawn: Vec<EffectReport>,
+    pub(crate) replayed: bool,
 }
 
 impl EffectScope {
@@ -150,7 +150,11 @@ impl EffectScope {
         })
     }
 
-    fn record(&self, label: impl Into<String>, disposer: Disposer) -> Result<Record, KernelError> {
+    pub(crate) fn record(
+        &self,
+        label: impl Into<String>,
+        disposer: Disposer,
+    ) -> Result<Record, KernelError> {
         if self.replayed {
             return Err(error(
                 ErrorCode::InactiveContext,
@@ -161,6 +165,7 @@ impl EffectScope {
             id: next_id(),
             label: label.into(),
             disposer,
+            drain: None,
             children: Vec::new(),
         })
     }
@@ -272,6 +277,7 @@ mod tests {
             id: next_id(),
             label: "nested".to_owned(),
             disposer: Disposer::sync(|| Ok(())),
+            drain: None,
             children: Vec::new(),
         }
     }

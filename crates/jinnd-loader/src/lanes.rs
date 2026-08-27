@@ -75,6 +75,16 @@ pub trait EntryHandle: Send + Sync {
     /// spawned — the loader's conflict refusal is built on exactly this.
     fn withdrawing(&self) -> bool;
 
+    /// True while the fiber is at rest: committed state equal to the desired
+    /// one, no transition in flight (M1-P6c round 2). The loader admits a
+    /// fiber-awaiting amendment only at rest.
+    ///
+    /// The contract is causal, as [`EntryHandle::withdrawing`]: the answer
+    /// must already be `false` for any code a transition reaches — the body,
+    /// the inverses, and tasks they spawn. A handle over something that
+    /// never transitions answers `true`.
+    fn resting(&self) -> bool;
+
     /// Asks for a full clean reload, stating why.
     fn restart(&self, cause: TransitionCause);
 

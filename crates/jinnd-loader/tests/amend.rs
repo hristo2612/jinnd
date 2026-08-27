@@ -8,16 +8,14 @@
 mod common;
 
 use std::fmt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::probe::{
-    Probe, committed_entry, disk_entry, encode, probe_entry as entry, probe_loader, scratch_path,
-    stated,
+    Probe, broken_path, committed_entry, disk_entry, probe_entry as entry, probe_loader,
+    scratch_path, stated,
 };
 use common::{Grab, id};
 use jinnd_api::{ErrorCode, Profile};
-use jinnd_loader::FileStore;
+use jinnd_loader::Document;
 
 #[tokio::test]
 async fn a_rejected_update_leaves_both_views_at_the_prior_state() {
@@ -29,7 +27,7 @@ async fn a_rejected_update_leaves_both_views_at_the_prior_state() {
         },
     );
     let path = scratch_path();
-    loader.attach_store(FileStore::new(path.clone()), encode);
+    loader.attach_store::<u32>(path.clone(), Document::default());
     loader
         .reconcile(Profile {
             entries: vec![entry("one", 1u32)],
@@ -54,7 +52,7 @@ async fn a_rejected_update_leaves_both_views_at_the_prior_state() {
 async fn a_failed_write_back_withdraws_the_staged_config() {
     let (loader, log) = probe_loader::<u32>(|value| *value, Probe::default());
     let path = scratch_path();
-    loader.attach_store(FileStore::new(path.clone()), encode);
+    loader.attach_store::<u32>(path.clone(), Document::default());
     loader
         .reconcile(Profile {
             entries: vec![entry("one", 1u32)],
@@ -63,10 +61,7 @@ async fn a_failed_write_back_withdraws_the_staged_config() {
         .grab();
 
     // Every save through this store fails: its directory does not exist.
-    let broken = std::env::temp_dir()
-        .join(format!("jinnd-loader-amend-missing-{}", std::process::id()))
-        .join("profile.json");
-    loader.attach_store(FileStore::new(broken), encode);
+    loader.attach_store::<u32>(broken_path(), Document::default());
 
     assert!(loader.update_entry(&id("one"), 2u32).await.is_err());
     // The committed view stayed at the prior state...
@@ -74,44 +69,6 @@ async fn a_failed_write_back_withdraws_the_staged_config() {
     // ...and the staged config was withdrawn: offered 2, restored to 1.
     assert_eq!(stated(&log), vec![2, 1]);
     let _ = std::fs::remove_dir_all(path.parent().grab());
-}
-
-#[tokio::test]
-async fn a_refused_disposal_leaves_the_document_at_the_prior_state() {
-    let (loader, _log) = probe_loader::<u32>(
-        |value| *value,
-        Probe {
-            refuse_disposal: true,
-            ..Probe::default()
-        },
-    );
-    let path = scratch_path();
-    loader.attach_store(FileStore::new(path.clone()), encode);
-    loader
-        .reconcile(Profile {
-            entries: vec![entry("one", 1u32)],
-        })
-        .await
-        .grab();
-
-    assert!(loader.dispose_entry::<u32>(&id("one")).await.is_err());
-    // Neither view records the disposal, and the runtime is still there.
-    assert!(!committed_entry(&loader, "one").disabled);
-    assert!(!disk_entry(&path, "one").await.disabled);
-    assert!(loader.entry_fiber(&id("one")).is_some());
-    let _ = std::fs::remove_dir_all(path.parent().grab());
-}
-
-/// A store path whose directory does not exist, so every save fails.
-fn broken_path() -> std::path::PathBuf {
-    static SERIAL: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir()
-        .join(format!(
-            "jinnd-loader-amend-missing-{}-{}",
-            std::process::id(),
-            SERIAL.fetch_add(1, Ordering::Relaxed)
-        ))
-        .join("profile.json")
 }
 
 #[tokio::test]
@@ -125,14 +82,14 @@ async fn a_failed_withdrawal_records_the_divergence() {
         },
     );
     let path = scratch_path();
-    loader.attach_store(FileStore::new(path.clone()), encode);
+    loader.attach_store::<u32>(path.clone(), Document::default());
     loader
         .reconcile(Profile {
             entries: vec![entry("one", 1u32)],
         })
         .await
         .grab();
-    loader.attach_store(FileStore::new(broken_path()), encode);
+    loader.attach_store::<u32>(broken_path(), Document::default());
 
     // Write-back fails AND the withdrawal fails: the views diverged, and the
     // divergence is loud — an error naming it plus a recorded fault carrying
@@ -158,7 +115,7 @@ async fn a_failed_withdrawal_records_the_divergence() {
 
     // Reconciling the document reconverges (here: the document catches up to
     // the runtime) and surfaces the drained fault in the report.
-    loader.attach_store(FileStore::new(path.clone()), encode);
+    loader.attach_store::<u32>(path.clone(), Document::default());
     let report = loader
         .reconcile(Profile {
             entries: vec![entry("one", 2u32)],
@@ -175,83 +132,6 @@ async fn a_failed_withdrawal_records_the_divergence() {
     assert_eq!(disk_entry(&path, "one").await.config, 2);
     assert!(loader.entry_faults().is_empty(), "reconverged");
     let _ = std::fs::remove_dir_all(path.parent().grab());
-}
-
-#[tokio::test]
-async fn a_disposal_whose_write_back_fails_records_the_divergence() {
-    let (loader, _log) = probe_loader::<u32>(|value| *value, Probe::default());
-    let path = scratch_path();
-    loader.attach_store(FileStore::new(path.clone()), encode);
-    loader
-        .reconcile(Profile {
-            entries: vec![entry("one", 1u32)],
-        })
-        .await
-        .grab();
-    loader.attach_store(FileStore::new(broken_path()), encode);
-
-    // Disposal is irreversible at runtime; the failed write-back leaves the
-    // document enabled — the divergence is recorded, never silent.
-    let Err(divergence) = loader.dispose_entry::<u32>(&id("one")).await else {
-        panic!("a diverged disposal must fail loudly");
-    };
-    assert!(divergence.message.contains("diverged"), "{divergence:?}");
-    assert!(loader.entry_fiber(&id("one")).is_none(), "runtime disposed");
-    assert!(!disk_entry(&path, "one").await.disabled, "document enabled");
-    let faults = loader.entry_faults();
-    assert_eq!(faults.len(), 1);
-    assert_eq!(faults[0].entry, id("one"));
-
-    // The next reconcile of the still-enabled document reconverges: the entry
-    // respawns, and the drained divergence surfaces in the report.
-    loader.attach_store(FileStore::new(path.clone()), encode);
-    let report = loader
-        .reconcile(Profile {
-            entries: vec![entry("one", 1u32)],
-        })
-        .await
-        .grab();
-    assert!(report.created.contains(&id("one")), "respawned: {report:?}");
-    assert_eq!(report.errors.len(), 1, "the divergence surfaced");
-    assert!(loader.entry_fiber(&id("one")).is_some());
-    assert!(loader.entry_faults().is_empty(), "reconverged");
-    let _ = std::fs::remove_dir_all(path.parent().grab());
-}
-
-#[tokio::test]
-async fn a_disposal_write_back_is_retried_before_recording_divergence() {
-    let (loader, _log) = probe_loader::<u32>(|value| *value, Probe::default());
-    let path = scratch_path();
-    loader.attach_store(FileStore::new(path.clone()), encode);
-    loader
-        .reconcile(Profile {
-            entries: vec![entry("one", 1u32)],
-        })
-        .await
-        .grab();
-
-    // A store whose directory appears only after the first failed save: the
-    // stateful encoder heals the path on its second call, so the retry lands.
-    let healing = broken_path();
-    let calls = Arc::new(AtomicU64::new(0));
-    let seen = Arc::clone(&calls);
-    let heal = healing.parent().grab().to_path_buf();
-    loader.attach_store(
-        FileStore::new(healing.clone()),
-        move |profile: &Profile<u32>| {
-            if seen.fetch_add(1, Ordering::SeqCst) == 1 {
-                std::fs::create_dir_all(&heal).grab();
-            }
-            encode(profile)
-        },
-    );
-
-    loader.dispose_entry::<u32>(&id("one")).await.grab();
-    assert_eq!(calls.load(Ordering::SeqCst), 2, "retried exactly once");
-    assert!(disk_entry(&healing, "one").await.disabled);
-    assert!(loader.entry_faults().is_empty(), "no divergence remains");
-    let _ = std::fs::remove_dir_all(path.parent().grab());
-    let _ = std::fs::remove_dir_all(healing.parent().grab());
 }
 
 /// A config whose `Debug` rendering never changes, while its value does: only

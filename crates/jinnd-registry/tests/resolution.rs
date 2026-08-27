@@ -190,14 +190,20 @@ async fn a_named_realm_connects_same_realm_contexts_across_subtrees() {
         .isolate(name, tree.realm(&realm))
         .build();
 
-    let provision = registry.provide::<Counter, ()>(
-        &provider_home,
-        &realm,
-        KERNEL_SCOPE,
-        std::sync::Arc::new(Counter(11)),
-        &registry.vitality(true),
+    let provision = registry
+        .provide::<Counter, ()>(
+            &provider_home,
+            &realm,
+            KERNEL_SCOPE,
+            std::sync::Arc::new(Counter(11)),
+            &registry.vitality(true),
+        )
+        .unwrap_or_else(|error| panic!("the provision must land: {error:?}"));
+    let registered = scope.register_draining(
+        "provide counter".to_owned(),
+        provision.drain,
+        provision.undo,
     );
-    let registered = scope.register("provide counter".to_owned(), provision.undo);
     assert!(
         registered.is_ok(),
         "the provision undo must register: {registered:?}"

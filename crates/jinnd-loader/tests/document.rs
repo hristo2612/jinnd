@@ -14,6 +14,7 @@ fn entry(id: &str, package: &str) -> DocumentEntry {
         disabled: false,
         parent: None,
         isolate: Default::default(),
+        extra: Default::default(),
     }
 }
 

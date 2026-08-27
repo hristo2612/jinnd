@@ -39,11 +39,13 @@ impl Fiber {
     /// If called outside a tokio runtime, which is where every fiber lives (R1).
     pub fn spawn(body: Arc<dyn FiberBody>, signal: impl ReadinessSignal) -> Self {
         let shared = Arc::new(Shared::new(next_fiber_id(), signal.epoch()));
-        tokio::spawn(supervise(Cell::new(
-            Arc::clone(&shared),
-            body,
-            Box::new(signal),
-        )));
+        // The whole supervisor task carries its fiber's identity, so any code
+        // it runs — activations and teardown replays alike — can be refused
+        // an operation that would await this very fiber (M1-P6c).
+        tokio::spawn(crate::current::identified(
+            shared.id,
+            supervise(Cell::new(Arc::clone(&shared), body, Box::new(signal))),
+        ));
         Self { shared }
     }
 
@@ -98,6 +100,24 @@ impl Fiber {
     #[must_use]
     pub fn withdrawing(&self) -> bool {
         self.shared.withdrawal.active()
+    }
+
+    /// True while the fiber is at rest: its last transition landed and the
+    /// committed state equals the latest desired one — nothing in flight,
+    /// nothing owed (M1-P6c).
+    ///
+    /// The bit lowers ATOMICALLY with every target write — in the same
+    /// critical section as [`Fiber::restart`], [`Fiber::dispose`], and a
+    /// dependency-epoch change (the round-3 law) — so the moment such a call
+    /// returns, this answers `false`; it never waits on supervisor
+    /// scheduling. Causal for the fiber's own work too: the write that owes
+    /// a transition happens-before the transition runs, so the body, the
+    /// inverses, and tasks they spawn never observe their own fiber at rest.
+    /// For anyone else the answer is advisory — a refusal built on it is
+    /// honest and retryable, never a lock.
+    #[must_use]
+    pub fn resting(&self) -> bool {
+        self.shared.steering.resting()
     }
 
     /// Resolves once the fiber has settled with nothing left to do, having re-read

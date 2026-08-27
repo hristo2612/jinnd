@@ -86,6 +86,11 @@ pub enum ErrorCode {
     EffectFailed,
     ListenerFailed,
     InvalidProfile,
+    /// A provision for an occupied (service, realm) slot from a different
+    /// provider was refused: replacement is never silent (paper Def 23, R9).
+    /// The same provider superseding its own generation — the hot-swap lane —
+    /// is not a duplicate. (Authorized M1-P6c additive delta.)
+    DuplicateProvision,
 }
 
 /// Structured error value. Plugin panics are converted before crossing this boundary.

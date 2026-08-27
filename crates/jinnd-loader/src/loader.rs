@@ -143,7 +143,7 @@ impl Loader {
         profile: Profile<C>,
         cancel: CancellationToken,
     ) -> Result<ReconcileReport, KernelError> {
-        crate::gate::refuse_teardown_context("reconcile")?;
+        crate::refuse::refuse_teardown_context("reconcile")?;
         // The document engagement spans the whole reconcile — plan steps run
         // lane constructors and fiber teardowns with only this marker held;
         // a callback re-entering the loader is refused honestly (R1, M1-P6b).
@@ -157,17 +157,31 @@ impl Loader {
         let attested = erased.map(|eq| {
             move |a: &C, b: &C| eq(a as &(dyn Any + Send + Sync), b as &(dyn Any + Send + Sync))
         });
-        let plan = crate::diff::plan(
+        let mut plan = crate::diff::plan(
             old.as_ref(),
             &profile,
             attested.as_ref().map(|eq| eq as &dyn Fn(&C, &C) -> bool),
         );
+        // Static cycle detection over lane declarations (I3, M1-P6c): cycle
+        // members are never spawned and any previous runtime of theirs is
+        // withdrawn — cleanly inactive with the recorded fault — while
+        // acyclic siblings load untouched (R11).
+        self.quarantine_cycles(&mut plan, &profile);
         let committed = Arc::new(profile.clone()) as Arc<dyn Any + Send + Sync>;
+        // The configs' caller-authored `Serialize` runs here — outside the
+        // persist permit, contained, before anything commits: a failing or
+        // panicking serializer fails the reconcile with nothing committed
+        // anywhere (R1, R11, PLA-270).
+        let encoded = self.encode_committed(&committed)?;
         // The document of record moves to disk before the runtime (LAW §3),
-        // under the one persist permit every write-back and commit runs under.
+        // under the one persist permit every write-back and commit runs
+        // under; the permit's span is mechanical — merge and write of plain
+        // values only.
         let drained: Vec<EntryFault> = {
             let _permit = self.gate.persist_permit().await?;
-            self.persist(&committed).await?;
+            if let Some((persistence, values)) = &encoded {
+                persistence.save_committed(values).await?;
+            }
             // Committing the new document reconverges every recorded
             // divergence: the drained faults surface in the report, never
             // dropped (LAW §3).

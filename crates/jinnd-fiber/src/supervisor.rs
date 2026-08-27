@@ -62,10 +62,18 @@ pub(crate) async fn supervise(mut cell: Cell) {
     loop {
         let asked = cell.shared.probe.load(Ordering::SeqCst);
         cell.sync_signal();
-        if let Some(step) = cell.next_step() {
+        // Rest was already lowered by whatever target write owes this step —
+        // atomically, in the steering cell's own critical section (M1-P6c
+        // round 3) — so code a transition reaches never observes its own
+        // fiber at rest. The settle below presents the stamp this read
+        // observed: a target that moves meanwhile makes the settle stale and
+        // rest stays lowered until the next round serves it.
+        let (desired, observed) = cell.shared.steering.observed();
+        if let Some(step) = plan(&cell.committed, &desired) {
             cell.run(step).await;
             continue;
         }
+        cell.shared.steering.settle_rest(observed);
         cell.shared.settle(asked);
         if cell.committed.state == FiberState::Disposed || cell.committed.disposal_failed {
             // Settled for good: no probe will ever go unanswered again.
@@ -197,15 +205,20 @@ impl Cell {
         }
     }
 
-    /// Replays this activation's scope and starts the next one from an empty tree.
+    /// Drains this activation's scope, replays it, and starts the next one
+    /// from an empty tree.
     ///
-    /// The replay runs inside the teardown context marker: plugin-owned
-    /// inverses execute on this fiber's task, and anything they call can
-    /// consult [`crate::in_teardown`] to refuse work that must not wait on a
+    /// The drain pass runs every draining effect's phase — a dying provider
+    /// waits out its dependents — to completion BEFORE any inverse replays
+    /// (I2, paper Alg 5): dependents unloading during the drain still call
+    /// the dying service and observe its contribution whole. The replay runs
+    /// inside the teardown context marker: plugin-owned inverses execute on
+    /// this fiber's task, and anything they call can consult
+    /// [`crate::in_teardown`] to refuse work that must not wait on a
     /// teardown in flight (R1, M1-P6b). The task-agnostic half is the
-    /// withdrawal cell, raised for exactly the replay's span: work an inverse
-    /// spawns onto another task escapes the marker but happens-after the
-    /// raise, so [`crate::Fiber::withdrawing`] still answers it truthfully.
+    /// withdrawal cell, raised for exactly the drain-and-replay span: work an
+    /// inverse spawns onto another task escapes the marker but happens-after
+    /// the raise, so [`crate::Fiber::withdrawing`] still answers it truthfully.
     async fn withdraw(&mut self) -> ReplayReport {
         let cancel = CancellationToken::new();
         let report = {
@@ -216,7 +229,10 @@ impl Cell {
                 ..
             } = self;
             let _span = shared.withdrawal.begin();
-            let work = scope.replay();
+            let work = async {
+                scope.drain().await;
+                scope.replay().await
+            };
             crate::teardown::marked(land(work, signal.as_mut(), shared, &cancel)).await
         };
         self.scope = EffectScope::new();

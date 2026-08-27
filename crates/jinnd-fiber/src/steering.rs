@@ -30,6 +30,22 @@ struct Inner {
     desired: Desired,
     /// The aim of the in-flight activation, while there is one.
     in_flight: Option<Aim>,
+    /// True while the fiber owes no transition: the last one landed and the
+    /// committed state equals `desired` (the REST gate, M1-P6c).
+    resting: bool,
+    /// Bumped by every target write, in the same critical section that lowers
+    /// `resting` (the round-3 law): a settle presenting a stale stamp is
+    /// refused, so rest and target can never be observed out of sync.
+    moved: u64,
+}
+
+impl Inner {
+    /// The target moved: rest lowers HERE, atomically with the write — never
+    /// deferred to supervisor scheduling (M1-P6c round 3).
+    fn stir(&mut self) {
+        self.resting = false;
+        self.moved = self.moved.wrapping_add(1);
+    }
 }
 
 impl SteeringCell {
@@ -42,6 +58,9 @@ impl SteeringCell {
                     disposing: false,
                 },
                 in_flight: None,
+                // A fresh fiber still owes its first reconciliation pass.
+                resting: false,
+                moved: 0,
             }),
         }
     }
@@ -49,6 +68,33 @@ impl SteeringCell {
     /// The latest desired state.
     pub(crate) fn desired(&self) -> Desired {
         self.with(|inner| inner.desired.clone())
+    }
+
+    /// The latest desired state, stamped: the stamp is what a later
+    /// [`SteeringCell::settle_rest`] must present, so rest is only ever
+    /// raised over the exact target this read observed (M1-P6c round 3).
+    pub(crate) fn observed(&self) -> (Desired, u64) {
+        self.with(|inner| (inner.desired.clone(), inner.moved))
+    }
+
+    /// True while the fiber owes no transition (the REST gate). Lowered
+    /// atomically with every target write; raised only by a settle whose
+    /// stamp is still current — the two can never be observed out of sync.
+    pub(crate) fn resting(&self) -> bool {
+        self.with(|inner| inner.resting)
+    }
+
+    /// Raises rest, unless a target write moved the cell since `observed`
+    /// was stamped — then the settle is stale and refused (round-3 law).
+    /// Returns whether the fiber now rests.
+    pub(crate) fn settle_rest(&self, observed: u64) -> bool {
+        self.with(|inner| {
+            if inner.moved != observed {
+                return false;
+            }
+            inner.resting = true;
+            true
+        })
     }
 
     /// Mirrors the readiness signal. Returns whether it actually changed.
@@ -59,6 +105,7 @@ impl SteeringCell {
             }
             inner.desired.aim.epoch = epoch;
             inner.desired.cause = TransitionCause::DependencyChanged;
+            inner.stir();
             true
         })
     }
@@ -68,12 +115,18 @@ impl SteeringCell {
         self.with(|inner| {
             inner.desired.aim.revision = inner.desired.aim.revision.wrapping_add(1);
             inner.desired.cause = cause;
+            inner.stir();
         });
     }
 
     /// Requests disposal. Once requested it is never withdrawn.
     pub(crate) fn dispose(&self) {
-        self.with(|inner| inner.desired.disposing = true);
+        self.with(|inner| {
+            if !inner.desired.disposing {
+                inner.desired.disposing = true;
+                inner.stir();
+            }
+        });
     }
 
     /// Records that a transition for `aim` is in flight.

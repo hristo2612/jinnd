@@ -16,37 +16,30 @@
 //! - **The persist permit** — a one-permit semaphore serializing every
 //!   write-back and commit of the document of record. Its critical section
 //!   re-derives, persists, and commits — no plugin-facing call, no wait on
-//!   engagement — so every holder finishes and every waiter is served.
+//!   engagement — so every holder finishes and every waiter is served. The
+//!   save it awaits is kernel-authored BY CONSTRUCTION: the store seam is
+//!   sealed (`DocumentStore` is crate-internal; the public surface accepts a
+//!   path), so no caller-authorable code can ever run under the permit
+//!   (M1-P6c round 3).
 //!
-//! - **The withdrawal-conflict refusal** (the round-4 law, load-bearing) —
-//!   the loader never *begins* a fiber-awaiting operation while any tracked
-//!   fiber's withdrawal replay is in flight: refused at the conflict point,
-//!   immediately and retryably, with no caller analysis and no timers
-//!   ([`crate::loader::Loader::refuse_amid_withdrawal`]). Every deadlock in
-//!   this class threads a kernel-owned wait through an in-progress teardown,
-//!   and any call issued from within a teardown — on the fiber's task or on
-//!   tasks it spawned — happens-after that withdrawal began, so it always
-//!   observes the conflict. The wait the cycle needs is removed
-//!   categorically, whichever crates it threads through.
-//! - **The teardown marker** — a task-local fast path refusing amendments
-//!   made directly from a fiber's teardown task, before engagement. No longer
-//!   load-bearing (a plugin's own spawn escapes any task-local); kept because
-//!   it answers the common shape earliest and cheapest.
+//! The conflict-point refusals live in [`crate::refuse`] (split by
+//! responsibility, R10): the withdrawal-conflict refusal (the round-4 law),
+//! the REST gate (the round-2 law: a fiber-awaiting amendment begins only
+//! against a fiber at rest, decided from kernel-owned state), and the two
+//! task-local fast paths (teardown marker, fiber identity) that are no
+//! longer load-bearing.
 //!
 //! Deadlock freedom is structural: the only blocking wait a plugin can reach
 //! is the permit, no permit holder waits on anything a plugin can hold up,
-//! and no fiber-awaiting operation begins while a withdrawal could hold up
-//! its waits.
+//! and no fiber-awaiting operation begins while a withdrawal — or a
+//! transition of the target fiber itself — could hold up its waits.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use jinnd_api::{EntryId, ErrorCode, KernelError};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::lanes::EntryHandle;
-use crate::loader::Loader;
-use crate::state::{error, lock};
+use crate::state::error;
 
 /// Loom owns the model checker's primitives: the engagement cell is written
 /// against this shim (`std` normally, `loom` under `--features loom`), exactly
@@ -119,59 +112,6 @@ impl Engagement {
             .unwrap_or_else(|poison| poison.into_inner())
             .document = false;
     }
-}
-
-impl Loader {
-    /// Refuses to *begin* a fiber-awaiting operation while any tracked
-    /// fiber's withdrawal replay is in flight (R1, M1-P6b round-4 law): the
-    /// loader never takes a wait an in-progress teardown could hold up, so no
-    /// deadlock cycle can close through a loader wait — whoever asks, from
-    /// whatever task, with no caller analysis and no timers. The refusal is
-    /// honest and retryable: amend again after quiescence.
-    ///
-    /// The check is causal, not racy: a call issued from within a withdrawal
-    /// replay — directly or via tasks it spawned — happens-after that
-    /// replay's begin, so it always observes the conflict here. A withdrawal
-    /// that begins only *after* an operation was admitted cannot be waiting
-    /// on that operation's outcome; its own re-entrant calls are refused by
-    /// this same check, so it completes, releases its leases, and the
-    /// admitted operation's waits resolve (I3).
-    ///
-    /// Handles are queried with no lock held (R1). Jurisdiction is honest
-    /// too: the loader can only see fibers its document tracks — a
-    /// harness-spawned fiber outside the document is outside this horizon.
-    pub(crate) fn refuse_amid_withdrawal(&self, operation: &str) -> Result<(), KernelError> {
-        let handles: Vec<Arc<dyn EntryHandle>> = lock(&self.state)
-            .entries
-            .values()
-            .filter_map(|runtime| runtime.live.as_ref().map(|live| Arc::clone(&live.handle)))
-            .collect();
-        if handles.iter().any(|handle| handle.withdrawing()) {
-            return Err(error(
-                ErrorCode::InvalidProfile,
-                &format!(
-                    "{operation} refused: a fiber withdrawal is in flight; \
-                     retry after quiescence"
-                ),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Refuses `operation` when invoked from within a fiber's teardown context
-/// (M1-P6b): teardown is the wrong time to reshape the profile — I2 entitles
-/// a dying plugin to call the services it leases while unloading, never to
-/// amend the document — and admitting any such amendment reopens the
-/// re-entrant deadlock class (R1).
-pub(crate) fn refuse_teardown_context(operation: &str) -> Result<(), KernelError> {
-    if jinnd_fiber::in_teardown() {
-        return Err(error(
-            ErrorCode::InvalidProfile,
-            &format!("{operation} refused: the profile cannot be amended from a teardown context"),
-        ));
-    }
-    Ok(())
 }
 
 /// The loader's gate: engagement plus the persist permit.

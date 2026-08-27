@@ -2,10 +2,10 @@
 //!
 //! Resolution delegates the isolation semantics to `jinnd-context`: the walk, its
 //! realm, and its boundary stop are the context crate's; this crate only answers
-//! what each frame holds (R3, R10). Provision applies the slot and returns the
-//! inverse that withdraws it — registration is an effect on whichever scope the
-//! caller owns (R5), and the withdrawal completes only after every dependent's
-//! lease has drained (I2).
+//! what each frame holds (R3, R10). Provision applies the slot and returns its
+//! drain phase and inverse — registration is a draining effect on whichever
+//! scope the caller owns (R5), and no inverse of the provider runs until every
+//! dependent's lease has drained (I2).
 
 use std::sync::Arc;
 
@@ -25,16 +25,21 @@ pub struct Registry {
     store: Arc<Store>,
 }
 
-/// What one provision installed: the generation the slot carries, and the inverse
-/// that withdraws it (R5).
+/// What one provision installed: the generation the slot carries, the drain
+/// phase, and the inverse that withdraws it (R5).
 ///
-/// The inverse removes the slot first — no new resolutions, availability
-/// withdrawn — and then waits for every dependent lease to drain before it
-/// completes (I2). Registering it on the owning scope is the caller's half of the
-/// effect contract.
-#[must_use = "provision is an effect: register the undo on the owning scope (R5)"]
+/// The drain phase removes the slot — no new resolutions, availability
+/// withdrawn — and completes only when every dependent lease has drained; it
+/// runs BEFORE any of the provider's inverses, so a dependent's teardown still
+/// observes the provider whole (I2, paper Alg 5). The inverse repeats that
+/// withdrawal idempotently and drops the value, so a scope replayed without a
+/// drain pass still withdraws completely. Registering both on the owning scope
+/// ([`jinnd_effects::EffectScope::register_draining`]) is the caller's half of
+/// the effect contract.
+#[must_use = "provision is an effect: register the drain and undo on the owning scope (R5)"]
 pub struct Provision {
     pub generation: Generation,
+    pub drain: Disposer,
     pub undo: Disposer,
 }
 
@@ -60,6 +65,14 @@ impl Registry {
     /// The slot is available to consumers only while `vitality` last reported
     /// `true`; resolution and leasing stay answerable regardless, so dependents
     /// can still call a dying provider during teardown (I2).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::DuplicateProvision`] when the (service, realm) slot is
+    /// occupied by ANOTHER provider: replacement is never silent (paper
+    /// Def 23, R9). The occupant is untouched; the refused provider's
+    /// activation fails cleanly (R11). The same provider superseding its own
+    /// generation — the hot-swap lane — is not a duplicate.
     pub fn provide<S: ServiceContract, I>(
         &self,
         at: &Context<I>,
@@ -67,7 +80,7 @@ impl Registry {
         provider: FiberId,
         value: Arc<S>,
         vitality: &Vitality,
-    ) -> Provision {
+    ) -> Result<Provision, KernelError> {
         let tree = at.tree();
         let realm_id = tree.realm(realm);
         let address = Address {
@@ -85,27 +98,44 @@ impl Registry {
         let entry = self
             .store
             .slots
-            .insert(address, provider, value, vitality.cell());
+            .insert(address, provider, value, vitality.cell())
+            .map_err(|occupant| KernelError {
+                code: ErrorCode::DuplicateProvision,
+                message: format!(
+                    "provision refused: the slot for {} is occupied by provider \
+                     fiber {occupant:?} (Def 23, R9)",
+                    S::NAME
+                ),
+                fiber: Some(provider),
+            })?;
         self.store.bump();
 
+        let generation = entry.generation;
+        let drain = {
+            let store = Arc::clone(&self.store);
+            let leases = Arc::clone(&entry.leases);
+            Disposer::future(move || async move {
+                withdraw_slot(&store, &address, generation, leases).await;
+                Ok(())
+            })
+        };
         let store = Arc::clone(&self.store);
         let leases = Arc::clone(&entry.leases);
-        let generation = entry.generation;
         let value = Arc::clone(&entry.value);
         let undo = Disposer::future(move || async move {
-            // Unregister and notify first: no new resolutions, availability
-            // withdrawn, dependents told to unload — then wait for them (I2).
-            if store.slots.remove_if(&address, generation) {
-                store.bump();
-            }
-            leases.close();
-            store.drained(Arc::clone(&leases)).await;
+            // Idempotent over the drain phase: every step re-checks, so the
+            // inverse is complete on its own for scopes replayed undrained.
+            withdraw_slot(&store, &address, generation, leases).await;
             // Only now may the provider's value die: dependents were entitled to
             // call it up to the moment their last lease returned (I2).
             drop(value);
             Ok(())
         });
-        Provision { generation, undo }
+        Ok(Provision {
+            generation,
+            drain,
+            undo,
+        })
     }
 
     /// Resolves `S` from `from`, honoring isolation boundaries (R3).
@@ -220,6 +250,23 @@ impl Registry {
                 .unwrap_or(Realm::Root),
         })
     }
+}
+
+/// One provision's withdrawal walk: unregister and notify first — no new
+/// resolutions, availability withdrawn, dependents told to unload — then wait
+/// for every dependent lease to drain (I2). Idempotent: the drain phase and
+/// the inverse both run it, whichever comes first completes it.
+async fn withdraw_slot(
+    store: &Arc<Store>,
+    address: &Address,
+    generation: Generation,
+    leases: Arc<crate::leases::LeaseCell>,
+) {
+    if store.slots.remove_if(address, generation) {
+        store.bump();
+    }
+    leases.close();
+    store.drained(leases).await;
 }
 
 fn error(code: ErrorCode, message: &str) -> KernelError {
