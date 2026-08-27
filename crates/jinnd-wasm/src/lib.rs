@@ -21,6 +21,7 @@ mod broker_state;
 mod broker_tests;
 mod handle;
 mod host;
+mod hostcaps;
 mod instance;
 mod peer;
 mod selector;

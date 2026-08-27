@@ -40,9 +40,11 @@ pub trait WasmLane: Send + Sync + 'static {
     /// `package` instantiate `artifact` — one component instance per fiber,
     /// disposed instantly and completely with it (R7, I1). The artifact is
     /// admitted only under its pinned hash; a mismatch refuses registration,
-    /// recorded (Law 5). `grants` are the contracts each such entry's
-    /// instance may resolve (constitution 01: requests are not grants; the
-    /// profile side grants).
+    /// recorded (Law 5). `grants` are the names each such entry's instance
+    /// holds authority over: the contracts it may resolve, provide, or call
+    /// through a host-provider import, and the topics it may listen to —
+    /// subscriptions are covered by the contract grant in v0.1
+    /// (constitution 01: requests are not grants; the profile side grants).
     ///
     /// # Errors
     ///

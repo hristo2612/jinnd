@@ -15,7 +15,7 @@ wit_bindgen::generate!({
 });
 
 use exports::jinn::plugin::lifecycle::{Guest, GuestFault};
-use jinn::plugin::{effects, services};
+use jinn::plugin::{effects, fs, services};
 
 /// The counter contract this fixture provides.
 const COUNTER_CONTRACT: &str = "jinn:test/counter";
@@ -23,6 +23,9 @@ const COUNTER_CONTRACT: &str = "jinn:test/counter";
 const GREETER_CONTRACT: &str = "jinn:test/greeter";
 /// A contract nobody grants; `ungranted` mode asserts its refusal.
 const SECRET_CONTRACT: &str = "jinn:test/secret";
+/// The topic `listener` mode subscribes to (granted) and `eavesdrop` mode is
+/// refused (ungranted).
+const TOPIC: &str = "jinn:test/topic";
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static PICKY: AtomicBool = AtomicBool::new(false);
@@ -54,6 +57,27 @@ impl Guest for Fixture {
                 Err(_) => Ok(()),
                 Ok(_) => Err(GuestFault::Failed(
                     "an ungranted resolve was not refused".into(),
+                )),
+            },
+            "listener" => {
+                jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
+                Ok(())
+            }
+            "eavesdrop" => match jinn::plugin::events::listen(TOPIC, 7) {
+                Err(_) => Ok(()),
+                Ok(_) => Err(GuestFault::Failed(
+                    "an ungranted listen was not refused".into(),
+                )),
+            },
+            "fs" => {
+                let answer = fs::read("/probe").map_err(fault)?;
+                *STASH.lock().unwrap() = answer;
+                Ok(())
+            }
+            "fs-denied" => match fs::read("/probe") {
+                Err(_) => Ok(()),
+                Ok(_) => Err(GuestFault::Failed(
+                    "an ungranted host-fs read was not refused".into(),
                 )),
             },
             other => {

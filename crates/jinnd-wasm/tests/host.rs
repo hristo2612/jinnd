@@ -128,8 +128,9 @@ async fn activation_collects_guest_effects_and_undo_replays_over_the_boundary() 
 async fn native_and_guest_callers_cross_the_same_broker_choke_point() {
     let rig = rig();
 
-    // Guest provider.
-    let (_, provider) = rig.spawn(1);
+    // Guest provider (granted its own contract: providing is authority).
+    let (provider_peer, provider) = rig.spawn(1);
+    rig.broker.grant(provider_peer, COUNTER);
     let (outcome, _) = provider.activate(b"provider".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("provider activate: {error:?}"));
 
@@ -163,6 +164,7 @@ async fn native_and_guest_callers_cross_the_same_broker_choke_point() {
         }
     }
     let native_provider = rig.broker.register_peer(Some(FiberId(8)));
+    rig.broker.grant(native_provider, "jinn:test/greeter");
     rig.broker
         .provide(native_provider, "jinn:test/greeter", Arc::new(Greeter))
         .unwrap_or_else(|error| panic!("provide: {error:?}"));
@@ -227,6 +229,110 @@ impl Rig {
 }
 
 #[tokio::test]
+async fn an_ungranted_guest_provide_is_refused_and_recorded() {
+    let rig = rig();
+    let (_, instance) = rig.spawn(1);
+    // `provider` mode provides the counter contract; without its grant the
+    // provision is refused at the broker and the activation faults (Law 1 —
+    // never accepted by default).
+    let (outcome, _) = instance.activate(b"provider".to_vec()).await;
+    assert!(outcome.is_err(), "the ungranted provide must refuse");
+    assert!(
+        rig.kinds_contains_refusal(COUNTER),
+        "mechanical closure: the denial is a ledger event"
+    );
+}
+
+#[tokio::test]
+async fn listening_is_grant_gated_and_a_granted_listener_receives_deliveries() {
+    use jinnd_api::DispatchMode;
+    use jinnd_wasm::Selector;
+
+    let rig = rig();
+    const TOPIC: &str = "jinn:test/topic";
+
+    // Granted listener registers and receives.
+    let (granted_peer, granted) = rig.spawn(1);
+    rig.broker.grant(granted_peer, TOPIC);
+    let (outcome, contributed) = granted.activate(b"listener".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("listener activate: {error:?}"));
+    assert_eq!(contributed.listens.len(), 1);
+
+    // Ungranted listener is refused; the guest observes the refusal and the
+    // denial is recorded (constitution 01: subscriptions are covered by the
+    // contract grant in v0.1).
+    let (_, denied) = rig.spawn(2);
+    let (outcome, _) = denied.activate(b"eavesdrop".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("the guest observed no refusal: {error:?}"));
+    assert!(rig.kinds_contains_refusal(TOPIC));
+
+    // Only the granted listener is registered: one delivery, one output.
+    let report = rig
+        .topics
+        .emit(
+            0,
+            TOPIC,
+            DispatchMode::Serial,
+            &Selector::All,
+            b"ping".to_vec(),
+            &NoRealms,
+        )
+        .await;
+    assert_eq!(report.outputs, vec![b"ping".to_vec()]);
+    assert!(report.failures.is_empty());
+}
+
+#[tokio::test]
+async fn the_fs_import_is_grant_gated_and_routes_over_the_broker() {
+    let rig = rig();
+
+    // A native provider answers the jinn:fs contract over the broker.
+    struct Files;
+    impl Peer for Files {
+        fn call(
+            &self,
+            _: PeerId,
+            _: &str,
+            operation: &str,
+            payload: Vec<u8>,
+        ) -> KernelFuture<'static, Vec<u8>> {
+            let mut answer = format!("{operation}=").into_bytes();
+            answer.extend(payload);
+            Box::pin(async move { Ok(answer) })
+        }
+    }
+    let files = rig.broker.register_peer(None);
+    rig.broker.grant(files, "jinn:fs");
+    rig.broker
+        .provide(files, "jinn:fs", Arc::new(Files))
+        .unwrap_or_else(|error| panic!("provide: {error:?}"));
+
+    // Granted guest: the import call crosses the broker and is answered.
+    let (reader_peer, reader) = rig.spawn(1);
+    rig.broker.grant(reader_peer, "jinn:fs");
+    let (outcome, _) = reader.activate(b"fs".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("fs activate: {error:?}"));
+    let stashed = reader
+        .contract_call(0, COUNTER, "stash", Vec::new())
+        .await
+        .unwrap_or_else(|error| panic!("stash: {error:?}"));
+    assert_eq!(stashed, b"read=/probe".to_vec());
+    assert!(
+        rig.ledger.kinds().contains(&LedgerEventKind::ContractCall {
+            contract: "jinn:fs".into(),
+            operation: "read".into()
+        }),
+        "the host-provider import crossing is ledgered (Law 2)"
+    );
+
+    // Ungranted guest: refused, recorded, observed by the guest.
+    let (_, denied) = rig.spawn(2);
+    let (outcome, _) = denied.activate(b"fs-denied".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("the guest observed no refusal: {error:?}"));
+    assert!(rig.kinds_contains_refusal("jinn:fs"));
+}
+
+#[tokio::test]
 async fn a_trapping_guest_deactivates_only_its_own_instance() {
     let rig = rig();
     let (_, trapping) = rig.spawn(1);
@@ -276,6 +382,7 @@ async fn a_spinning_guest_is_killed_at_the_deadline_not_the_executor() {
 async fn disposal_withdraws_exactly_the_instance_contribution() {
     let rig = rig();
     let (peer, provider) = rig.spawn(1);
+    rig.broker.grant(peer, COUNTER);
     let (outcome, _) = provider.activate(b"provider".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("activate: {error:?}"));
 
@@ -306,7 +413,8 @@ async fn disposal_withdraws_exactly_the_instance_contribution() {
     );
 
     // A fresh instance starts from nothing: state died with the store.
-    let (_, fresh) = rig.spawn(3);
+    let (fresh_peer, fresh) = rig.spawn(3);
+    rig.broker.grant(fresh_peer, COUNTER);
     let (outcome, _) = fresh.activate(b"provider".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("fresh activate: {error:?}"));
     let handle = rig
@@ -324,7 +432,8 @@ async fn disposal_withdraws_exactly_the_instance_contribution() {
 #[tokio::test]
 async fn the_vitality_seam_answers_per_consumer_over_the_broker() {
     let rig = rig();
-    let (_, picky) = rig.spawn(1);
+    let (picky_peer, picky) = rig.spawn(1);
+    rig.broker.grant(picky_peer, COUNTER);
     let (outcome, _) = picky.activate(b"picky".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("activate: {error:?}"));
     assert_eq!(rig.broker.vitality(COUNTER, 2).await, Ok(true));

@@ -121,6 +121,64 @@ interface events {
   listen: func(topic: string, token: u64) -> result<effect-id, kernel-error>;
 }
 
+/// Base host-provider contract `jinn:fs` (R7): the kernel supplies this
+/// import; authority over it is a GRANT. Every call crosses the broker's
+/// single dispatch point under the contract name `jinn:fs` — grant check →
+/// ledger append → dispatch to the contract's live provider — so an
+/// ungranted call is refused and the refusal is a ledger event (Law 1
+/// mechanical closure; constitution 01 §Grants). Effect classes and
+/// inverse obligations live in the contract bundle (constitution 01).
+interface fs {
+  use types.{kernel-error};
+
+  /// Reads one file. Effect class: read.
+  /// Broker wire: operation `read`, payload = the path's UTF-8 bytes.
+  read: func(path: string) -> result<list<u8>, kernel-error>;
+
+  /// Writes one file. Effect class: revertible — the provider registers the
+  /// inverse (constitution 03).
+  /// Broker wire: operation `write`, payload = u32-LE length of the path's
+  /// UTF-8 bytes, the path bytes, then the data.
+  write: func(path: string, data: list<u8>) -> result<_, kernel-error>;
+}
+
+/// Base host-provider contract `jinn:process` (R7). Same grant discipline
+/// and broker choke point as `fs`.
+interface process {
+  use types.{kernel-error};
+
+  /// Runs one command to completion, answering its output bytes.
+  /// Broker wire: operation `run`, payload = for the command and then each
+  /// argument, a u32-LE byte length followed by the UTF-8 bytes.
+  run: func(command: string, args: list<string>) -> result<list<u8>, kernel-error>;
+}
+
+/// Base host-provider contract `jinn:net` (R7). Same grant discipline and
+/// broker choke point as `fs`.
+interface net {
+  use types.{kernel-error};
+
+  /// Performs one request, answering the response body.
+  /// Broker wire: operation `request`, payload = u32-LE length + method
+  /// bytes, u32-LE length + url bytes, then the body.
+  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, kernel-error>;
+}
+
+/// Base host-provider contract `jinn:keystore` (R7). Same grant discipline
+/// and broker choke point as `fs`. Sensitivity class: secret
+/// (constitution 02 §Redaction — values never land in the ledger).
+interface keystore {
+  use types.{kernel-error};
+
+  /// Reads one secret. Broker wire: operation `get`, payload = key bytes.
+  get: func(key: string) -> result<list<u8>, kernel-error>;
+
+  /// Stores one secret. Effect class: revertible.
+  /// Broker wire: operation `put`, payload = u32-LE length + key bytes,
+  /// then the value.
+  put: func(key: string, value: list<u8>) -> result<_, kernel-error>;
+}
+
 /// The lifecycle surface every Tier A plugin exports. A plugin body runs once
 /// per fiber (LAW §3 "Fiber"); the host instantiates one component instance
 /// per fiber and disposes it instantly and completely on teardown (R7, I1).
@@ -173,12 +231,19 @@ interface lifecycle {
 
 /// The Tier A plugin world (R7): logic and orchestration plugins and ALL
 /// machine-written code, first-party included. Imports are exactly the kernel
-/// surfaces; capability authority arrives only as grants checked at the
-/// broker (constitution 01 §Mechanical closure).
+/// surfaces plus the base host-provider contracts the kernel supplies
+/// (fs, process, net, keystore); capability authority arrives only as grants
+/// checked at the broker (constitution 01 §Mechanical closure) — the linker
+/// binds every import for every component, but every call through one is
+/// refused without its grant, and every refusal is a ledger event.
 world plugin {
   import effects;
   import services;
   import events;
+  import fs;
+  import process;
+  import net;
+  import keystore;
 
   export lifecycle;
 }

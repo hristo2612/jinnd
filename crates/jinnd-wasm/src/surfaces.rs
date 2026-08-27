@@ -24,7 +24,15 @@ impl bindings::effects::Host for HostState {
 impl bindings::services::Host for HostState {
     async fn provide(&mut self, contract: String) -> Result<u64, bindings::types::KernelError> {
         let index = self.outcome.provisions.len() as u64;
-        if !self.seat.staging {
+        if self.seat.staging {
+            // A staged provision is recorded, not routed (R8) — but it is
+            // grant-checked NOW, exactly as a live one: refusal fails the
+            // health gate instead of surfacing at commit (Law 1).
+            self.seat
+                .broker
+                .check_grant(self.seat.peer, &contract)
+                .map_err(bindings::wire_error)?;
+        } else {
             let face: Arc<dyn crate::peer::Peer> = match &self.seat.slot {
                 Some(slot) => Arc::new(Arc::clone(slot)),
                 None => self.face.clone(),
@@ -87,6 +95,13 @@ impl bindings::events::Host for HostState {
         topic: String,
         token: u64,
     ) -> Result<u64, bindings::types::KernelError> {
+        // Subscriptions are covered by the contract grant in v0.1
+        // (constitution 01 §Grants): listening on a topic requires the grant
+        // of the topic's name, and the refusal is a ledger event (Law 1).
+        self.seat
+            .broker
+            .check_grant(self.seat.peer, &topic)
+            .map_err(bindings::wire_error)?;
         if self.seat.staging {
             self.outcome.listens.push(0);
             return Ok(0);

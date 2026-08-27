@@ -62,13 +62,45 @@ impl Broker {
         }
     }
 
-    /// Provides `contract` from `peer`. A second provider for an occupied
+    /// THE grant check, shared by every granted surface — resolve, provide,
+    /// listen, and the host-provider dispatch. Authority arrives only as a
+    /// grant; an ungranted call is refused and the refusal is a ledger
+    /// event, never a default-accept (Law 1 mechanical closure;
+    /// constitution 01 §Grants).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::EffectFailed`] with a grant-refused message.
+    pub fn check_grant(&self, peer: PeerId, name: &str) -> Result<(), KernelError> {
+        let (granted, fiber) = {
+            let state = self.lock();
+            (state.granted(peer, name), state.fiber_of(peer))
+        };
+        if granted {
+            return Ok(());
+        }
+        self.ledger.append(
+            LedgerEventKind::GrantRefused {
+                contract: name.to_owned(),
+            },
+            fiber,
+        );
+        Err(refusal(
+            ErrorCode::EffectFailed,
+            format!("grant refused: {name}"),
+        ))
+    }
+
+    /// Provides `contract` from `peer`. Providing is authority: it requires
+    /// the contract's grant exactly as calling does (Law 1) — an ungranted
+    /// provide is refused and recorded. A second provider for an occupied
     /// slot is refused — replacement is never silent (R9). Every provision
     /// bumps the contract's generation, so handles resolved against the
     /// previous provider go stale rather than silently retargeting.
     ///
     /// # Errors
     ///
+    /// [`ErrorCode::EffectFailed`] when `peer` holds no grant for `contract`;
     /// [`ErrorCode::DuplicateProvision`] when a different peer holds the slot.
     pub fn provide(
         &self,
@@ -76,6 +108,7 @@ impl Broker {
         contract: &str,
         callable: Arc<dyn Peer>,
     ) -> Result<(), KernelError> {
+        self.check_grant(peer, contract)?;
         let mut state = self.lock();
         if let Some(existing) = state.providers.get(contract)
             && existing.peer != peer
@@ -147,8 +180,8 @@ impl Broker {
         state.peers.remove(&peer);
     }
 
-    /// Resolves `contract` for `caller`: THE grant check. A refusal is a
-    /// ledger event exactly as an exercise is (constitution 01 §Grants).
+    /// Resolves `contract` for `caller` under the grant check. A refusal is
+    /// a ledger event exactly as an exercise is (constitution 01 §Grants).
     /// The minted handle pins the provider generation it resolved against:
     /// a later provider change refuses the handle instead of retargeting it.
     ///
@@ -157,21 +190,9 @@ impl Broker {
     /// [`ErrorCode::EffectFailed`] with a grant-refused message when the
     /// caller holds no grant for `contract`.
     pub fn resolve(&self, caller: PeerId, contract: &str) -> Result<HandleId, KernelError> {
+        self.check_grant(caller, contract)?;
         let mut state = self.lock();
         let fiber = state.fiber_of(caller);
-        if !state.granted(caller, contract) {
-            drop(state);
-            self.ledger.append(
-                LedgerEventKind::GrantRefused {
-                    contract: contract.to_owned(),
-                },
-                fiber,
-            );
-            return Err(refusal(
-                ErrorCode::EffectFailed,
-                format!("grant refused: {contract}"),
-            ));
-        }
         state.next_handle += 1;
         let handle = state.next_handle;
         let generation = state.generation_of(contract);
@@ -268,6 +289,59 @@ impl Broker {
                     }
                 }
             },
+        }
+    }
+
+    /// One handle-less contract crossing, used by the kernel-supplied base
+    /// host-provider imports (R7: fs, process, net, keystore arrive as
+    /// granted WIT imports). The same choke point in the same order — grant
+    /// check → ledger append → dispatch — without minting a persistent
+    /// handle: each dispatch binds to the CURRENT provider, so staleness
+    /// cannot arise, and the caller's scope still travels with the call (R4).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::EffectFailed`] when the caller holds no grant (recorded);
+    /// [`ErrorCode::MissingDependency`] when no provider is live; the
+    /// provider's own contained failure otherwise.
+    pub fn dispatch(
+        &self,
+        caller: PeerId,
+        contract: &str,
+        operation: &str,
+        payload: Vec<u8>,
+    ) -> KernelFuture<'static, Vec<u8>> {
+        if let Err(refused) = self.check_grant(caller, contract) {
+            return Box::pin(async move { Err(refused) });
+        }
+        let (provider, fiber) = {
+            let state = self.lock();
+            (
+                state
+                    .providers
+                    .get(contract)
+                    .map(|provider| Arc::clone(&provider.callable)),
+                state.fiber_of(caller),
+            )
+        };
+        self.ledger.append(
+            LedgerEventKind::ContractCall {
+                contract: contract.to_owned(),
+                operation: operation.to_owned(),
+            },
+            fiber,
+        );
+        match provider {
+            None => {
+                let contract = contract.to_owned();
+                Box::pin(async move {
+                    Err(refusal(
+                        ErrorCode::MissingDependency,
+                        format!("{contract} has no live provider"),
+                    ))
+                })
+            }
+            Some(callable) => callable.call(caller, contract, operation, payload),
         }
     }
 

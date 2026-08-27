@@ -98,6 +98,7 @@ async fn ungranted_resolve_is_refused_and_the_denial_is_a_ledger_event() {
 async fn granted_call_appends_the_crossing_before_dispatching() {
     let (broker, ledger) = fixture();
     let provider = broker.register_peer(Some(FiberId(1)));
+    broker.grant(provider, "jinn:echo");
     broker
         .provide(provider, "jinn:echo", Arc::new(Echo))
         .unwrap_or_else(|error| panic!("provision refused: {error:?}"));
@@ -132,6 +133,7 @@ async fn granted_call_appends_the_crossing_before_dispatching() {
 async fn a_handle_is_caller_scoped_never_transferable() {
     let (broker, _) = fixture();
     let provider = broker.register_peer(None);
+    broker.grant(provider, "jinn:echo");
     broker
         .provide(provider, "jinn:echo", Arc::new(Echo))
         .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
@@ -152,10 +154,12 @@ async fn a_handle_is_caller_scoped_never_transferable() {
 async fn second_provider_for_an_occupied_slot_is_refused_never_silent() {
     let (broker, _) = fixture();
     let first = broker.register_peer(None);
+    broker.grant(first, "jinn:echo");
     broker
         .provide(first, "jinn:echo", Arc::new(Echo))
         .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let second = broker.register_peer(None);
+    broker.grant(second, "jinn:echo");
     let refused = broker.provide(second, "jinn:echo", Arc::new(Echo));
     assert_eq!(
         refused.err().map(|error| error.code),
@@ -167,10 +171,12 @@ async fn second_provider_for_an_occupied_slot_is_refused_never_silent() {
 async fn peer_removal_withdraws_exactly_its_contribution() {
     let (broker, ledger) = fixture();
     let dying = broker.register_peer(Some(FiberId(3)));
+    broker.grant(dying, "jinn:doomed");
     broker
         .provide(dying, "jinn:doomed", Arc::new(Echo))
         .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let survivor = broker.register_peer(Some(FiberId(4)));
+    broker.grant(survivor, "jinn:kept");
     broker
         .provide(survivor, "jinn:kept", Arc::new(Echo))
         .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
@@ -210,6 +216,7 @@ async fn dispatch_holds_no_broker_lock_across_the_peer() {
         broker: Arc::clone(&broker),
         own_peer: provider,
     });
+    broker.grant(provider, "jinn:reenter");
     broker
         .provide(provider, "jinn:reenter", reentrant)
         .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
@@ -223,6 +230,61 @@ async fn dispatch_holds_no_broker_lock_across_the_peer() {
         .await
         .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     assert_eq!(answer, b"reentered".to_vec());
+}
+
+#[tokio::test]
+async fn an_ungranted_provide_is_refused_and_the_denial_is_recorded() {
+    let (broker, ledger) = fixture();
+    let peer = broker.register_peer(Some(FiberId(6)));
+    let refused = broker.provide(peer, "jinn:unearned", Arc::new(Echo));
+    assert_eq!(
+        refused.err().map(|error| error.code),
+        Some(ErrorCode::EffectFailed),
+        "providing is authority: without a grant it is refused (Law 1)"
+    );
+    assert_eq!(
+        ledger.kinds(),
+        vec![LedgerEventKind::GrantRefused {
+            contract: "jinn:unearned".into()
+        }],
+        "mechanical closure: the refusal is a ledger event, not a default-accept"
+    );
+}
+
+#[tokio::test]
+async fn an_ungranted_dispatch_is_refused_and_a_granted_one_crosses_the_broker() {
+    let (broker, ledger) = fixture();
+    let provider = broker.register_peer(None);
+    broker.grant(provider, "jinn:fs");
+    broker
+        .provide(provider, "jinn:fs", Arc::new(Echo))
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+
+    let caller = broker.register_peer(Some(FiberId(7)));
+    let refused = broker
+        .dispatch(caller, "jinn:fs", "read", b"/probe".to_vec())
+        .await;
+    assert_eq!(
+        refused.err().map(|error| error.code),
+        Some(ErrorCode::EffectFailed)
+    );
+    assert!(ledger.kinds().contains(&LedgerEventKind::GrantRefused {
+        contract: "jinn:fs".into()
+    }));
+
+    broker.grant(caller, "jinn:fs");
+    let answer = broker
+        .dispatch(caller, "jinn:fs", "read", b"/probe".to_vec())
+        .await
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+    assert_eq!(answer, b"jinn:fs/read:/probe".to_vec());
+    assert!(
+        ledger.kinds().contains(&LedgerEventKind::ContractCall {
+            contract: "jinn:fs".into(),
+            operation: "read".into()
+        }),
+        "a host-provider import crossing is ledgered like any other (Law 2)"
+    );
 }
 
 #[tokio::test]
@@ -334,6 +396,7 @@ async fn vitality_routes_to_the_provider_per_consumer() {
     }
     let (broker, _) = fixture();
     let provider = broker.register_peer(None);
+    broker.grant(provider, "jinn:picky");
     broker
         .provide(provider, "jinn:picky", Arc::new(Picky))
         .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
