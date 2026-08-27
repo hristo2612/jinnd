@@ -85,9 +85,16 @@ impl LocalTopics {
         id
     }
 
-    /// Withdraws one registration. Idempotent.
-    pub fn unlisten(&self, id: u64) {
-        self.lock().listeners.retain(|listener| listener.id != id);
+    /// Withdraws one registration, returning its topic — the caller's
+    /// Law-2 withdrawal label. Idempotent: an already-withdrawn id is
+    /// `None`, and nothing is appended for it.
+    pub fn unlisten(&self, id: u64) -> Option<String> {
+        let mut inner = self.lock();
+        let index = inner
+            .listeners
+            .iter()
+            .position(|listener| listener.id == id)?;
+        Some(inner.listeners.remove(index).topic)
     }
 
     /// Atomically withdraws `old` and registers `new`, under ONE lock: no

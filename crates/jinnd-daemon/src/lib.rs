@@ -15,8 +15,11 @@ mod daemon;
 mod hostfs;
 mod lane;
 mod packages;
+mod seat;
 mod support;
 mod swap;
+mod watch;
 
 pub use daemon::{Daemon, DaemonPaths};
 pub use jinnd_wasm::SwapOutcome;
+pub use watch::{Watch, log_report, log_status};

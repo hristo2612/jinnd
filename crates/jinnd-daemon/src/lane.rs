@@ -20,6 +20,7 @@ use jinnd_wasm::{
     SharedSlot, SwapCore, WasmHost,
 };
 
+use crate::seat::{SeatConfig, seat_config};
 use crate::support::{DEADLINE, SharedFibers, Sink, Tracked, lock};
 
 /// One live wasm entry, addressable by the swap machine.
@@ -60,70 +61,6 @@ impl LaneState {
             swap: SwapCore::default(),
             next_slot: AtomicU64::new(0),
         })
-    }
-}
-
-/// One entry's seat configuration, decoded from its profile config document:
-/// `grants` are the contract names the profile side grants the instance
-/// (constitution 01: requests are not grants), `data` is the opaque payload
-/// handed to the guest's `activate` (R9: data, never behavior).
-pub(crate) struct SeatConfig {
-    pub(crate) grants: Vec<String>,
-    pub(crate) payload: Vec<u8>,
-}
-
-pub(crate) fn seat_config(value: &serde_json::Value) -> SeatConfig {
-    let grants = value
-        .get("grants")
-        .and_then(|grants| grants.as_array())
-        .map(|grants| {
-            grants
-                .iter()
-                .filter_map(|grant| grant.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    let payload = match value.get("data") {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::String(text)) => text.clone().into_bytes(),
-        Some(other) => other.to_string().into_bytes(),
-    };
-    SeatConfig { grants, payload }
-}
-
-/// Withdraws exactly one seat's contribution with the daemon's Law-2 trail:
-/// each guest inverse is replayed LIFO and its withdrawal is a ledger event,
-/// then listeners and provisions withdraw, then the instance disposes (I1).
-async fn retire_ledgered(
-    seat: SeatState,
-    state: &LaneState,
-    peer: PeerId,
-    fiber: FiberId,
-) -> Result<(), KernelError> {
-    let mut first = None;
-    for (label, token) in seat.effects.iter().rev() {
-        let outcome = seat.instance.undo(*token).await;
-        state.sink.append(
-            LedgerEventKind::EffectWithdrawn {
-                label: label.clone(),
-                clean: outcome.is_ok(),
-            },
-            Some(fiber),
-        );
-        if let Err(refused) = outcome {
-            first.get_or_insert(refused);
-        }
-    }
-    for id in &seat.listens {
-        state.topics.unlisten(*id);
-    }
-    for contract in &seat.provisions {
-        state.broker.withdraw(peer, contract);
-    }
-    seat.instance.dispose().await;
-    match first {
-        None => Ok(()),
-        Some(refused) => Err(refused),
     }
 }
 
@@ -198,8 +135,14 @@ impl FiberBody for WasmBody {
                 "wasm guest seat",
                 Disposer::future(move || async move {
                     owner.swap.dispose(slot_id);
+                    // The seat retires with the daemon's Law-2 trail: every
+                    // effect and listener withdrawal is a ledger event.
+                    let ledger = Some((owner.sink.as_ref() as &dyn LedgerSink, fiber));
                     let retired = match slot.take() {
-                        Some(seat) => retire_ledgered(seat, &owner, peer, fiber).await,
+                        Some(seat) => {
+                            seat.retire(&owner.broker, &owner.topics, peer, ledger)
+                                .await
+                        }
                         None => Ok(()),
                     };
                     owner.broker.remove_peer(peer);
@@ -273,31 +216,5 @@ pub(crate) fn lane(
             };
             Ok(Arc::new(LaneHandle::new(fiber, body, restate)))
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::seat_config;
-
-    #[test]
-    fn seat_config_decodes_grants_and_string_data() {
-        let value = serde_json::json!({ "grants": ["demo:clock", "jinn:fs"], "data": "world" });
-        let seat = seat_config(&value);
-        assert_eq!(seat.grants, vec!["demo:clock", "jinn:fs"]);
-        assert_eq!(seat.payload, b"world".to_vec());
-    }
-
-    #[test]
-    fn seat_config_defaults_to_no_grants_and_empty_payload() {
-        let seat = seat_config(&serde_json::json!({}));
-        assert!(seat.grants.is_empty());
-        assert!(seat.payload.is_empty());
-    }
-
-    #[test]
-    fn seat_config_serializes_structured_data() {
-        let seat = seat_config(&serde_json::json!({ "data": { "a": 1 } }));
-        assert_eq!(seat.payload, br#"{"a":1}"#.to_vec());
     }
 }

@@ -265,8 +265,14 @@ impl Daemon {
     /// Graceful shutdown (M1-P9 card): dispose every fiber (each seat's
     /// withdrawal is ledgered), reach quiescence, then flush the ledger —
     /// the barrier is a read through the single writer, so every event sent
-    /// before it is durably committed when this returns.
-    pub async fn shutdown(&self) {
+    /// before it is durably committed when this returns `Ok`.
+    ///
+    /// # Errors
+    ///
+    /// A storage refusal at the flush barrier: recorded events may not be
+    /// durable, and the caller must say so — never "ledger flushed"
+    /// (honest failure; round-2 major).
+    pub async fn shutdown(&self) -> Result<(), KernelError> {
         let handles: Vec<Arc<jinnd_fiber::Fiber>> = lock(&self.fibers)
             .values()
             .map(|tracked| Arc::clone(&tracked.fiber))
@@ -276,12 +282,13 @@ impl Daemon {
         }
         self.loader.quiesce().await;
         self.sync_transitions();
-        let _ = self
-            .ledger
+        self.ledger
             .events(LedgerQuery {
                 from_sequence: Some(u64::MAX),
                 ..LedgerQuery::default()
             })
-            .await;
+            .await
+            .map(|_| ())
+            .map_err(storage)
     }
 }

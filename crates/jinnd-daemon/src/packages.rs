@@ -17,6 +17,20 @@ pub(crate) fn basename(package: &str) -> &str {
 }
 
 impl Daemon {
+    /// Every registered package whose artifact basename is `stem` — the
+    /// watched-file lane's join from a changed `<stem>.wasm` file back to
+    /// the package name(s) it serves (round-2: a stem is not a package).
+    #[must_use]
+    pub fn packages_for_artifact(&self, stem: &str) -> Vec<String> {
+        let mut packages: Vec<String> = lock(&self.lane.packages)
+            .keys()
+            .filter(|package| basename(package) == stem)
+            .cloned()
+            .collect();
+        packages.sort();
+        packages
+    }
+
     /// Registers (or re-pins) the wasm lane of every package the profile
     /// names: the artifact file is admitted under the entry's pinned hash
     /// (Law 5 — a mismatch refuses the entry, recorded, siblings untouched).

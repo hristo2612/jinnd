@@ -6,8 +6,10 @@
 #[path = "support.rs"]
 mod support;
 
+use std::sync::Arc;
+
 use jinnd_api::{FiberState, LedgerEventKind, RevertResolution, SwapPhaseKind};
-use jinnd_daemon::{Daemon, DaemonPaths};
+use jinnd_daemon::{Daemon, DaemonPaths, Watch};
 
 fn active(daemon: &Daemon, entry: &str) -> jinnd_api::FiberId {
     let fiber = daemon
@@ -51,13 +53,16 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
     let profile = root.join("profile.json");
     let artifacts = root.join("artifacts");
     let data = root.join("data");
-    let daemon = Daemon::open(DaemonPaths {
+    let paths = DaemonPaths {
         profile: profile.clone(),
         ledger: root.join("ledger.sqlite"),
         artifacts: artifacts.clone(),
         data: data.clone(),
-    })
-    .unwrap_or_else(|error| panic!("the daemon assembles: {error:?}"));
+    };
+    let daemon = Arc::new(
+        Daemon::open(paths.clone())
+            .unwrap_or_else(|error| panic!("the daemon assembles: {error:?}")),
+    );
 
     // Step 1 — boot: three wasm plugins from the profile, all Active.
     let report = daemon
@@ -70,15 +75,23 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
     let greeter = active(&daemon, "greeter");
     let scribe = active(&daemon, "scribe");
 
-    // Step 2 — edit ONE entry's config: exactly that fiber restarts; the
-    // sibling uids are unchanged (reconcile-by-id).
+    // The real watcher lane (round-2 blocker 1): steps 2 and 3a arrive as
+    // file events through the daemon's own watch task, exactly as the
+    // operator drives them in the runbook — no reload()/swap() bypass.
+    let watch =
+        Watch::start(&paths).unwrap_or_else(|error| panic!("the watcher starts: {error:?}"));
+    let serving = tokio::spawn(watch.serve(Arc::clone(&daemon)));
+
+    // Step 2 — edit ONE entry's config ON DISK: the watcher reconciles;
+    // exactly that fiber restarts in place and the sibling uids are
+    // unchanged (reconcile-by-id). The scribe's journal carrying the new
+    // greeting is the proof the new config was applied.
     support::edit_profile_data(&profile, "greeter", "kernel");
-    let report = daemon
-        .reload()
-        .await
-        .unwrap_or_else(|error| panic!("reload reconciles: {error:?}"));
-    assert_eq!(report.restarted, vec![jinnd_api::EntryId("greeter".into())]);
-    assert!(report.errors.is_empty(), "edit faults: {:?}", report.errors);
+    support::eventually("the watcher-driven reconcile to land the greeting", || {
+        std::fs::read_to_string(data.join("journal.txt"))
+            .is_ok_and(|journal| journal.contains("hello, kernel (tick"))
+    })
+    .await;
     assert_eq!(daemon.entry_fiber("clock"), Some(clock), "clock untouched");
     assert_eq!(
         daemon.entry_fiber("scribe"),
@@ -90,37 +103,40 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
         Some(greeter),
         "a config edit restarts the fiber in place; the uid survives"
     );
-    let journal = std::fs::read_to_string(data.join("journal.txt"))
-        .unwrap_or_else(|error| panic!("the scribe journalled the announcement: {error:?}"));
-    assert!(
-        journal.contains("hello, kernel (tick"),
-        "journal carries the new greeting: {journal:?}"
-    );
 
-    // Step 3a — Mode-1 hot-swap, healthy: the seat swaps warm; the fiber
-    // uid does not change; the ledger shows Began → InstanceHealthy →
-    // Committed for the new artifact.
+    // Step 3a — Mode-1 hot-swap, healthy, THROUGH THE WATCHER: replacing
+    // the artifact file (with its pin sidecar) is the whole operator
+    // gesture. The seat swaps warm; the fiber uid does not change; the
+    // ledger shows Began → InstanceHealthy → Committed for the new
+    // artifact.
     support::clock_variant("v2", &artifacts);
     let v2_hash = std::fs::read_to_string(artifacts.join("clock.wasm.sha256"))
         .unwrap_or_else(|error| panic!("v2 sidecar pin: {error:?}"));
-    let outcome = daemon
-        .swap("demo/clock")
-        .await
-        .unwrap_or_else(|error| panic!("healthy swap runs: {error:?}"));
-    assert!(!outcome.rolled_back, "the healthy swap commits");
-    assert_eq!(outcome.swapped, vec![jinnd_api::EntryId("clock".into())]);
+    let committed = [
+        SwapPhaseKind::Began,
+        SwapPhaseKind::InstanceHealthy,
+        SwapPhaseKind::Committed,
+    ];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let kinds = ledger_kinds(&daemon).await;
+        let phases = swap_phases(&kinds, v2_hash.trim());
+        if phases == committed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the watcher-driven swap is ledger-recorded phase by phase: {phases:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
     assert_eq!(daemon.entry_fiber("clock"), Some(clock), "no fiber restart");
     assert_eq!(daemon.fiber_state(clock), Some(FiberState::Active));
-    let kinds = ledger_kinds(&daemon).await;
-    assert_eq!(
-        swap_phases(&kinds, v2_hash.trim()),
-        vec![
-            SwapPhaseKind::Began,
-            SwapPhaseKind::InstanceHealthy,
-            SwapPhaseKind::Committed
-        ],
-        "the healthy swap is ledger-recorded phase by phase"
-    );
+
+    // The watcher lane is proven; stop it so the remaining steps drive the
+    // same daemon surface directly (the fast unit lane) without two
+    // appliers racing over one profile file.
+    serving.abort();
 
     // Step 3b — a deliberately-broken artifact: the health gate fails, the
     // batch rolls back, the old instance keeps serving, ledger-recorded.
@@ -169,6 +185,14 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
         )),
         "the scribe's guest effect withdrawal is ledger-recorded"
     );
+    assert!(
+        kinds.iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::EffectWithdrawn { label, clean: true } if label == "listen demo:announce"
+        )),
+        "the scribe's listener withdrawal is ledger-recorded (Law 2: \
+         every registration's undo shows in the dispose trail)"
+    );
 
     // Step 5 — keyed revert with receipts: revert the last journal write;
     // the file returns to its prior content and the ledger shows the
@@ -206,6 +230,10 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
         .collect();
     assert_eq!(trail.len(), 3, "intent, completed, resolved: {trail:?}");
 
-    // Shutdown: dispose all, quiescence, ledger flushed.
-    daemon.shutdown().await;
+    // Shutdown: dispose all, quiescence, ledger flushed — and the flush
+    // barrier's outcome is reported, never assumed (round-2 major).
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("the flush barrier holds: {error:?}"));
 }

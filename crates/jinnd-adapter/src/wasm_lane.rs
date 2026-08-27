@@ -160,7 +160,7 @@ impl FiberBody for WasmBody {
                 Disposer::future(move || async move {
                     owner.swap.dispose(slot_id);
                     let retired = match slot.take() {
-                        Some(seat) => seat.retire(&owner.broker, &owner.topics, peer).await,
+                        Some(seat) => seat.retire(&owner.broker, &owner.topics, peer, None).await,
                         None => Ok(()),
                     };
                     owner.broker.remove_peer(peer);

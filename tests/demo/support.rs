@@ -28,6 +28,19 @@ pub fn fresh_root() -> (PathBuf, Cleanup) {
     (root.clone(), Cleanup(root))
 }
 
+/// Polls `check` until it holds, panicking after a generous deadline — the
+/// observation lane for changes that arrive through the real file watcher.
+pub async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !check() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 fn builder_manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../demo/builder/Cargo.toml")
 }
