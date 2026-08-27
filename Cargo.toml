@@ -10,6 +10,7 @@ members = [
     "crates/jinnd-ledger",
     "crates/jinnd-loader",
     "crates/jinnd-registry",
+    "crates/jinnd-wasm",
     "tests/invariants",
 ]
 # Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):
