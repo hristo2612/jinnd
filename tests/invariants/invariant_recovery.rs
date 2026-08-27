@@ -123,40 +123,43 @@ spec_case! {
 }
 
 spec_case! {
-    /// Paper origin: Definitions 51-52, a plain effect commits its inverse iff its forward action commits.
+    /// Paper origin: Definitions 51-52 and Algorithm 1 effect-installation atomicity.
     plain_effect_application_is_all_or_none,
-    origin: "paper: Definitions 51-52 / plain-effect atomicity",
-    test: "plain effect is all-or-none",
-    setup: ["capture an observable baseline", "prepare a forward mutation and its inverse"],
-    actions: ["apply the effect through the kernel boundary", "force both success and failure outcomes"],
-    expected: ["success publishes one contribution and one inverse", "failure publishes neither contribution nor inverse"],
+    origin: "paper: Definitions 51-52 / Algorithm 1",
+    test: "failed effect installation unwinds its yielded prefix",
+    setup: ["capture an observable baseline", "prepare an iterator whose first mutating step yields its inverse and whose next step fails"],
+    actions: ["apply the effect through the kernel boundary", "allow the later failure to unwind the yielded prefix"],
+    expected: ["the yielded mutation is reversed exactly once", "the failed effect publishes no live contribution or inverse"],
     body: |_case| {
         let kernel = jinnd_adapter::kernel();
-        let contribution = Arc::new(AtomicUsize::new(0));
-        let changed = Arc::clone(&contribution);
-        let failing: ForwardAction = Box::new(move || {
-            changed.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async {
-                Err(KernelError {
-                    code: ErrorCode::EffectFailed,
-                    message: "forward mutation failed".to_owned(),
-                    fiber: None,
-                })
+        let contribution = Arc::new(Mutex::new([0usize; 2]));
+        let failing: ForwardAction = Box::new(|| Box::pin(async {
+            Err(KernelError {
+                code: ErrorCode::EffectFailed,
+                message: "forward mutation failed".to_owned(),
+                fiber: None,
             })
-        });
+        }));
         let effect = expect_ok(
             kernel.begin_effect(
                 kernel.root_context(),
                 "plain atomicity".to_owned(),
-                ForwardEffect::Plain(failing),
+                ForwardEffect::Steps(vec![owned_action(&contribution, 0), failing]),
             ),
-            "plain effect should begin",
+            "effect should begin",
         );
         assert!(kernel.effect_outcome(effect).await.is_err());
         assert_eq!(
-            contribution.load(Ordering::SeqCst),
-            0,
-            "a failed plain effect must publish neither its contribution nor an inverse",
+            *contribution.lock().unwrap_or_else(|poison| poison.into_inner()),
+            [0, 0],
+            "a failed effect installation must unwind every yielded contribution",
+        );
+        assert!(
+            kernel
+                .effect_tree(jinnd_adapter::KERNEL_SCOPE)
+                .iter()
+                .all(|item| item.id != effect),
+            "the failed effect must leave no live inverse",
         );
     }
 }
