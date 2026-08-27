@@ -6,16 +6,13 @@
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::{
-    Activation, Inject, KernelError, KernelFuture, PluginContract, ServiceContract, ServiceType,
-};
+use jinnd_api::{KernelError, KernelFuture, PluginContract, ServiceContract, ServiceType};
 use jinnd_context::Context;
 use jinnd_fiber::{FiberBody, Setup};
 use jinnd_loader::host::Rebind;
 use jinnd_loader::{PackageLane, SpawnRequest, host::config_of};
-use jinnd_registry::{ActivationResolver, Registry};
+use jinnd_registry::Registry;
 
-use crate::body::HostedEffects;
 use crate::{SharedFibers, lock};
 
 /// One providing-plugin entry's body: resolves the plugin's dependencies,
@@ -77,21 +74,8 @@ where
                         "the providing build panicked",
                     )
                 })??;
-            // One owned dependency snapshot per activation (R4), leased so a
-            // dying provider waits for this consumer (I2) — before any other
-            // effect, so LIFO replay returns the leases last.
-            let resolver = ActivationResolver::new(&self.registry, &at);
-            let dependencies = P::Dependencies::inject(&resolver)?;
-            let guards = resolver.into_guards();
-            if !guards.is_empty() {
-                setup.effect(
-                    "injected service leases",
-                    jinnd_effects::Disposer::sync(move || {
-                        drop(guards);
-                        Ok(())
-                    }),
-                )?;
-            }
+            let dependencies =
+                crate::body::lease::<P::Dependencies>(&self.registry, &at, &mut setup)?;
             // The provision realm is whatever the entry's context resolves
             // the service in (LAW §3); a draining effect so dependents are
             // waited out before ANY of this fiber's inverses replay (I2).
@@ -111,20 +95,7 @@ where
                 provision.drain,
                 provision.undo,
             )?;
-            let host = HostedEffects::new();
-            let outcome = plugin
-                .activate(
-                    Activation {
-                        context: at.id(),
-                        fiber,
-                        dependencies: &dependencies,
-                        effects: &host,
-                    },
-                    plugin_config,
-                )
-                .await;
-            let flushed = host.flush(&mut setup);
-            outcome.and(flushed)
+            crate::body::drive(&plugin, &at, &dependencies, plugin_config, &mut setup).await
         })
     }
 }

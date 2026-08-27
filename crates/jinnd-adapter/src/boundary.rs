@@ -56,14 +56,7 @@ pub(crate) fn begin(
             let _ = undo_settled.wait_for(Option::is_some).await;
             let installed = lock(&undo_slot).take();
             match installed {
-                Some(disposer) => match jinnd_effects::discharge(disposer).await {
-                    UndoOutcome::Done => Ok(()),
-                    UndoOutcome::Failed(failure) => Err(failure),
-                    stopped => Err(error(
-                        ErrorCode::EffectFailed,
-                        &format!("the installed inverse did not complete: {stopped:?}"),
-                    )),
-                },
+                Some(disposer) => discharged(disposer, "installed inverse").await,
                 None => Ok(()),
             }
         }),
@@ -231,16 +224,17 @@ pub(crate) fn revert_admissible(
 
 /// Maps a facade compensator to the lane's executable form, contained.
 pub(crate) fn compensator_inverse(compensator: Box<dyn jinnd_api::Undo>) -> jinnd_ledger::Inverse {
-    Box::new(move || {
-        Box::pin(async move {
-            match jinnd_effects::discharge(Disposer::Whole(compensator)).await {
-                UndoOutcome::Done => Ok(()),
-                UndoOutcome::Failed(failure) => Err(failure),
-                stopped => Err(error(
-                    ErrorCode::EffectFailed,
-                    &format!("the compensator did not complete: {stopped:?}"),
-                )),
-            }
-        })
-    })
+    Box::new(move || Box::pin(discharged(Disposer::Whole(compensator), "compensator")))
+}
+
+/// Discharges one detached inverse and renders its outcome as a result.
+async fn discharged(disposer: Disposer, subject: &'static str) -> Result<(), KernelError> {
+    match jinnd_effects::discharge(disposer).await {
+        UndoOutcome::Done => Ok(()),
+        UndoOutcome::Failed(failure) => Err(failure),
+        stopped => Err(error(
+            ErrorCode::EffectFailed,
+            &format!("the {subject} did not complete: {stopped:?}"),
+        )),
+    }
 }

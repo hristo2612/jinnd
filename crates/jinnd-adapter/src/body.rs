@@ -109,42 +109,59 @@ impl<P: PluginContract> FiberBody for FacadeBody<P> {
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
         let at = self.context();
-        let fiber = setup.fiber();
         Box::pin(async move {
-            // One owned dependency snapshot per activation (R4), each resolution
-            // leased so a dying provider waits for this consumer (I2).
-            let resolver = ActivationResolver::new(&self.registry, &at);
-            let dependencies = P::Dependencies::inject(&resolver)?;
-            let guards = resolver.into_guards();
-            if !guards.is_empty() {
-                // Registered before any plugin effect: LIFO replay returns the
-                // leases last, so teardown may still call the dying service (I2).
-                setup.effect(
-                    "injected service leases",
-                    Disposer::sync(move || {
-                        drop(guards);
-                        Ok(())
-                    }),
-                )?;
-            }
-            let host = HostedEffects::new();
-            let outcome = self
-                .plugin
-                .activate(
-                    Activation {
-                        context: at.id(),
-                        fiber,
-                        dependencies: &dependencies,
-                        effects: &host,
-                    },
-                    config,
-                )
-                .await;
-            // Flushed on success AND failure: a failing activation still owes
-            // the inverses it registered (I1); the plugin's own error outranks
-            // a flush refusal.
-            let flushed = host.flush(&mut setup);
-            outcome.and(flushed)
+            let dependencies = lease::<P::Dependencies>(&self.registry, &at, &mut setup)?;
+            drive(&self.plugin, &at, &dependencies, config, &mut setup).await
         })
     }
+}
+
+/// One owned dependency snapshot per activation (R4), each resolution leased
+/// so a dying provider waits for this consumer — registered before any plugin
+/// effect, so LIFO replay returns the leases last and teardown may still call
+/// the dying service (I2).
+pub(crate) fn lease<D: Inject>(
+    registry: &Registry,
+    at: &Context<()>,
+    setup: &mut Setup<'_>,
+) -> Result<D, KernelError> {
+    let resolver = ActivationResolver::new(registry, at);
+    let dependencies = D::inject(&resolver)?;
+    let guards = resolver.into_guards();
+    if !guards.is_empty() {
+        setup.effect(
+            "injected service leases",
+            Disposer::sync(move || {
+                drop(guards);
+                Ok(())
+            }),
+        )?;
+    }
+    Ok(dependencies)
+}
+
+/// Runs the plugin body once behind the teardown-effect host. Flushed on
+/// success AND failure: a failing activation still owes the inverses it
+/// registered (I1); the plugin's own error outranks a flush refusal.
+pub(crate) async fn drive<P: PluginContract>(
+    plugin: &P,
+    at: &Context<()>,
+    dependencies: &P::Dependencies,
+    config: P::Config,
+    setup: &mut Setup<'_>,
+) -> Result<(), KernelError> {
+    let host = HostedEffects::new();
+    let outcome = plugin
+        .activate(
+            Activation {
+                context: at.id(),
+                fiber: setup.fiber(),
+                dependencies,
+                effects: &host,
+            },
+            config,
+        )
+        .await;
+    let flushed = host.flush(setup);
+    outcome.and(flushed)
 }

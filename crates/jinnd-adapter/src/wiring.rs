@@ -107,8 +107,27 @@ pub(crate) fn declared<P: PluginContract>() -> Result<Vec<ServiceType>, KernelEr
     })
 }
 
-/// Spawns `body` gated on the loader's signal, records it in the shared fiber
-/// map so the facade answers for it, and wraps it as the loader's handle.
+/// Spawns `body` gated on `signal` and records it in the shared fiber map so
+/// the facade answers for it — the one fiber-tracking seam (facade spawns and
+/// loader lanes alike).
+pub(crate) fn track<B: FiberBody>(
+    fibers: &SharedFibers,
+    body: Arc<B>,
+    signal: impl jinnd_fiber::ReadinessSignal,
+) -> Arc<FiberEntry> {
+    let fiber = Arc::new(Fiber::spawn(
+        Arc::clone(&body) as Arc<dyn FiberBody>,
+        signal,
+    ));
+    let entry = Arc::new(FiberEntry {
+        fiber,
+        body: body as Arc<dyn Any + Send + Sync>,
+    });
+    crate::lock(fibers).insert(entry.fiber.id(), Arc::clone(&entry));
+    entry
+}
+
+/// Tracks `body` per [`track`], wrapped as the loader's handle.
 pub(crate) fn spawned<B, C, R>(
     fibers: &SharedFibers,
     body: Arc<B>,
@@ -120,14 +139,6 @@ where
     C: Clone + 'static,
     R: Fn(&B, C) -> Result<(), KernelError> + Send + Sync + 'static,
 {
-    let fiber = Arc::new(Fiber::spawn(
-        Arc::clone(&body) as Arc<dyn FiberBody>,
-        request.signal,
-    ));
-    let entry = Arc::new(FiberEntry {
-        fiber: Arc::clone(&fiber),
-        body: Arc::clone(&body) as Arc<dyn Any + Send + Sync>,
-    });
-    crate::lock(fibers).insert(fiber.id(), entry);
-    Arc::new(LaneHandle::new(fiber, body, restate))
+    let entry = track(fibers, Arc::clone(&body), request.signal);
+    Arc::new(LaneHandle::new(Arc::clone(&entry.fiber), body, restate))
 }
