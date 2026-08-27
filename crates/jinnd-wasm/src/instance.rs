@@ -209,12 +209,14 @@ async fn serve(
                 }
             }
             Command::HandleCall {
+                caller,
                 contract,
                 operation,
                 payload,
                 reply,
             } => {
-                let call = guest.call_handle_call(&mut *store, &contract, &operation, &payload);
+                let call =
+                    guest.call_handle_call(&mut *store, caller, &contract, &operation, &payload);
                 match settle(deadline, call).await {
                     Settled::Ok(answer) => drop(reply.send(Ok(answer))),
                     Settled::Fault(error) => drop(reply.send(Err(error))),

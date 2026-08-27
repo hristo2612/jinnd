@@ -39,6 +39,7 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<(), KernelError>>,
     },
     HandleCall {
+        caller: PeerId,
         contract: String,
         operation: String,
         payload: Vec<u8>,
@@ -100,11 +101,13 @@ impl InstanceHandle {
     }
 
     /// One direct contract call onto this instance's provider face — the
-    /// same entry `Peer::call` uses after broker dispatch. Public for lane
-    /// and observation code that already holds the instance (the broker path
-    /// stays the only grant-checked one).
+    /// same entry `Peer::call` uses after broker dispatch, carrying the
+    /// caller's identity (R4). Public for lane and observation code that
+    /// already holds the instance (the broker path stays the only
+    /// grant-checked one).
     pub async fn contract_call(
         &self,
+        caller: PeerId,
         contract: &str,
         operation: &str,
         payload: Vec<u8>,
@@ -112,6 +115,7 @@ impl InstanceHandle {
         let (reply, rx) = oneshot::channel();
         self.send(
             Command::HandleCall {
+                caller,
                 contract: contract.to_owned(),
                 operation: operation.to_owned(),
                 payload,
@@ -177,6 +181,7 @@ pub(crate) struct InstancePeer {
 impl Peer for InstancePeer {
     fn call(
         &self,
+        caller: PeerId,
         contract: &str,
         operation: &str,
         payload: Vec<u8>,
@@ -188,6 +193,7 @@ impl Peer for InstancePeer {
             handle
                 .send(
                     Command::HandleCall {
+                        caller,
                         contract,
                         operation,
                         payload,

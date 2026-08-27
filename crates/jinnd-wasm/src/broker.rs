@@ -6,36 +6,14 @@
 //! defect. The harness lane routes through THIS SAME broker (test-harness
 //! ruling closure c).
 
-use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
+use crate::broker_state::{PeerRecord, Provider, refusal};
 use crate::peer::{HandleId, LedgerSink, Peer, PeerId};
 
-struct PeerRecord {
-    fiber: Option<FiberId>,
-    grants: HashSet<String>,
-}
-
-struct Provider {
-    peer: PeerId,
-    callable: Arc<dyn Peer>,
-}
-
-struct Handle {
-    owner: PeerId,
-    contract: String,
-}
-
-#[derive(Default)]
-struct State {
-    peers: HashMap<PeerId, PeerRecord>,
-    providers: HashMap<String, Provider>,
-    handles: HashMap<HandleId, Handle>,
-    next_peer: PeerId,
-    next_handle: HandleId,
-}
+use crate::broker_state::{Handle, State};
 
 /// The broker. One per kernel; every contract crossing of every transport
 /// goes through [`Broker::call`].
@@ -70,7 +48,7 @@ impl Broker {
             id,
             PeerRecord {
                 fiber,
-                grants: HashSet::new(),
+                grants: std::collections::HashSet::new(),
             },
         );
         id
@@ -84,12 +62,10 @@ impl Broker {
         }
     }
 
-    fn fiber_of(state: &State, peer: PeerId) -> Option<FiberId> {
-        state.peers.get(&peer).and_then(|record| record.fiber)
-    }
-
     /// Provides `contract` from `peer`. A second provider for an occupied
-    /// slot is refused — replacement is never silent (R9).
+    /// slot is refused — replacement is never silent (R9). Every provision
+    /// bumps the contract's generation, so handles resolved against the
+    /// previous provider go stale rather than silently retargeting.
     ///
     /// # Errors
     ///
@@ -109,10 +85,17 @@ impl Broker {
                 format!("{contract} already has a live provider"),
             ));
         }
-        let fiber = Self::fiber_of(&state, peer);
-        state
-            .providers
-            .insert(contract.to_owned(), Provider { peer, callable });
+        let fiber = state.fiber_of(peer);
+        let generation = state.generation_of(contract) + 1;
+        state.generations.insert(contract.to_owned(), generation);
+        state.providers.insert(
+            contract.to_owned(),
+            Provider {
+                peer,
+                callable,
+                generation,
+            },
+        );
         drop(state);
         self.ledger.append(
             LedgerEventKind::ServiceProvided {
@@ -134,7 +117,7 @@ impl Broker {
             return;
         }
         state.providers.remove(contract);
-        let fiber = Self::fiber_of(&state, peer);
+        let fiber = state.fiber_of(peer);
         drop(state);
         self.ledger.append(
             LedgerEventKind::ServiceWithdrawn {
@@ -166,6 +149,8 @@ impl Broker {
 
     /// Resolves `contract` for `caller`: THE grant check. A refusal is a
     /// ledger event exactly as an exercise is (constitution 01 §Grants).
+    /// The minted handle pins the provider generation it resolved against:
+    /// a later provider change refuses the handle instead of retargeting it.
     ///
     /// # Errors
     ///
@@ -173,12 +158,8 @@ impl Broker {
     /// caller holds no grant for `contract`.
     pub fn resolve(&self, caller: PeerId, contract: &str) -> Result<HandleId, KernelError> {
         let mut state = self.lock();
-        let fiber = Self::fiber_of(&state, caller);
-        let granted = state
-            .peers
-            .get(&caller)
-            .is_some_and(|record| record.grants.contains(contract));
-        if !granted {
+        let fiber = state.fiber_of(caller);
+        if !state.granted(caller, contract) {
             drop(state);
             self.ledger.append(
                 LedgerEventKind::GrantRefused {
@@ -193,11 +174,13 @@ impl Broker {
         }
         state.next_handle += 1;
         let handle = state.next_handle;
+        let generation = state.generation_of(contract);
         state.handles.insert(
             handle,
             Handle {
                 owner: caller,
                 contract: contract.to_owned(),
+                generation,
             },
         );
         drop(state);
@@ -210,13 +193,15 @@ impl Broker {
         Ok(handle)
     }
 
-    /// One contract call: validate the caller-scoped handle, append the
-    /// crossing, then dispatch to the providing peer — with no broker lock
-    /// held across the peer (R1).
+    /// One contract call: validate the caller-scoped, generation-pinned
+    /// handle, append the crossing, then dispatch to the providing peer with
+    /// the caller's identity — and no broker lock held across the peer (R1).
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::EffectFailed`] for a handle the caller does not own;
+    /// [`ErrorCode::EffectFailed`] for a handle the caller does not own, or
+    /// a stale handle (the provider generation changed since resolve — the
+    /// refusal is recorded, never a silent retarget, R9);
     /// [`ErrorCode::MissingDependency`] when the contract has no live
     /// provider; the provider's own contained failure otherwise.
     pub fn call(
@@ -229,15 +214,15 @@ impl Broker {
         let operation = operation.to_owned();
         let looked_up = {
             let state = self.lock();
-            let fiber = Self::fiber_of(&state, caller);
+            let fiber = state.fiber_of(caller);
             match state.handles.get(&handle) {
                 Some(record) if record.owner == caller => {
                     let contract = record.contract.clone();
                     let provider = state
                         .providers
                         .get(&contract)
-                        .map(|provider| Arc::clone(&provider.callable));
-                    Ok((contract, provider, fiber))
+                        .map(|provider| (Arc::clone(&provider.callable), provider.generation));
+                    Ok((contract, record.generation, provider, fiber))
                 }
                 _ => Err(refusal(
                     ErrorCode::EffectFailed,
@@ -247,24 +232,42 @@ impl Broker {
         };
         match looked_up {
             Err(error) => Box::pin(async move { Err(error) }),
-            Ok((contract, provider, fiber)) => {
-                self.ledger.append(
-                    LedgerEventKind::ContractCall {
-                        contract: contract.clone(),
-                        operation: operation.clone(),
-                    },
-                    fiber,
-                );
-                match provider {
-                    None => Box::pin(async move {
+            Ok((contract, pinned, provider, fiber)) => match provider {
+                Some((_, generation)) if generation != pinned => {
+                    self.ledger.append(
+                        LedgerEventKind::StaleHandleRefused {
+                            contract: contract.clone(),
+                        },
+                        fiber,
+                    );
+                    Box::pin(async move {
                         Err(refusal(
-                            ErrorCode::MissingDependency,
-                            format!("{contract} has no live provider"),
+                            ErrorCode::EffectFailed,
+                            format!("stale handle: {contract} changed provider since resolve"),
                         ))
-                    }),
-                    Some(callable) => callable.call(&contract, &operation, payload),
+                    })
                 }
-            }
+                provider => {
+                    self.ledger.append(
+                        LedgerEventKind::ContractCall {
+                            contract: contract.clone(),
+                            operation: operation.clone(),
+                        },
+                        fiber,
+                    );
+                    match provider {
+                        None => Box::pin(async move {
+                            Err(refusal(
+                                ErrorCode::MissingDependency,
+                                format!("{contract} has no live provider"),
+                            ))
+                        }),
+                        Some((callable, _)) => {
+                            callable.call(caller, &contract, &operation, payload)
+                        }
+                    }
+                }
+            },
         }
     }
 
@@ -283,13 +286,5 @@ impl Broker {
             None => Box::pin(async { Ok(false) }),
             Some(callable) => callable.check(consumer),
         }
-    }
-}
-
-fn refusal(code: ErrorCode, message: String) -> KernelError {
-    KernelError {
-        code,
-        message,
-        fiber: None,
     }
 }

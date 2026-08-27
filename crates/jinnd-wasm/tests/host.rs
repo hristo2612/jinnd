@@ -150,7 +150,13 @@ async fn native_and_guest_callers_cross_the_same_broker_choke_point() {
     // Guest caller through the SAME broker: a native provider answers.
     struct Greeter;
     impl Peer for Greeter {
-        fn call(&self, _: &str, _: &str, payload: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+        fn call(
+            &self,
+            _: PeerId,
+            _: &str,
+            _: &str,
+            payload: Vec<u8>,
+        ) -> KernelFuture<'static, Vec<u8>> {
             let mut answer = b"hello ".to_vec();
             answer.extend(payload);
             Box::pin(async move { Ok(answer) })
@@ -167,10 +173,23 @@ async fn native_and_guest_callers_cross_the_same_broker_choke_point() {
     // The guest stashed the native provider's answer: the call crossed
     // guest → broker → native and back.
     let stashed = caller
-        .contract_call("jinn:test/counter", "stash", Vec::new())
+        .contract_call(0, "jinn:test/counter", "stash", Vec::new())
         .await
         .unwrap_or_else(|error| panic!("stash read: {error:?}"));
     assert_eq!(stashed, b"hello from-guest".to_vec());
+
+    // R4: the guest provider observes the caller's identity on the call the
+    // broker dispatched — the handle carried the caller's scope.
+    let whoami_handle = rig
+        .broker
+        .resolve(native, COUNTER)
+        .unwrap_or_else(|error| panic!("resolve: {error:?}"));
+    let observed = rig
+        .broker
+        .call(native, whoami_handle, "whoami", Vec::new())
+        .await
+        .unwrap_or_else(|error| panic!("whoami: {error:?}"));
+    assert_eq!(observed, native.to_le_bytes().to_vec());
 
     // The choke-point proof: BOTH callers' crossings are in ONE ledger with
     // the same event shape, appended by the same broker.
@@ -433,7 +452,7 @@ async fn counter_of(lane: &Lane, entry: &str) -> u64 {
         .cloned()
         .unwrap_or_else(|| panic!("no instance for {entry}"));
     // A direct provider-face call: reads the live instance's counter.
-    let answer = jinnd_wasm::Peer::call(&TestFace(instance), COUNTER, "get", Vec::new())
+    let answer = jinnd_wasm::Peer::call(&TestFace(instance), 0, COUNTER, "get", Vec::new())
         .await
         .unwrap_or_else(|error| panic!("get: {error:?}"));
     u64::from_le_bytes(answer.try_into().unwrap_or_else(|_| panic!("bad answer")))
@@ -445,13 +464,18 @@ struct TestFace(InstanceHandle);
 impl Peer for TestFace {
     fn call(
         &self,
+        caller: PeerId,
         contract: &str,
         operation: &str,
         payload: Vec<u8>,
     ) -> KernelFuture<'static, Vec<u8>> {
         let instance = self.0.clone();
         let (contract, operation) = (contract.to_owned(), operation.to_owned());
-        Box::pin(async move { instance.contract_call(&contract, &operation, payload).await })
+        Box::pin(async move {
+            instance
+                .contract_call(caller, &contract, &operation, payload)
+                .await
+        })
     }
 }
 

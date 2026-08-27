@@ -16,6 +16,7 @@
 mod artifact;
 mod bindings;
 mod broker;
+mod broker_state;
 #[cfg(all(test, not(feature = "loom")))]
 mod broker_tests;
 mod handle;

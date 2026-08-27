@@ -53,6 +53,7 @@ impl SharedSlot {
 impl Peer for Arc<SharedSlot> {
     fn call(
         &self,
+        caller: PeerId,
         contract: &str,
         operation: &str,
         payload: Vec<u8>,
@@ -61,7 +62,11 @@ impl Peer for Arc<SharedSlot> {
         let (contract, operation) = (contract.to_owned(), operation.to_owned());
         Box::pin(async move {
             match current {
-                Some(instance) => instance.contract_call(&contract, &operation, payload).await,
+                Some(instance) => {
+                    instance
+                        .contract_call(caller, &contract, &operation, payload)
+                        .await
+                }
                 None => Err(empty()),
             }
         })

@@ -69,6 +69,11 @@ pub enum LedgerEventKind {
     /// One contract call crossed the broker's single dispatch point
     /// (Law 2, R6; decision log 2026-08-25; authorized M1-P8 additive delta).
     ContractCall { contract: String, operation: String },
+    /// A call through a handle whose provider generation has changed was
+    /// refused — epoch gating at the call site: there is no silent
+    /// replacement, ever (R9; authorized M1-P8 additive delta, round-2
+    /// blocker 2).
+    StaleHandleRefused { contract: String },
     /// A component artifact was admitted under its pinned content hash
     /// (Law 5, constitution 05 pin-by-hash; authorized M1-P8 additive delta).
     ArtifactLoaded { hash: String },

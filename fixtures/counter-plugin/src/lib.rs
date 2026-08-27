@@ -86,11 +86,14 @@ impl Guest for Fixture {
     }
 
     fn handle_call(
+        caller: u64,
         _contract: String,
         operation: String,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, GuestFault> {
         match operation.as_str() {
+            // The caller scope the broker delivered with this call (R4).
+            "whoami" => Ok(caller.to_le_bytes().to_vec()),
             "add" => {
                 let mut delta = [0u8; 8];
                 let len = payload.len().min(8);

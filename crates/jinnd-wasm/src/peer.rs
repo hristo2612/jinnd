@@ -24,9 +24,13 @@ pub trait LedgerSink: Send + Sync + 'static {
 /// exist for the Tier A instance (a channel into its supervisor task) and for
 /// native harness providers; a future Tier B peer is a socket, same trait.
 pub trait Peer: Send + Sync + 'static {
-    /// Answers one operation of a contract this peer provides.
+    /// Answers one operation of a contract this peer provides. `caller` is
+    /// the calling peer's identity (R4): a resolved handle pairs the
+    /// implementation with the caller's scope, so every dispatch tells the
+    /// provider who is calling, by construction.
     fn call(
         &self,
+        caller: PeerId,
         contract: &str,
         operation: &str,
         payload: Vec<u8>,

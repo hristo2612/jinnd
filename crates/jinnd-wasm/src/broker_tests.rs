@@ -39,6 +39,7 @@ struct Echo;
 impl Peer for Echo {
     fn call(
         &self,
+        _: PeerId,
         contract: &str,
         operation: &str,
         payload: Vec<u8>,
@@ -57,7 +58,7 @@ struct Reentrant {
 }
 
 impl Peer for Reentrant {
-    fn call(&self, _: &str, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn call(&self, _: PeerId, _: &str, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
         let broker = Arc::clone(&self.broker);
         let peer = self.own_peer;
         Box::pin(async move {
@@ -225,10 +226,106 @@ async fn dispatch_holds_no_broker_lock_across_the_peer() {
 }
 
 #[tokio::test]
+async fn a_stale_handle_is_refused_never_silently_retargeted() {
+    let (broker, ledger) = fixture();
+    let first = broker.register_peer(None);
+    broker.grant(first, "jinn:swappable");
+    broker
+        .provide(first, "jinn:swappable", Arc::new(Echo))
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+    let caller = broker.register_peer(Some(FiberId(5)));
+    broker.grant(caller, "jinn:swappable");
+    let handle = broker
+        .resolve(caller, "jinn:swappable")
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+
+    // The provider changes: withdraw, then a DIFFERENT peer provides.
+    broker.withdraw(first, "jinn:swappable");
+    let second = broker.register_peer(None);
+    broker.grant(second, "jinn:swappable");
+    broker
+        .provide(second, "jinn:swappable", Arc::new(Echo))
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+
+    // The old handle pinned the old provider generation: refused, recorded —
+    // never silently retargeted to the new provider (R4, R9, epoch gating).
+    let refused = broker
+        .call(caller, handle, "ping", b"x".to_vec())
+        .await
+        .err();
+    assert!(
+        refused
+            .as_ref()
+            .is_some_and(|error| error.message.contains("stale")),
+        "a provider change must refuse the old handle: {refused:?}"
+    );
+    assert!(
+        ledger
+            .kinds()
+            .contains(&LedgerEventKind::StaleHandleRefused {
+                contract: "jinn:swappable".into()
+            }),
+        "the refusal is a ledger event"
+    );
+
+    // A fresh resolve pins the new generation and works.
+    let fresh = broker
+        .resolve(caller, "jinn:swappable")
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+    assert!(broker.call(caller, fresh, "ping", Vec::new()).await.is_ok());
+}
+
+#[tokio::test]
+async fn the_provider_observes_the_caller_scope_on_every_call() {
+    struct Observing {
+        seen: Mutex<Vec<PeerId>>,
+    }
+    impl Peer for Observing {
+        fn call(
+            &self,
+            caller: PeerId,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+        ) -> KernelFuture<'static, Vec<u8>> {
+            self.seen
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(caller);
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+    let (broker, _) = fixture();
+    let provider = broker.register_peer(None);
+    let observing = Arc::new(Observing {
+        seen: Mutex::new(Vec::new()),
+    });
+    broker.grant(provider, "jinn:observed");
+    broker
+        .provide(provider, "jinn:observed", Arc::clone(&observing) as _)
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+    let caller = broker.register_peer(None);
+    broker.grant(caller, "jinn:observed");
+    let handle = broker
+        .resolve(caller, "jinn:observed")
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+    broker
+        .call(caller, handle, "ping", Vec::new())
+        .await
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+    // The handle pairs the implementation with the CALLER's scope (R4):
+    // the provider is told who is calling, by construction.
+    assert_eq!(
+        *observing.seen.lock().unwrap_or_else(|p| p.into_inner()),
+        vec![caller]
+    );
+}
+
+#[tokio::test]
 async fn vitality_routes_to_the_provider_per_consumer() {
     struct Picky;
     impl Peer for Picky {
-        fn call(&self, _: &str, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+        fn call(&self, _: PeerId, _: &str, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
             Box::pin(async { Ok(Vec::new()) })
         }
         fn check(&self, consumer: PeerId) -> KernelFuture<'static, bool> {

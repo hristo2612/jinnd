@@ -154,8 +154,10 @@ interface lifecycle {
 
   /// Answers one contract call dispatched to this instance as a provider
   /// (services.provide). The broker has already grant-checked and ledgered
-  /// the crossing on the caller's side.
-  handle-call: func(contract: string, operation: string, payload: list<u8>)
+  /// the crossing on the caller's side; `caller` is the calling peer's
+  /// identity (R4) — a handle pairs the implementation with the caller's
+  /// scope, so the provider always knows who is calling.
+  handle-call: func(caller: u64, contract: string, operation: string, payload: list<u8>)
     -> result<list<u8>, guest-fault>;
 
   /// Mode-1 hot-swap state handoff, old instance side (R8): an optional
