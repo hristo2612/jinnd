@@ -29,6 +29,7 @@ mod facade;
 mod providing;
 mod run;
 mod support;
+mod wasm_lane;
 mod wiring;
 
 use std::collections::HashMap;
@@ -80,12 +81,15 @@ pub(crate) struct Adapter {
     recorded_transitions: Mutex<HashMap<FiberId, usize>>,
     /// Where the raw document of record persists, once attached.
     document_path: Mutex<Option<std::path::PathBuf>>,
+    /// The wasm lane: ONE broker, topic registry, and Tier A host shared by
+    /// the harness peer and every guest instance (authorized M1-P8 delta).
+    wasm: Arc<wasm_lane::WasmState>,
 }
 
 /// Returns the facade kernel used by verifier-owned invariant tests.
 ///
 /// Implementation packets replace subsystem stubs here without changing the tests.
-pub fn kernel() -> impl Kernel {
+pub fn kernel() -> impl Kernel + jinnd_api::WasmLane {
     let tree: ContextTree = ContextTree::new();
     let root = tree.root();
     let contexts = Arc::new(Mutex::new(HashMap::from([(root.id(), root.clone())])));
@@ -105,6 +109,12 @@ pub fn kernel() -> impl Kernel {
     // not a recoverable kernel state, so the panic is the honest answer.
     let ledger = Ledger::open_in_memory()
         .unwrap_or_else(|error| panic!("the harness ledger must open: {error}"));
+    // Same honesty rule: a wasm host that cannot configure is a broken
+    // harness, not a recoverable kernel state.
+    let wasm = Arc::new(
+        wasm_lane::WasmState::new(ledger.clone())
+            .unwrap_or_else(|error| panic!("the harness wasm host must open: {error:?}")),
+    );
     Adapter {
         root,
         contexts,
@@ -120,6 +130,7 @@ pub fn kernel() -> impl Kernel {
         pending: Mutex::new(HashMap::new()),
         recorded_transitions: Mutex::new(HashMap::new()),
         document_path: Mutex::new(None),
+        wasm,
     }
 }
 
