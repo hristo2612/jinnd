@@ -63,9 +63,10 @@ spec_case! {
             ),
         ];
         for (name, artifact) in invalid {
-            let error = kernel
-                .register_wasm_package(name, artifact, Vec::new())
-                .expect_err("an invalid dynamic plugin contract must be refused");
+            let error = match kernel.register_wasm_package(name, artifact, Vec::new()) {
+                Ok(_) => panic!("an invalid dynamic plugin contract must be refused"),
+                Err(error) => error,
+            };
             assert_eq!(error.code, ErrorCode::InvalidProfile);
             assert_eq!(kernel.entry_fiber(&EntryId(name.to_owned())), None);
         }
