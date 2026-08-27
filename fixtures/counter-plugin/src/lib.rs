@@ -3,8 +3,10 @@
 //! counter contract; `picky` provides it with a per-consumer vitality
 //! opinion; `caller` resolves and calls a granted contract; `ungranted`
 //! asserts the broker refuses an ungranted resolve; `trap` panics; `spin`
-//! never returns. State is one counter, handed across Mode-1 swaps via
-//! snapshot/restore.
+//! never returns; `grumpy-undo` registers an effect whose inverse fails
+//! loudly (it proves an undo replay RAN); `flaky-restore` refuses every
+//! handoff (it fails a swap's health gate on demand). State is one counter,
+//! handed across Mode-1 swaps via snapshot/restore.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,6 +32,7 @@ const TOPIC: &str = "jinn:test/topic";
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static PICKY: AtomicBool = AtomicBool::new(false);
 static STASH: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static MODE: Mutex<String> = Mutex::new(String::new());
 
 fn fault(error: jinn::plugin::types::KernelError) -> GuestFault {
     GuestFault::Failed(format!("{error:?}"))
@@ -40,6 +43,7 @@ struct Fixture;
 impl Guest for Fixture {
     fn activate(config: Vec<u8>) -> Result<(), GuestFault> {
         let mode = String::from_utf8_lossy(&config).into_owned();
+        *MODE.lock().unwrap() = mode.clone();
         match mode.as_str() {
             "trap" => panic!("fixture trap mode"),
             "spin" => loop {
@@ -101,7 +105,13 @@ impl Guest for Fixture {
         }
     }
 
-    fn undo(_token: u64) -> Result<(), GuestFault> {
+    fn undo(token: u64) -> Result<(), GuestFault> {
+        // The grumpy inverse fails loudly: a host that replays staged
+        // effects on discard observes this contained failure, a host that
+        // raw-disposes never runs it.
+        if *MODE.lock().unwrap() == "grumpy-undo" {
+            return Err(GuestFault::Failed(format!("grumpy undo ran (token {token})")));
+        }
         Ok(())
     }
 
@@ -138,6 +148,9 @@ impl Guest for Fixture {
     }
 
     fn restore(blob: Vec<u8>) -> Result<(), GuestFault> {
+        if *MODE.lock().unwrap() == "flaky-restore" {
+            return Err(GuestFault::Failed("flaky restore refused the handoff".into()));
+        }
         if blob.len() != 8 {
             return Err(GuestFault::Failed("unusable handoff blob".into()));
         }

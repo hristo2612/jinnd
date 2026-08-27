@@ -280,6 +280,65 @@ async fn mode1_swap_commits_the_staged_contribution_and_disposes_it_exactly() {
     );
 }
 
+/// Round-2 blocker-3 pin (R5/I1; COO round-3 ruling): a failed swap
+/// discards EVERY staged instance — the failing one and the already-healthy
+/// ones — by REPLAYING its staged effects in reverse, never by a raw
+/// dispose. The grumpy-undo guest makes the replay observable: its inverse
+/// fails loudly, and that contained failure must surface as a ledger
+/// record (R6). A raw dispose leaves no such record.
+#[tokio::test]
+async fn a_failed_swap_replays_staged_effects_on_every_discarded_instance() {
+    let k = kernel();
+    k.register_wasm_package(PACKAGE, artifact(), Vec::new())
+        .unwrap_or_else(|error| panic!("register: {error:?}"));
+    let report = k
+        .reconcile(Profile {
+            entries: vec![
+                wasm_entry("wasm-1", "grumpy-undo"),
+                wasm_entry("wasm-2", "flaky-restore"),
+            ],
+        })
+        .await
+        .unwrap_or_else(|error| panic!("reconcile: {error:?}"));
+    assert_eq!(report.errors, Vec::new());
+    let fiber_one = k
+        .entry_fiber(&EntryId("wasm-1".to_owned()))
+        .unwrap_or_else(|| panic!("wasm-1 has a fiber"));
+    let fiber_two = k
+        .entry_fiber(&EntryId("wasm-2".to_owned()))
+        .unwrap_or_else(|| panic!("wasm-2 has a fiber"));
+
+    // wasm-1's staged instance activates healthy; wasm-2's staged instance
+    // then refuses the handoff — the whole batch must roll back.
+    let outcome = k
+        .swap_wasm_artifact(&artifact().expected_hash, artifact())
+        .await
+        .unwrap_or_else(|error| panic!("swap: {error:?}"));
+    assert!(outcome.rolled_back, "the flaky handoff fails the batch");
+    assert_eq!(outcome.swapped, Vec::<EntryId>::new(), "zero commits");
+
+    // Old instances stay warm; no fiber moved (R8).
+    assert_eq!(k.state(fiber_one), FiberState::Active);
+    assert_eq!(k.state(fiber_two), FiberState::Active);
+
+    // The replay proof: discarding wasm-1's healthy staged instance ran its
+    // staged inverse, whose loud failure is a recorded, contained error.
+    let kinds: Vec<LedgerEventKind> = k
+        .ledger_events(LedgerQuery::default())
+        .await
+        .unwrap_or_else(|error| panic!("ledger: {error:?}"))
+        .into_iter()
+        .map(|record| record.kind)
+        .collect();
+    assert!(
+        kinds.iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::ErrorRecorded { error } if error.message.contains("grumpy undo ran")
+        )),
+        "the discard must REPLAY staged effects (a raw dispose never runs the inverse): {kinds:?}"
+    );
+}
+
 #[tokio::test]
 async fn mode1_swap_replaces_both_instances_of_one_artifact_without_restarting_fibers() {
     let k = kernel();

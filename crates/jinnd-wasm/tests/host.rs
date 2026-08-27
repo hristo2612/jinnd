@@ -111,6 +111,53 @@ async fn wrong_hash_refuses_to_load_and_the_refusal_is_recorded() {
     ));
 }
 
+/// Round-2 blocker-1 pin (card: "WIT files pass wasmtime validation"; Law 1):
+/// `Component::new` proves the bytes are a component, not that they are a
+/// PLUGIN — a valid component that does not implement the `jinn:plugin`
+/// world must be refused at registration, recorded, never admitted.
+#[tokio::test]
+async fn a_component_without_the_plugin_world_is_refused_at_registration() {
+    // A minimal empty core module, encoded to a VALID component that
+    // exports nothing.
+    const EMPTY_CORE: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    let bytes = wit_component::ComponentEncoder::default()
+        .module(EMPTY_CORE)
+        .unwrap_or_else(|error| panic!("module: {error:#}"))
+        .validate(true)
+        .encode()
+        .unwrap_or_else(|error| panic!("encode: {error:#}"));
+    // The pin is real only while wasmtime itself accepts these bytes as a
+    // well-formed component: the refusal below must come from the world
+    // check, not from malformed input.
+    let mut config = wasmtime::Config::new();
+    config.wasm_component_model(true);
+    let engine =
+        wasmtime::Engine::new(&config).unwrap_or_else(|error| panic!("engine: {error:#}"));
+    assert!(
+        wasmtime::component::Component::new(&engine, &bytes).is_ok(),
+        "the probe must be a VALID component"
+    );
+
+    let ledger = Arc::new(Recording {
+        events: Mutex::new(Vec::new()),
+    });
+    let host = WasmHost::new().unwrap_or_else(|error| panic!("host: {error:?}"));
+    let hash = jinnd_wasm::hex_digest(&bytes);
+    let refused = host.load(bytes, &hash, ledger.as_ref());
+    assert_eq!(
+        refused.err().map(|error| error.code),
+        Some(ErrorCode::InvalidProfile),
+        "a component without the required plugin world must be rejected at registration"
+    );
+    assert!(
+        ledger
+            .kinds()
+            .iter()
+            .any(|kind| matches!(kind, LedgerEventKind::ArtifactRefused { .. })),
+        "the refusal is a ledger event, never silent"
+    );
+}
+
 #[tokio::test]
 async fn activation_collects_guest_effects_and_undo_replays_over_the_boundary() {
     let rig = rig();
