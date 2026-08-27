@@ -2,12 +2,40 @@ mod loader_cases;
 mod loader_fixture;
 mod support;
 
-use jinnd_api::Kernel;
-use support::{expect_ok, facade_gap_at, spec_case};
+use jinnd_api::{
+    Activation, EntryId, Kernel, KernelFuture, PluginContract, PluginRef, Profile, ProfileEntry,
+};
+use support::{expect_ok, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
 const FACADE_GAP_REASON: &str =
     "the facade has no loader-as-service dependency or loader await-intercept surface";
+
+struct Cleanup(std::path::PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[derive(Debug)]
+struct RawDocumentPlugin;
+
+impl PluginContract for RawDocumentPlugin {
+    type Config = u32;
+    type Dependencies = ();
+
+    const NAME: &'static str = "jinn.test/raw-document";
+
+    fn activate<'a>(
+        &'a self,
+        _activation: Activation<'a, ()>,
+        _config: u32,
+    ) -> KernelFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 spec_case! {
     /// TS origin: `packages/loader/tests/index.spec.ts`, test `loader initiate`.
@@ -28,33 +56,63 @@ spec_case! {
     setup: ["persisted document contains one decodable entry with an unknown field and one raw future-version entry"],
     actions: ["reconcile the known entry", "perform a runtime config write-back"],
     expected: ["known config changes atomically", "unknown field and raw entry round-trip byte-for-byte"],
-    body: |case| {
+    body: |_case| {
         let kernel = jinnd_adapter::kernel();
-        let log = loader_fixture::log();
-        loader_fixture::register(&kernel, &log);
-        loader_fixture::reconcile(
-            &kernel,
-            vec![loader_fixture::entry("known", loader_fixture::COUNT, 1)],
-        )
-        .await;
+        expect_ok(
+            kernel.register_package("jinn.test/raw-document", |config: u32| {
+                Ok((RawDocumentPlugin, config))
+            }),
+            "raw-document package should register",
+        );
+        let baseline = r#"{"entries":[{"id":"known","package":"jinn.test/raw-document","config":1,"note":{"spacing":"keep"}},{"id":"future","package":42,"payload":{"raw":[1,2,3]}}]}"#;
+        let directory = std::env::temp_dir().join(format!(
+            "jinnd-invariant-raw-document-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&directory)
+            .unwrap_or_else(|error| panic!("temporary directory should create: {error}"));
+        let cleanup = Cleanup(directory.clone());
+        let path = directory.join("profile.json");
+        expect_ok(
+            kernel.attach_document::<u32>(path, baseline),
+            "raw document should attach",
+        );
         expect_ok(
             kernel
-                .update_entry(&loader_fixture::id("known"), loader_fixture::Config {
-                    entry: "known".to_owned(),
-                    value: 2,
+                .reconcile(Profile {
+                    entries: vec![ProfileEntry {
+                        id: EntryId("known".to_owned()),
+                        plugin: PluginRef {
+                            package: "jinn.test/raw-document".to_owned(),
+                            version: "1".to_owned(),
+                            artifact_hash: String::new(),
+                        },
+                        config: 1u32,
+                        disabled: false,
+                        parent: None,
+                        isolation: Vec::new(),
+                    }],
                 })
                 .await,
-            "the typed write-back lane should update",
+            "known entry should reconcile",
+        );
+        expect_ok(
+            kernel.update_entry(&EntryId("known".to_owned()), 2u32).await,
+            "runtime write-back should update",
         );
         let persisted = kernel
-            .persisted_profile::<loader_fixture::Config>()
-            .unwrap_or_else(|| panic!("the typed profile should remain observable"));
-        assert_eq!(persisted.entries[0].config.value, 2);
-
-        facade_gap_at(
-            &case,
-            "the facade has no raw Document attach/read surface, so unknown entry fields and opaque entries cannot be supplied or observed",
+            .document_text()
+            .unwrap_or_else(|| panic!("persisted raw document should be observable"));
+        assert!(persisted.contains(r#""config": 2"#));
+        assert!(
+            persisted.contains(r#""note":{"spacing":"keep"}"#),
+            "the unknown known-entry field must round-trip byte-for-byte",
         );
+        assert!(
+            persisted.contains(r#"{"id":"future","package":42,"payload":{"raw":[1,2,3]}}"#),
+            "the opaque future entry must round-trip byte-for-byte",
+        );
+        drop(cleanup);
     }
 }
 

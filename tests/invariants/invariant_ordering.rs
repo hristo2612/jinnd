@@ -1,15 +1,103 @@
 mod loader_fixture;
 mod support;
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jinnd_api::{FiberState, Kernel, Realm, ServiceContract};
+use jinnd_api::{
+    Activation, FiberState, Inject, Kernel, KernelFuture, PluginContract, PluginRef, Profile,
+    ProfileEntry, Realm, ServiceContract, ServiceHandle, ServiceResolver, ServiceType, Undo,
+};
 use loader_fixture::{CONSUMER, Config, PROVIDER, SERVICE};
-use support::{expect_ok, facade_gap_at, spec_case};
+use support::{expect_ok, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
 const FACADE_GAP_REASON: &str =
     "the facade cannot declare dependencies or invoke a dying service from consumer teardown";
+
+#[derive(Debug)]
+struct StableService(u32);
+
+impl ServiceContract for StableService {
+    type Observation = u32;
+
+    const NAME: &'static str = "jinn.test/stable-service";
+
+    fn observe(&self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+struct NeedsStable {
+    service: ServiceHandle<StableService>,
+}
+
+impl Inject for NeedsStable {
+    fn declare() -> Vec<ServiceType> {
+        vec![ServiceType::of::<StableService>()]
+    }
+
+    fn inject<R: ServiceResolver + ?Sized>(resolver: &R) -> Result<Self, jinnd_api::KernelError> {
+        Ok(Self {
+            service: resolver.resolve::<StableService>()?,
+        })
+    }
+}
+
+struct ObserveUndo(Arc<StableService>, Arc<Mutex<Vec<u32>>>);
+
+impl Undo for ObserveUndo {
+    fn undo(self: Box<Self>) -> KernelFuture<'static, ()> {
+        let observed = self.0.observe();
+        self.1
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(observed);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[derive(Debug)]
+struct StableConsumer(Arc<Mutex<Vec<u32>>>);
+
+impl PluginContract for StableConsumer {
+    type Config = u32;
+    type Dependencies = NeedsStable;
+
+    const NAME: &'static str = "jinn.test/stable-consumer";
+
+    fn activate<'a>(
+        &'a self,
+        activation: Activation<'a, NeedsStable>,
+        _config: u32,
+    ) -> KernelFuture<'a, ()> {
+        let service = Arc::clone(&activation.dependencies.service.service);
+        let observations = Arc::clone(&self.0);
+        Box::pin(async move {
+            activation.effects.register(
+                "observe dying provider".to_owned(),
+                Box::new(ObserveUndo(service, observations)),
+            )?;
+            Ok(())
+        })
+    }
+}
+
+fn stable_entry(id: &str, package: &str, config: u32) -> ProfileEntry<u32> {
+    ProfileEntry {
+        id: jinnd_api::EntryId(id.to_owned()),
+        plugin: PluginRef {
+            package: package.to_owned(),
+            version: "1".to_owned(),
+            artifact_hash: String::new(),
+        },
+        config,
+        disabled: false,
+        parent: None,
+        isolation: Vec::new(),
+    }
+}
 
 spec_case! {
     /// Paper origin: ordering and resolution-coherence theorem; SOURCE-OF-TRUTH §4 invariant I2.
@@ -29,29 +117,56 @@ spec_case! {
     setup: ["active provider exposes an observable value", "consumer owns one dependency snapshot"],
     actions: ["capture the provider observation", "withdraw the provider and observe it from consumer teardown"],
     expected: ["the teardown observation equals the pre-withdrawal observation", "provider effects begin withdrawing only after dependents finish"],
-    body: |case| {
+    body: |_case| {
+        const STABLE_PROVIDER: &str = "jinn.test/stable-provider-package";
+        const STABLE_CONSUMER: &str = "jinn.test/stable-consumer-package";
+
         let kernel = jinnd_adapter::kernel();
-        let log = loader_fixture::log();
-        loader_fixture::register(&kernel, &log);
-        loader_fixture::reconcile(
-            &kernel,
-            vec![
-                loader_fixture::entry("provider", PROVIDER, 42),
-                loader_fixture::entry("consumer", CONSUMER, 0),
-            ],
-        )
-        .await;
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        expect_ok(
+            kernel.register_provider_package(STABLE_PROVIDER, |config: u32| {
+                Ok(Arc::new(StableService(config)))
+            }),
+            "provider lane should register",
+        );
+        let consumer_observations = Arc::clone(&observations);
+        expect_ok(
+            kernel.register_package(STABLE_CONSUMER, move |config: u32| {
+                Ok((StableConsumer(Arc::clone(&consumer_observations)), config))
+            }),
+            "consumer lane should register",
+        );
+        let report = expect_ok(
+            kernel
+                .reconcile(Profile {
+                    entries: vec![
+                        stable_entry("provider", STABLE_PROVIDER, 42),
+                        stable_entry("consumer", STABLE_CONSUMER, 0),
+                    ],
+                })
+                .await,
+            "profile should reconcile",
+        );
+        assert!(report.errors.is_empty());
+        expect_ok(kernel.wait_for_quiescence().await, "profile should quiesce");
         let before = expect_ok(
-            kernel.resolve::<loader_fixture::FixtureService>(kernel.root_context()),
+            kernel.resolve::<StableService>(kernel.root_context()),
             "the active provider should resolve",
         )
         .service
         .observe();
         assert_eq!(before, 42);
-
-        facade_gap_at(
-            &case,
-            "the facade has no consumer teardown hook that can observe its dying service handle",
+        expect_ok(
+            kernel.dispose_entry::<u32>(&jinnd_api::EntryId("provider".to_owned())).await,
+            "provider should withdraw",
+        );
+        assert_eq!(
+            observations
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .as_slice(),
+            [before],
+            "consumer teardown must observe the provider's pre-withdrawal value",
         );
     }
 }

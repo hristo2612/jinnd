@@ -6,56 +6,80 @@ use jinnd_api::{
     Activation, EntryId, ErrorCode, Inject, Kernel, KernelFuture, PluginContract, PluginRef,
     Profile, ProfileEntry, ServiceContract, ServiceHandle, ServiceResolver, ServiceType,
 };
-use support::{expect_ok, facade_gap_at, spec_case};
+use support::{expect_ok, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
 const FACADE_GAP_REASON: &str = "the facade cannot declare one package lane that both provides and injects services, so it cannot express a dependency cycle";
 
-#[derive(Debug)]
-struct LinkService;
+macro_rules! service {
+    ($name:ident, $contract:literal) => {
+        #[derive(Debug)]
+        struct $name;
 
-impl ServiceContract for LinkService {
-    type Observation = ();
-
-    const NAME: &'static str = "jinn.test/progress-link";
-
-    fn observe(&self) {}
+        impl ServiceContract for $name {
+            type Observation = ();
+            const NAME: &'static str = $contract;
+            fn observe(&self) {}
+        }
+    };
 }
 
-#[derive(Debug)]
-struct NeedsLink {
-    _service: ServiceHandle<LinkService>,
+service!(LinkA, "jinn.test/progress-a");
+service!(LinkB, "jinn.test/progress-b");
+service!(LinkC, "jinn.test/progress-c");
+
+macro_rules! needs {
+    ($name:ident, $service:ident) => {
+        #[derive(Debug)]
+        struct $name {
+            _service: ServiceHandle<$service>,
+        }
+
+        impl Inject for $name {
+            fn declare() -> Vec<ServiceType> {
+                vec![ServiceType::of::<$service>()]
+            }
+
+            fn inject<R: ServiceResolver + ?Sized>(
+                resolver: &R,
+            ) -> Result<Self, jinnd_api::KernelError> {
+                Ok(Self {
+                    _service: resolver.resolve::<$service>()?,
+                })
+            }
+        }
+    };
 }
 
-impl Inject for NeedsLink {
-    fn declare() -> Vec<ServiceType> {
-        vec![ServiceType::of::<LinkService>()]
-    }
+needs!(NeedsA, LinkA);
+needs!(NeedsB, LinkB);
+needs!(NeedsC, LinkC);
 
-    fn inject<R: ServiceResolver + ?Sized>(resolver: &R) -> Result<Self, jinnd_api::KernelError> {
-        Ok(Self {
-            _service: resolver.resolve::<LinkService>()?,
-        })
-    }
+macro_rules! plugin {
+    ($name:ident, $dependencies:ident, $contract:literal) => {
+        #[derive(Debug)]
+        struct $name;
+
+        impl PluginContract for $name {
+            type Config = u8;
+            type Dependencies = $dependencies;
+
+            const NAME: &'static str = $contract;
+
+            fn activate<'a>(
+                &'a self,
+                _activation: Activation<'a, $dependencies>,
+                _config: u8,
+            ) -> KernelFuture<'a, ()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+    };
 }
 
-#[derive(Debug)]
-struct LinkConsumer;
-
-impl PluginContract for LinkConsumer {
-    type Config = u8;
-    type Dependencies = NeedsLink;
-
-    const NAME: &'static str = "jinn.test/progress-consumer";
-
-    fn activate<'a>(
-        &'a self,
-        _activation: Activation<'a, NeedsLink>,
-        _config: u8,
-    ) -> KernelFuture<'a, ()> {
-        Box::pin(async { Ok(()) })
-    }
-}
+plugin!(PluginA, NeedsB, "jinn.test/progress-plugin-a");
+plugin!(PluginB, NeedsC, "jinn.test/progress-plugin-b");
+plugin!(PluginC, NeedsA, "jinn.test/progress-plugin-c");
 
 #[derive(Debug)]
 struct Sibling;
@@ -108,21 +132,30 @@ spec_case! {
     setup: ["fibers alpha, beta, gamma form a dependency cycle", "unrelated sibling is acyclic"],
     actions: ["register graph", "wait with a bounded virtual-time deadline"],
     expected: ["cycle is reported statically", "cycle members are pending or failed with no effects", "unrelated sibling reaches active", "kernel is quiescent"],
-    body: |case| {
-        const PROVIDER: &str = "jinn.test/progress-provider-package";
-        const CONSUMER: &str = "jinn.test/progress-consumer-package";
+    body: |_case| {
+        const ALPHA: &str = "jinn.test/progress-alpha-package";
+        const BETA: &str = "jinn.test/progress-beta-package";
+        const GAMMA: &str = "jinn.test/progress-gamma-package";
         const SIBLING: &str = "jinn.test/progress-sibling-package";
 
         let kernel = jinnd_adapter::kernel();
         expect_ok(
-            kernel.register_provider_package(PROVIDER, |_config: u8| {
-                Ok(Arc::new(LinkService))
+            kernel.register_providing_package(ALPHA, |config: u8| {
+                Ok((PluginA, config, Arc::new(LinkA)))
             }),
-            "the provider half should register",
+            "alpha should register",
         );
         expect_ok(
-            kernel.register_package(CONSUMER, |config: u8| Ok((LinkConsumer, config))),
-            "the injector half should register",
+            kernel.register_providing_package(BETA, |config: u8| {
+                Ok((PluginB, config, Arc::new(LinkB)))
+            }),
+            "beta should register",
+        );
+        expect_ok(
+            kernel.register_providing_package(GAMMA, |config: u8| {
+                Ok((PluginC, config, Arc::new(LinkC)))
+            }),
+            "gamma should register",
         );
         expect_ok(
             kernel.register_package(SIBLING, |config: u8| Ok((Sibling, config))),
@@ -133,32 +166,38 @@ spec_case! {
             kernel
                 .reconcile(Profile {
                     entries: vec![
-                        entry("provider-half", PROVIDER),
-                        entry("consumer-half", CONSUMER),
+                        entry("alpha", ALPHA),
+                        entry("beta", BETA),
+                        entry("gamma", GAMMA),
                         entry("sibling", SIBLING),
                     ],
                 })
                 .await,
-            "the closest expressible split graph should reconcile",
+            "the cyclic graph should reconcile with contained faults",
         );
         expect_ok(
             kernel.wait_for_quiescence().await,
-            "the split graph should quiesce",
+            "the cyclic graph should quiesce",
         );
-        assert!(
-            report
-                .errors
-                .iter()
-                .all(|fault| fault.error.code != ErrorCode::DependencyCycle),
-            "separate provider and injector entries are acyclic"
+        let mut cycle_entries: Vec<&str> = report
+            .errors
+            .iter()
+            .filter(|fault| fault.error.code == ErrorCode::DependencyCycle)
+            .map(|fault| fault.entry.0.as_str())
+            .collect();
+        cycle_entries.sort_unstable();
+        assert_eq!(
+            cycle_entries,
+            ["alpha", "beta", "gamma"],
+            "every cycle member is diagnosed statically",
         );
-        for id in ["provider-half", "consumer-half", "sibling"] {
-            assert!(
-                kernel.entry_fiber(&EntryId(id.to_owned())).is_some(),
-                "the expressible acyclic entry {id} should have a fiber"
-            );
+        for id in ["alpha", "beta", "gamma"] {
+            assert!(kernel.entry_fiber(&EntryId(id.to_owned())).is_none());
         }
-
-        facade_gap_at(&case, FACADE_GAP_REASON);
+        let sibling = kernel
+            .entry_fiber(&EntryId("sibling".to_owned()))
+            .unwrap_or_else(|| panic!("the unrelated sibling should have a fiber"));
+        assert_eq!(kernel.state(sibling), jinnd_api::FiberState::Active);
+        assert!(kernel.effect_tree(sibling).is_empty());
     }
 }
