@@ -33,8 +33,9 @@ pub struct ContextId(pub u64);
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FiberId(pub u64);
 
-/// Stable identity of a reversible effect.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Stable identity of a reversible effect. Serde exists so ledger events can
+/// carry the effect they concern (R3, R6; authorized M1-P7 additive delta).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct EffectId(pub u64);
 
 /// Stable identity of a profile entry across reconciliations.
@@ -359,6 +360,22 @@ pub trait Kernel: Send + Sync + 'static {
     fn register_effect(
         &self,
         context: ContextId,
+        label: String,
+        undo: Box<dyn Undo>,
+    ) -> Result<EffectId, KernelError>;
+
+    /// Registers `undo` as a child of the live effect `parent`: the tree
+    /// preserves the parent-child shape, and withdrawing the parent withdraws
+    /// its children first, LIFO (R5; authorized M1-P7 additive delta per the
+    /// nested-effect registration gap — the `cordis_dispose` "yield dispose"
+    /// case's surface).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::EffectFailed`] when `parent` names no live effect.
+    fn register_child_effect(
+        &self,
+        parent: EffectId,
         label: String,
         undo: Box<dyn Undo>,
     ) -> Result<EffectId, KernelError>;

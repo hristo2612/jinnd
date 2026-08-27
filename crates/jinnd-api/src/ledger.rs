@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EntryId, FiberId, KernelError, Transition};
+use crate::{EffectId, EntryId, FiberId, KernelError, Transition};
 
 /// Proof that one appended event is durable: the receipt resolves only after
 /// the event's commit returned, never before (constitution 02).
@@ -41,22 +41,36 @@ pub enum LedgerEventKind {
     /// A recorded error, attributed to the entry/fiber that caused it.
     ErrorRecorded { error: KernelError },
     /// Revert intent, durably recorded before any inverse runs (03 step 1).
-    RevertIntent { key: String },
+    /// Carries the effect the branch concerns: the branch is reconstructible
+    /// from the ledger alone (crash-safe exactly-once).
+    RevertIntent { key: String, effect: EffectId },
     /// One inverse completion under its idempotency key; `clean` is true only
     /// when the executable witness passed (03 step 3).
-    RevertCompleted { key: String, clean: bool },
+    RevertCompleted {
+        key: String,
+        effect: EffectId,
+        clean: bool,
+    },
     /// A revert branch reached a resolution state.
-    RevertResolved { resolution: RevertResolution },
+    RevertResolved {
+        effect: EffectId,
+        resolution: RevertResolution,
+    },
     /// RESERVED (M1-P7): the event-bus dispatch trace class. The variant and
     /// schema exist now; emission is wired when the bus gains its ledger tap.
     DispatchTrace { event: String },
 }
 
-/// One event as recorded: monotonic sequence, typed kind, and attribution to
-/// the profile entry and/or fiber that caused it (the error→entry rule).
+/// One event as recorded: monotonic sequence, wall-clock timestamp, typed
+/// kind, and attribution to the profile entry and/or fiber that caused it
+/// (the error→entry rule; the card's timestamped-event requirement).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LedgerRecord {
     pub sequence: u64,
+    /// Milliseconds since the Unix epoch, stamped by the writer as the event
+    /// commits. Ordering authority stays with `sequence`: wall clocks may
+    /// repeat or step; the sequence never does.
+    pub timestamp: u64,
     pub kind: LedgerEventKind,
     pub entry: Option<EntryId>,
     pub fiber: Option<FiberId>,
