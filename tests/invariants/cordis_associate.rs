@@ -1,10 +1,35 @@
 mod support;
 
+use std::sync::Arc;
+
+use jinnd_api::{ErrorCode, Kernel, Realm, ServiceContract};
+use support::expect_ok;
 use support::spec_case;
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Services;
-const FACADE_GAP_REASON: &str =
-    "the facade has no typed extension or per-activation dependency-snapshot declaration API";
+const V02_DEFERRED_BOUND: &str = "SOURCE-OF-TRUTH R4 and constitution 01 Mechanical closure: v0.1 exposes owned WIT broker handles, not Cordis in-process associated-value or proxy-extension reflection";
+
+#[derive(Debug)]
+struct Parent(u8);
+
+impl ServiceContract for Parent {
+    type Observation = u8;
+    const NAME: &'static str = "jinn.test/associate-parent";
+    fn observe(&self) -> u8 {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+struct Child(u8);
+
+impl ServiceContract for Child {
+    type Observation = u8;
+    const NAME: &'static str = "jinn.test/associate-child";
+    fn observe(&self) -> u8 {
+        self.0
+    }
+}
 
 spec_case! {
     /// TS origin: `packages/core/tests/associate.spec.ts`, test `service injection`; translated to typed nested capabilities.
@@ -13,7 +38,19 @@ spec_case! {
     test: "service injection (typed capability equivalent)",
     setup: ["provide parent capability and nested child capability"],
     actions: ["resolve both", "dispose child provider"],
-    expected: ["parent remains resolvable with its original observation", "child becomes unavailable"]
+    expected: ["parent remains resolvable with its original observation", "child becomes unavailable"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let root = kernel.root_context();
+        let parent = expect_ok(kernel.provide(root, Realm::Root, Arc::new(Parent(7))).await, "parent provision");
+        let child = expect_ok(kernel.provide(root, Realm::Root, Arc::new(Child(9))).await, "child provision");
+        assert_eq!(expect_ok(kernel.resolve::<Parent>(root), "parent resolve").service.observe(), 7);
+        assert_eq!(expect_ok(kernel.resolve::<Child>(root), "child resolve").service.observe(), 9);
+        expect_ok(kernel.dispose_effect(child).await, "child withdrawal");
+        assert_eq!(kernel.resolve::<Child>(root).err().map(|error| error.code), Some(ErrorCode::MissingDependency));
+        assert_eq!(expect_ok(kernel.resolve::<Parent>(root), "parent remains").service.observe(), 7);
+        expect_ok(kernel.dispose_effect(parent).await, "parent cleanup");
+    }
 }
 
 spec_case! {

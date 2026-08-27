@@ -128,20 +128,26 @@ pub fn expect_ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> 
     }
 }
 
-pub fn facade_gap_at(case: &SpecCase<'_>, reason: &str) -> ! {
+pub fn v02_deferred_at(case: &SpecCase<'_>, bound: &str) -> ! {
     validate(case);
-    assert!(!reason.is_empty(), "facade gaps require a concrete reason");
+    assert!(
+        !bound.is_empty(),
+        "v0.2 deferrals require a constitution bound"
+    );
     panic!(
-        "FACADE_GAP: {reason}; case={} :: {}",
+        "V02_DEFERRED: {bound}; case={} :: {}",
         case.origin, case.test_name
     )
 }
 
-/// Drives the closest facade subsystem before recording why the full cited behavior
-/// cannot yet be observed through `jinnd-api`.
-pub async fn facade_gap(case: &SpecCase<'_>, subsystem: Subsystem, reason: &str) -> ! {
+/// Drives the closest v0.1 subsystem before recording the constitutional bound
+/// that leaves the full cited behavior for a later contract version.
+pub async fn v02_deferred(case: &SpecCase<'_>, subsystem: Subsystem, bound: &str) -> ! {
     validate(case);
-    assert!(!reason.is_empty(), "facade gaps require a concrete reason");
+    assert!(
+        !bound.is_empty(),
+        "v0.2 deferrals require a constitution bound"
+    );
 
     let kernel = jinnd_adapter::kernel();
     match subsystem {
@@ -207,7 +213,7 @@ pub async fn facade_gap(case: &SpecCase<'_>, subsystem: Subsystem, reason: &str)
         }
     }
 
-    facade_gap_at(case, reason)
+    v02_deferred_at(case, bound)
 }
 
 macro_rules! spec_case {
@@ -248,7 +254,7 @@ macro_rules! spec_case {
         $(#[$meta])*
         #[tokio::test(flavor = "current_thread")]
         async fn $name() {
-            $crate::support::facade_gap(
+            $crate::support::v02_deferred(
                 &$crate::support::SpecCase {
                     origin: $origin,
                     test_name: $test_name,
@@ -258,7 +264,7 @@ macro_rules! spec_case {
                     states: &[],
                 },
                 $crate::SUBSYSTEM,
-                $crate::FACADE_GAP_REASON,
+                $crate::V02_DEFERRED_BOUND,
             )
             .await;
         }

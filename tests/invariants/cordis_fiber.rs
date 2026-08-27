@@ -3,10 +3,10 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{Activation, ContextId, FiberState, Kernel, KernelFuture, PluginContract};
-use support::{SpecCase, StateAt, facade_gap};
+use support::{SpecCase, StateAt, v02_deferred};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
-const FACADE_GAP_REASON: &str = "the facade has no dependency declaration, cancellable activation, teardown hook, or error-ledger observation API";
+const V02_DEFERRED_BOUND: &str = "SOURCE-OF-TRUTH R7 and constitution 01 Mechanical closure: v0.1 has no in-process plugin host or public transition-control and failure-injection contract";
 
 #[derive(Clone, Debug)]
 struct RecordingPlugin {
@@ -42,7 +42,7 @@ fn recorded(activations: &Mutex<Vec<&'static str>>) -> Vec<&'static str> {
 /// TS origin: `packages/core/tests/fiber.spec.ts`, test `inertia lock 1`.
 #[tokio::test(flavor = "current_thread")]
 async fn inertia_lock_1_lands_each_started_transition_before_reconciling() {
-    facade_gap(
+    v02_deferred(
         &SpecCase {
             origin: "packages/core/tests/fiber.spec.ts",
             test_name: "inertia lock 1",
@@ -79,7 +79,7 @@ async fn inertia_lock_1_lands_each_started_transition_before_reconciling() {
             ],
         },
         SUBSYSTEM,
-        FACADE_GAP_REASON,
+        V02_DEFERRED_BOUND,
     )
     .await;
 }
@@ -87,7 +87,7 @@ async fn inertia_lock_1_lands_each_started_transition_before_reconciling() {
 /// TS origin: `packages/core/tests/fiber.spec.ts`, test `inertia lock 2`.
 #[tokio::test(flavor = "current_thread")]
 async fn inertia_lock_2_coalesces_dependency_return_during_loading() {
-    facade_gap(
+    v02_deferred(
         &SpecCase {
             origin: "packages/core/tests/fiber.spec.ts",
             test_name: "inertia lock 2",
@@ -116,7 +116,7 @@ async fn inertia_lock_2_coalesces_dependency_return_during_loading() {
             ],
         },
         SUBSYSTEM,
-        FACADE_GAP_REASON,
+        V02_DEFERRED_BOUND,
     )
     .await;
 }
@@ -124,7 +124,7 @@ async fn inertia_lock_2_coalesces_dependency_return_during_loading() {
 /// TS origin: `packages/core/tests/fiber.spec.ts`, test `inertia lock 3`.
 #[tokio::test(flavor = "current_thread")]
 async fn inertia_lock_3_provider_disposal_drains_consumer() {
-    facade_gap(
+    v02_deferred(
         &SpecCase {
             origin: "packages/core/tests/fiber.spec.ts",
             test_name: "inertia lock 3",
@@ -150,7 +150,7 @@ async fn inertia_lock_3_provider_disposal_drains_consumer() {
             ],
         },
         SUBSYSTEM,
-        FACADE_GAP_REASON,
+        V02_DEFERRED_BOUND,
     )
     .await;
 }
@@ -158,7 +158,7 @@ async fn inertia_lock_3_provider_disposal_drains_consumer() {
 /// TS origin: `packages/core/tests/fiber.spec.ts`, test `plugin error`.
 #[tokio::test(flavor = "current_thread")]
 async fn plugin_failure_is_local_to_the_failed_fiber() {
-    facade_gap(
+    v02_deferred(
         &SpecCase {
             origin: "packages/core/tests/fiber.spec.ts",
             test_name: "plugin error",
@@ -172,7 +172,7 @@ async fn plugin_failure_is_local_to_the_failed_fiber() {
             states: &[],
         },
         SUBSYSTEM,
-        FACADE_GAP_REASON,
+        V02_DEFERRED_BOUND,
     )
     .await;
 }
@@ -180,7 +180,7 @@ async fn plugin_failure_is_local_to_the_failed_fiber() {
 /// TS origin: `packages/core/tests/fiber.spec.ts`, test `dispose error`.
 #[tokio::test(flavor = "current_thread")]
 async fn disposer_failure_is_contained_and_disposal_is_idempotent() {
-    facade_gap(
+    v02_deferred(
         &SpecCase {
             origin: "packages/core/tests/fiber.spec.ts",
             test_name: "dispose error",
@@ -193,7 +193,7 @@ async fn disposer_failure_is_contained_and_disposal_is_idempotent() {
             states: &[],
         },
         SUBSYSTEM,
-        FACADE_GAP_REASON,
+        V02_DEFERRED_BOUND,
     )
     .await;
 }
@@ -253,7 +253,7 @@ async fn explicit_restart_reactivates_once_and_ends_active() {
 /// TS origin: `packages/core/tests/fiber.spec.ts`, test `update config while injected service reloads`.
 #[tokio::test(flavor = "current_thread")]
 async fn config_update_and_dependency_reload_use_one_coherent_snapshot() {
-    facade_gap(
+    v02_deferred(
         &SpecCase {
             origin: "packages/core/tests/fiber.spec.ts",
             test_name: "update config while injected service reloads",
@@ -270,7 +270,7 @@ async fn config_update_and_dependency_reload_use_one_coherent_snapshot() {
             states: &[],
         },
         SUBSYSTEM,
-        FACADE_GAP_REASON,
+        V02_DEFERRED_BOUND,
     )
     .await;
 }

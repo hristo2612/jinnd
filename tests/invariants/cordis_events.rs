@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{ContextId, DispatchMode, Event, EventListener, Kernel, KernelFuture};
-use support::{Listener, expect_ok, facade_gap_at, listener_error, ready, spec_case};
+use support::{Listener, expect_ok, listener_error, ready, spec_case, v02_deferred_at};
 
 #[derive(Clone, Debug)]
 struct EmitEvent {
@@ -185,7 +185,7 @@ spec_case! {
             .iter()
             .any(|entry| entry.id == effect)
         {
-            facade_gap_at(
+            v02_deferred_at(
                 &case,
                 "unlisten removes delivery but leaves the listener's live effect record",
             );
@@ -248,7 +248,7 @@ spec_case! {
         })
         .await;
         match dispatch {
-            Err(error) if error.is_panic() => facade_gap_at(
+            Err(error) if error.is_panic() => v02_deferred_at(
                 &case,
                 "a consumed once-listener's destructor panic escapes dispatch containment",
             ),
@@ -258,7 +258,7 @@ spec_case! {
                 if report.failures.len() != 1
                     || report.failures[0].code != jinnd_api::ErrorCode::ListenerFailed
                 {
-                    facade_gap_at(
+                    v02_deferred_at(
                         &case,
                         "a consumed once-listener's destructor panic is not reported as one contained listener failure",
                     );
@@ -358,7 +358,7 @@ spec_case! {
         })
         .await;
         match dispatch {
-            Err(error) if error.is_panic() => facade_gap_at(
+            Err(error) if error.is_panic() => v02_deferred_at(
                 &case,
                 "parallel dispatch clones the plugin-authored payload outside containment",
             ),
@@ -368,7 +368,7 @@ spec_case! {
                 if report.failures.len() != 1
                     || report.failures[0].code != jinnd_api::ErrorCode::ListenerFailed
                 {
-                    facade_gap_at(
+                    v02_deferred_at(
                         &case,
                         "parallel dispatch does not report the payload clone panic as one contained listener failure",
                     );

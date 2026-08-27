@@ -8,8 +8,7 @@ use jinnd_api::{
 use support::{expect_ok, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
-const FACADE_GAP_REASON: &str =
-    "the facade has no loader-as-service dependency or loader await-intercept surface";
+const V02_DEFERRED_BOUND: &str = "constitution 04 makes reconciliation kernel-owned and dependency readiness automatic in v0.1; no loader-as-service or await-intercept capability contract exists";
 
 struct Cleanup(std::path::PathBuf);
 

@@ -8,9 +8,6 @@ use jinnd_api::{
 };
 use support::{expect_ok, spec_case};
 
-const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
-const FACADE_GAP_REASON: &str = "the facade cannot declare one package lane that both provides and injects services, so it cannot express a dependency cycle";
-
 macro_rules! service {
     ($name:ident, $contract:literal) => {
         #[derive(Debug)]
@@ -121,7 +118,42 @@ spec_case! {
     test: "acyclic dependency graph reaches quiescence",
     setup: ["acyclic graph qux -> foo -> bar and qux -> bar starts in arbitrary registration order"],
     actions: ["provide leaves", "wait with a bounded virtual-time deadline"],
-    expected: ["wait completes before deadline", "every satisfiable fiber is active", "no transition remains in flight"]
+    expected: ["wait completes before deadline", "every satisfiable fiber is active", "no transition remains in flight"],
+    body: |_case| {
+        const ALPHA: &str = "jinn.test/acyclic-alpha";
+        const BETA: &str = "jinn.test/acyclic-beta";
+        const GAMMA: &str = "jinn.test/acyclic-gamma";
+        let kernel = jinnd_adapter::kernel();
+        expect_ok(
+            kernel.register_providing_package(ALPHA, |config: u8| Ok((PluginA, config, Arc::new(LinkA)))),
+            "alpha should register",
+        );
+        expect_ok(
+            kernel.register_providing_package(BETA, |config: u8| Ok((PluginB, config, Arc::new(LinkB)))),
+            "beta should register",
+        );
+        expect_ok(
+            kernel.register_provider_package(GAMMA, |_config: u8| Ok(Arc::new(LinkC))),
+            "gamma should register",
+        );
+        let report = expect_ok(
+            kernel.reconcile(Profile {
+                entries: vec![entry("alpha-acyclic", ALPHA), entry("gamma-acyclic", GAMMA), entry("beta-acyclic", BETA)],
+            }).await,
+            "acyclic graph should reconcile",
+        );
+        assert!(report.errors.is_empty());
+        expect_ok(
+            tokio::time::timeout(std::time::Duration::from_secs(2), kernel.wait_for_quiescence()).await,
+            "acyclic graph should settle before the deadline",
+        )
+        .unwrap_or_else(|error| panic!("acyclic graph should quiesce: {error:?}"));
+        for id in ["alpha-acyclic", "beta-acyclic", "gamma-acyclic"] {
+            let fiber = kernel.entry_fiber(&EntryId(id.to_owned())).unwrap_or_else(|| panic!("{id} should have a fiber"));
+            assert_eq!(kernel.state(fiber), jinnd_api::FiberState::Active);
+        }
+        expect_ok(kernel.resolve::<LinkA>(kernel.root_context()), "the head of the chain should resolve");
+    }
 }
 
 spec_case! {

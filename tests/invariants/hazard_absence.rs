@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use jinnd_api::{
     Activation, DispatchMode, ErrorCode, Event, FiberState, Kernel, KernelError, KernelFuture,
-    PluginContract, PluginRef, Profile, ProfileEntry, Realm, ServiceContract,
+    LedgerEventKind, LedgerQuery, PluginContract, PluginRef, Profile, ProfileEntry, Realm,
+    ServiceContract,
 };
-use support::{Listener, expect_ok, facade_gap_at, listener_error, ready, spec_case};
+use support::{Listener, expect_ok, listener_error, ready, spec_case, v02_deferred_at};
 
 #[derive(Clone, Debug)]
 struct EmitEvent;
@@ -58,6 +59,28 @@ impl ServiceContract for VersionedService {
 #[derive(Debug)]
 struct AlwaysFails {
     attempts: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+struct LiteralConfig(Arc<Mutex<Vec<String>>>);
+
+impl PluginContract for LiteralConfig {
+    type Config = String;
+    type Dependencies = ();
+
+    const NAME: &'static str = "jinn.test/literal-config";
+
+    fn activate<'a>(
+        &'a self,
+        _activation: Activation<'a, ()>,
+        config: String,
+    ) -> KernelFuture<'a, ()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(config);
+        Box::pin(async { Ok(()) })
+    }
 }
 
 impl PluginContract for AlwaysFails {
@@ -197,12 +220,21 @@ spec_case! {
     setup: ["construct a service value before activation"],
     actions: ["compare kernel effects and ledger before and after construction", "activate through explicit plugin boundary"],
     expected: ["construction creates no effect or ledger entry", "mutations become possible only inside activation"],
-    body: |case| {
+    body: |_case| {
         let kernel = jinnd_adapter::kernel();
         let root = kernel.root_context();
         let before = kernel.effect_tree(jinnd_adapter::KERNEL_SCOPE);
+        let ledger_before = expect_ok(
+            kernel.ledger_events(LedgerQuery::default()).await,
+            "ledger should be readable",
+        );
         let service = Arc::new(PassiveService);
         assert_eq!(kernel.effect_tree(jinnd_adapter::KERNEL_SCOPE), before);
+        assert_eq!(
+            expect_ok(kernel.ledger_events(LedgerQuery::default()).await, "ledger after construction"),
+            ledger_before,
+            "constructing an inert value cannot cross the kernel boundary",
+        );
         let effect = expect_ok(
             kernel.provide(root, Realm::Root, service).await,
             "the explicit provision boundary should accept the service",
@@ -214,10 +246,9 @@ spec_case! {
                 .any(|entry| entry.id == effect),
             "only the explicit boundary should create an effect"
         );
-        facade_gap_at(
-            &case,
-            "the facade exposes effect observation but no ledger observation for constructor absence",
-        );
+        assert!(expect_ok(kernel.ledger_events(LedgerQuery::default()).await, "ledger after provision")
+            .iter()
+            .any(|record| matches!(&record.kind, LedgerEventKind::ServiceProvided { service } if service == PassiveService::NAME)));
     }
 }
 
@@ -229,23 +260,35 @@ spec_case! {
     setup: ["config expression attempts filesystem, network, environment, and process access"],
     actions: ["parse and validate at the profile boundary"],
     expected: ["all ambient-authority forms are rejected", "no capability call or ledger side effect occurs"],
-    body: |case| {
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
         let expression = "readFile('/tmp/x') || fetch('https://invalid') || env.SECRET || process.exit()";
-        let profile = Profile {
-            entries: vec![ProfileEntry {
-                id: jinnd_api::EntryId("ambient-config".to_owned()),
-                plugin: fixture_plugin("fixture"),
-                config: expression.to_owned(),
-                disabled: false,
-                parent: None,
-                isolation: Vec::new(),
-            }],
-        };
-        assert_eq!(profile.entries[0].config, expression);
-        facade_gap_at(
-            &case,
-            "the facade has no profile parser, closed expression validator, capability trace, or ledger observation",
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let plugin_seen = Arc::clone(&seen);
+        expect_ok(
+            kernel.register_package("jinn.test/literal-config", move |config: String| {
+                Ok((LiteralConfig(Arc::clone(&plugin_seen)), config))
+            }),
+            "literal-config package should register",
         );
+        let profile = Profile { entries: vec![ProfileEntry {
+            id: jinnd_api::EntryId("ambient-config".to_owned()),
+            plugin: fixture_plugin("jinn.test/literal-config"),
+            config: expression.to_owned(),
+            disabled: false,
+            parent: None,
+            isolation: Vec::new(),
+        }] };
+        let report = expect_ok(kernel.reconcile(profile).await, "literal config should reconcile");
+        assert!(report.errors.is_empty());
+        assert_eq!(
+            seen.lock().unwrap_or_else(|poison| poison.into_inner()).as_slice(),
+            [expression],
+            "the expression-looking text is inert config, never evaluated",
+        );
+        assert!(!expect_ok(kernel.ledger_events(LedgerQuery::default()).await, "ledger after config")
+            .iter()
+            .any(|record| matches!(record.kind, LedgerEventKind::ContractCall { .. })));
     }
 }
 
@@ -260,9 +303,9 @@ spec_case! {
     body: |case| {
         let native_artifact = fixture_plugin("file://fixture.dylib");
         assert!(native_artifact.package.ends_with(".dylib"));
-        facade_gap_at(
+        v02_deferred_at(
             &case,
-            "the facade has no manifest backend declaration or validation surface to reject native libraries",
+            "constitution 05 Hosting: v0.1 enables only WASM and keeps subprocess disabled, so backend enumeration and native-manifest validation wait on the v0.2 subprocess sandbox amendment",
         );
     }
 }
@@ -275,10 +318,10 @@ spec_case! {
     setup: ["active consumer owns provider generation 1"],
     actions: ["replace provider with generation 2", "wait for quiescence"],
     expected: ["consumer tears down using generation 1", "a new activation captures generation 2", "no activation observes both"],
-    body: |case| {
+    body: |_case| {
         let kernel = jinnd_adapter::kernel();
         let root = kernel.root_context();
-        expect_ok(
+        let first_effect = expect_ok(
             kernel
                 .provide(root, Realm::Root, Arc::new(VersionedService(1)))
                 .await,
@@ -289,10 +332,15 @@ spec_case! {
             "generation one should resolve",
         );
         assert_eq!(first.service.observe(), 1);
-        facade_gap_at(
-            &case,
-            "the facade cannot withdraw a provided service effect before installing generation two",
+        expect_ok(kernel.dispose_effect(first_effect).await, "generation one should withdraw");
+        expect_ok(
+            kernel.provide(root, Realm::Root, Arc::new(VersionedService(2))).await,
+            "generation two should provide",
         );
+        let second = expect_ok(kernel.resolve::<VersionedService>(root), "generation two should resolve");
+        assert_eq!(second.service.observe(), 2);
+        assert!(second.generation > first.generation);
+        assert_eq!(first.service.observe(), 1, "the retained handle never silently retargets");
     }
 }
 
@@ -304,7 +352,7 @@ spec_case! {
     setup: ["plugin body increments an attempt counter then fails", "dependencies and config remain unchanged"],
     actions: ["advance virtual time repeatedly", "wait for quiescence repeatedly"],
     expected: ["fiber remains failed", "attempt counter stays exactly one", "no new transition or ledger retry event appears"],
-    body: |case| {
+    body: |_case| {
         let kernel = jinnd_adapter::kernel();
         let root = kernel.root_context();
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -322,6 +370,10 @@ spec_case! {
         );
         assert_eq!(kernel.state(fiber), FiberState::Failed);
         let transitions = kernel.transitions(fiber);
+        let ledger = expect_ok(
+            kernel.ledger_events(LedgerQuery::default()).await,
+            "initial failure should be recorded",
+        );
         for _ in 0..3 {
             tokio::task::yield_now().await;
             expect_ok(
@@ -332,9 +384,10 @@ spec_case! {
         assert_eq!(kernel.state(fiber), FiberState::Failed);
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert_eq!(kernel.transitions(fiber), transitions);
-        facade_gap_at(
-            &case,
-            "the facade proves stable attempts and transitions but exposes no ledger retry observation",
+        assert_eq!(
+            expect_ok(kernel.ledger_events(LedgerQuery::default()).await, "settled ledger"),
+            ledger,
+            "no retry event may appear against an unchanged environment",
         );
     }
 }

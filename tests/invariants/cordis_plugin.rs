@@ -1,10 +1,74 @@
 mod support;
 
-use jinnd_api::{EntryId, ErrorCode, Kernel, LedgerEventKind, LedgerQuery, WasmArtifact, WasmLane};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use jinnd_api::{
+    Activation, EntryId, ErrorCode, Kernel, KernelFuture, LedgerEventKind, LedgerQuery,
+    PluginContract, Undo, WasmArtifact, WasmLane,
+};
 use support::{expect_ok, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
-const FACADE_GAP_REASON: &str = "the facade has no dynamic fixture registry, nested plugin activation, root disposal, or context inspection API";
+const V02_DEFERRED_BOUND: &str = "constitution 04 makes the host-owned profile the v0.1 composition authority; plugins receive no registry iteration, root disposal, or context-reflection control contract";
+
+#[derive(Debug)]
+struct ConfigPlugin {
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+impl PluginContract for ConfigPlugin {
+    type Config = String;
+    type Dependencies = ();
+
+    const NAME: &'static str = "jinn.test/config-plugin";
+
+    fn activate<'a>(
+        &'a self,
+        _activation: Activation<'a, ()>,
+        config: String,
+    ) -> KernelFuture<'a, ()> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(config);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct CountUndo(Arc<AtomicUsize>);
+
+impl Undo for CountUndo {
+    fn undo(self: Box<Self>) -> KernelFuture<'static, ()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[derive(Debug)]
+struct InitializingPlugin {
+    initialized: Arc<AtomicUsize>,
+    undone: Arc<AtomicUsize>,
+}
+
+impl PluginContract for InitializingPlugin {
+    type Config = ();
+    type Dependencies = ();
+
+    const NAME: &'static str = "jinn.test/initializing-plugin";
+
+    fn activate<'a>(&'a self, activation: Activation<'a, ()>, _config: ()) -> KernelFuture<'a, ()> {
+        self.initialized.fetch_add(1, Ordering::SeqCst);
+        let undone = Arc::clone(&self.undone);
+        Box::pin(async move {
+            activation.effects.register(
+                "initialization undo".to_owned(),
+                Box::new(CountUndo(undone)),
+            )?;
+            Ok(())
+        })
+    }
+}
 
 spec_case! {
     /// TS origin: `packages/core/tests/plugin.spec.ts`, test `apply functional plugin`.
@@ -13,7 +77,17 @@ spec_case! {
     test: "apply functional plugin",
     setup: ["define a functional plugin contract and config foo=bar"],
     actions: ["spawn and await activation"],
-    expected: ["plugin body runs exactly once with the supplied config"]
+    expected: ["plugin body runs exactly once with the supplied config"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let fiber = expect_ok(
+            kernel.spawn(kernel.root_context(), ConfigPlugin { seen: Arc::clone(&seen) }, "foo=bar".to_owned()).await,
+            "functional fixture should spawn",
+        );
+        assert_eq!(kernel.state(fiber), jinnd_api::FiberState::Active);
+        assert_eq!(*seen.lock().unwrap_or_else(|poison| poison.into_inner()), vec!["foo=bar"]);
+    }
 }
 
 spec_case! {
@@ -23,7 +97,18 @@ spec_case! {
     test: "apply object plugin",
     setup: ["define a struct plugin contract and config bar=foo"],
     actions: ["spawn and await activation"],
-    expected: ["plugin body runs exactly once with the supplied config"]
+    expected: ["plugin body runs exactly once with the supplied config"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let plugin = ConfigPlugin { seen: Arc::clone(&seen) };
+        let fiber = expect_ok(
+            kernel.spawn(kernel.root_context(), plugin, "bar=foo".to_owned()).await,
+            "object fixture should spawn",
+        );
+        assert_eq!(kernel.state(fiber), jinnd_api::FiberState::Active);
+        assert_eq!(*seen.lock().unwrap_or_else(|poison| poison.into_inner()), vec!["bar=foo"]);
+    }
 }
 
 spec_case! {
@@ -148,5 +233,26 @@ spec_case! {
     test: "Service.init",
     setup: ["plugin initialization returns one undo"],
     actions: ["activate", "dispose"],
-    expected: ["initialization runs once before active", "undo runs once during disposal"]
+    expected: ["initialization runs once before active", "undo runs once during disposal"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let initialized = Arc::new(AtomicUsize::new(0));
+        let undone = Arc::new(AtomicUsize::new(0));
+        let fiber = expect_ok(
+            kernel.spawn(
+                kernel.root_context(),
+                InitializingPlugin {
+                    initialized: Arc::clone(&initialized),
+                    undone: Arc::clone(&undone),
+                },
+                (),
+            ).await,
+            "initializing fixture should spawn",
+        );
+        assert_eq!(initialized.load(Ordering::SeqCst), 1);
+        assert_eq!(undone.load(Ordering::SeqCst), 0);
+        expect_ok(kernel.dispose(fiber).await, "fixture should dispose");
+        expect_ok(kernel.dispose(fiber).await, "repeat disposal should be inert");
+        assert_eq!(undone.load(Ordering::SeqCst), 1);
+    }
 }

@@ -1,58 +1,35 @@
-cordis_associate::associated_accessor_preserves_getter_setter_semantics|FACADE_GAP
-cordis_associate::associated_value_gains_extension_only_with_dependency_snapshot|FACADE_GAP
-cordis_associate::nested_service_contract_is_withdrawn_without_parent_loss|FACADE_GAP
-cordis_associate::service_method_does_not_rewrite_argument_type_identity|FACADE_GAP
-cordis_associate::typed_extension_exposes_only_declared_capabilities|FACADE_GAP
-cordis_fiber::config_update_and_dependency_reload_use_one_coherent_snapshot|FACADE_GAP
-cordis_fiber::disposer_failure_is_contained_and_disposal_is_idempotent|FACADE_GAP
-cordis_fiber::inertia_lock_1_lands_each_started_transition_before_reconciling|FACADE_GAP
-cordis_fiber::inertia_lock_2_coalesces_dependency_return_during_loading|FACADE_GAP
-cordis_fiber::inertia_lock_3_provider_disposal_drains_consumer|FACADE_GAP
-cordis_fiber::plugin_failure_is_local_to_the_failed_fiber|FACADE_GAP
-cordis_handles::extended_service_handle_keeps_dependency_snapshot|FACADE_GAP
-cordis_handles::method_service_handle_exposes_explicit_caller_scope|FACADE_GAP
-cordis_handles::nested_service_handles_keep_caller_and_provider_scopes_distinct|FACADE_GAP
-cordis_handles::plain_capability_handle_carries_caller_without_proxy_state|FACADE_GAP
-cordis_handles::service_method_merges_base_intercept_extension_and_call_config|FACADE_GAP
-cordis_handles::service_spawn_uses_explicit_caller_context_without_proxy_leak|FACADE_GAP
-cordis_isolate::isolated_contexts_resolve_independent_service_slots|FACADE_GAP
-cordis_isolate::shared_realm_label_connects_separate_derived_contexts|FACADE_GAP
-cordis_logger::caller_intercept_overrides_handle_service_name|FACADE_GAP
-cordis_logger::diagnostic_intercept_overrides_default_source|FACADE_GAP
-cordis_logger::diagnostic_uses_fiber_name_outside_service_call|FACADE_GAP
-cordis_logger::diagnostic_uses_service_name_inside_handle_call|FACADE_GAP
-cordis_logger::explicit_diagnostic_source_overrides_fiber_name|FACADE_GAP
-cordis_logger::exporter_effect_removes_only_its_own_sink|FACADE_GAP
-cordis_logger::initialization_diagnostic_uses_plugin_identity|FACADE_GAP
-cordis_logger::ledger_diagnostic_buffer_is_stable_bounded_and_chronological|FACADE_GAP
-cordis_logger::nested_handle_calls_restore_outer_diagnostic_scope|FACADE_GAP
-cordis_plugin::context_diagnostics_report_stable_plugin_identity|FACADE_GAP
-cordis_plugin::functional_plugin_receives_typed_config_once|FACADE_GAP
-cordis_plugin::inactive_context_rejects_new_plugins_effects_and_listeners|FACADE_GAP
-cordis_plugin::initialization_returned_undo_runs_on_disposal|FACADE_GAP
-cordis_plugin::nested_plugin_removal_restores_hook_and_registry_snapshot|FACADE_GAP
-cordis_plugin::object_plugin_receives_typed_config_once|FACADE_GAP
-cordis_plugin::parent_disposal_cascades_through_nested_plugin_effects|FACADE_GAP
-cordis_plugin::registry_iteration_exposes_each_live_fiber_once|FACADE_GAP
-cordis_plugin::root_disposal_is_idempotent_and_cascades_to_children|FACADE_GAP
-cordis_reflect::derived_context_retains_kernel_context_identity|FACADE_GAP
-cordis_reflect::disposed_activation_cannot_reuse_its_dependency_snapshot|FACADE_GAP
-cordis_reflect::only_service_contracts_are_resolvable_as_services|FACADE_GAP
-cordis_reflect::service_access_requires_declared_read_or_provision_capability|FACADE_GAP
-cordis_service::dependency_chain_activates_each_provider_once|FACADE_GAP
-cordis_service::injected_handle_charges_effect_to_each_explicit_caller|FACADE_GAP
-cordis_service::injection_waits_for_provider_initialization|FACADE_GAP
-cordis_service::service_registration_and_removal_restore_registry_snapshot|FACADE_GAP
-cordis_service::unowned_handle_cannot_silently_charge_an_unrelated_fiber|FACADE_GAP
-hazard_absence::config_expression_lane_has_no_ambient_authority|FACADE_GAP
-hazard_absence::failed_fiber_does_not_retry_without_environment_change|FACADE_GAP
-hazard_absence::native_dynamic_library_backend_is_unrepresentable|FACADE_GAP
-hazard_absence::provider_generation_change_forces_consumer_unload_reload|FACADE_GAP
-hazard_absence::service_construction_cannot_mutate_context|FACADE_GAP
-invariant_confluence::randomized_history_is_observationally_equal_to_fresh_final_boot|FACADE_GAP
-invariant_ordering::consumer_can_call_dying_provider_during_its_teardown|FACADE_GAP
-invariant_ordering::one_activation_never_observes_mixed_provider_generations|FACADE_GAP
-invariant_progress::acyclic_dependency_precedence_always_reaches_quiescence|FACADE_GAP
-loader_group::nested_intercept_layers_preserve_right_biased_ancestry|FACADE_GAP
-loader_reconcile::loader_await_intercept_blocks_entry_behind_loading_dependency|FACADE_GAP
-loader_reconcile::loader_await_intercept_releases_when_tracked_loading_entry_settles|FACADE_GAP
+cordis_associate::associated_accessor_preserves_getter_setter_semantics|V02_DEFERRED: SOURCE-OF-TRUTH R4 and constitution 01 Mechanical closure: v0.1 exposes owned WIT broker handles, not Cordis in-process associated-value or proxy-extension reflection
+cordis_associate::associated_value_gains_extension_only_with_dependency_snapshot|V02_DEFERRED: SOURCE-OF-TRUTH R4 and constitution 01 Mechanical closure: v0.1 exposes owned WIT broker handles, not Cordis in-process associated-value or proxy-extension reflection
+cordis_associate::service_method_does_not_rewrite_argument_type_identity|V02_DEFERRED: SOURCE-OF-TRUTH R4 and constitution 01 Mechanical closure: v0.1 exposes owned WIT broker handles, not Cordis in-process associated-value or proxy-extension reflection
+cordis_associate::typed_extension_exposes_only_declared_capabilities|V02_DEFERRED: SOURCE-OF-TRUTH R4 and constitution 01 Mechanical closure: v0.1 exposes owned WIT broker handles, not Cordis in-process associated-value or proxy-extension reflection
+cordis_fiber::config_update_and_dependency_reload_use_one_coherent_snapshot|V02_DEFERRED: SOURCE-OF-TRUTH R7 and constitution 01 Mechanical closure: v0.1 has no in-process plugin host or public transition-control and failure-injection contract
+cordis_fiber::disposer_failure_is_contained_and_disposal_is_idempotent|V02_DEFERRED: SOURCE-OF-TRUTH R7 and constitution 01 Mechanical closure: v0.1 has no in-process plugin host or public transition-control and failure-injection contract
+cordis_fiber::inertia_lock_1_lands_each_started_transition_before_reconciling|V02_DEFERRED: SOURCE-OF-TRUTH R7 and constitution 01 Mechanical closure: v0.1 has no in-process plugin host or public transition-control and failure-injection contract
+cordis_fiber::inertia_lock_2_coalesces_dependency_return_during_loading|V02_DEFERRED: SOURCE-OF-TRUTH R7 and constitution 01 Mechanical closure: v0.1 has no in-process plugin host or public transition-control and failure-injection contract
+cordis_fiber::inertia_lock_3_provider_disposal_drains_consumer|V02_DEFERRED: SOURCE-OF-TRUTH R7 and constitution 01 Mechanical closure: v0.1 has no in-process plugin host or public transition-control and failure-injection contract
+cordis_fiber::plugin_failure_is_local_to_the_failed_fiber|V02_DEFERRED: SOURCE-OF-TRUTH R7 and constitution 01 Mechanical closure: v0.1 has no in-process plugin host or public transition-control and failure-injection contract
+cordis_logger::caller_intercept_overrides_handle_service_name|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::diagnostic_intercept_overrides_default_source|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::diagnostic_uses_fiber_name_outside_service_call|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::diagnostic_uses_service_name_inside_handle_call|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::explicit_diagnostic_source_overrides_fiber_name|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::exporter_effect_removes_only_its_own_sink|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::initialization_diagnostic_uses_plugin_identity|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::ledger_diagnostic_buffer_is_stable_bounded_and_chronological|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_logger::nested_handle_calls_restore_outer_diagnostic_scope|V02_DEFERRED: constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts
+cordis_plugin::context_diagnostics_report_stable_plugin_identity|V02_DEFERRED: constitution 04 makes the host-owned profile the v0.1 composition authority; plugins receive no registry iteration, root disposal, or context-reflection control contract
+cordis_plugin::inactive_context_rejects_new_plugins_effects_and_listeners|V02_DEFERRED: constitution 04 makes the host-owned profile the v0.1 composition authority; plugins receive no registry iteration, root disposal, or context-reflection control contract
+cordis_plugin::nested_plugin_removal_restores_hook_and_registry_snapshot|V02_DEFERRED: constitution 04 makes the host-owned profile the v0.1 composition authority; plugins receive no registry iteration, root disposal, or context-reflection control contract
+cordis_plugin::parent_disposal_cascades_through_nested_plugin_effects|V02_DEFERRED: constitution 04 makes the host-owned profile the v0.1 composition authority; plugins receive no registry iteration, root disposal, or context-reflection control contract
+cordis_plugin::registry_iteration_exposes_each_live_fiber_once|V02_DEFERRED: constitution 04 makes the host-owned profile the v0.1 composition authority; plugins receive no registry iteration, root disposal, or context-reflection control contract
+cordis_plugin::root_disposal_is_idempotent_and_cascades_to_children|V02_DEFERRED: constitution 04 makes the host-owned profile the v0.1 composition authority; plugins receive no registry iteration, root disposal, or context-reflection control contract
+cordis_reflect::derived_context_retains_kernel_context_identity|V02_DEFERRED: SOURCE-OF-TRUTH R3/R7 and constitution 01: v0.1 access is typed or WIT-brokered and exposes no arbitrary context-lineage or dynamic reflection contract
+cordis_reflect::disposed_activation_cannot_reuse_its_dependency_snapshot|V02_DEFERRED: SOURCE-OF-TRUTH R3/R7 and constitution 01: v0.1 access is typed or WIT-brokered and exposes no arbitrary context-lineage or dynamic reflection contract
+cordis_reflect::only_service_contracts_are_resolvable_as_services|V02_DEFERRED: SOURCE-OF-TRUTH R3/R7 and constitution 01: v0.1 access is typed or WIT-brokered and exposes no arbitrary context-lineage or dynamic reflection contract
+cordis_reflect::service_access_requires_declared_read_or_provision_capability|V02_DEFERRED: SOURCE-OF-TRUTH R3/R7 and constitution 01: v0.1 access is typed or WIT-brokered and exposes no arbitrary context-lineage or dynamic reflection contract
+cordis_service::injected_handle_charges_effect_to_each_explicit_caller|V02_DEFERRED: SOURCE-OF-TRUTH R4/R7 and constitution 01: v0.1 broker calls carry caller peers, but typed harness Arc handles expose no call boundary that can mint caller-owned effects
+cordis_service::unowned_handle_cannot_silently_charge_an_unrelated_fiber|V02_DEFERRED: SOURCE-OF-TRUTH R4/R7 and constitution 01: v0.1 broker calls carry caller peers, but typed harness Arc handles expose no call boundary that can mint caller-owned effects
+hazard_absence::native_dynamic_library_backend_is_unrepresentable|V02_DEFERRED: constitution 05 Hosting: v0.1 enables only WASM and keeps subprocess disabled, so backend enumeration and native-manifest validation wait on the v0.2 subprocess sandbox amendment
+loader_group::nested_intercept_layers_preserve_right_biased_ancestry|V02_DEFERRED: constitution 04 confines interception changes to profile-admin authority and defines no v0.1 plugin-visible intercept-chain inspection contract
+loader_reconcile::loader_await_intercept_blocks_entry_behind_loading_dependency|V02_DEFERRED: constitution 04 makes reconciliation kernel-owned and dependency readiness automatic in v0.1; no loader-as-service or await-intercept capability contract exists
+loader_reconcile::loader_await_intercept_releases_when_tracked_loading_entry_settles|V02_DEFERRED: constitution 04 makes reconciliation kernel-owned and dependency readiness automatic in v0.1; no loader-as-service or await-intercept capability contract exists

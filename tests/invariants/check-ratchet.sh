@@ -56,7 +56,7 @@ if [[ -n "$stale" ]]; then
   exit 1
 fi
 
-malformed=$(awk -F '|' 'NF != 2 || ($2 != "NO_KERNEL" && $2 != "FACADE_GAP")' "$expected_red")
+malformed=$(awk -F '|' 'NF != 2 || ($2 != "NO_KERNEL" && $2 !~ /^V02_DEFERRED: .+/)' "$expected_red")
 if [[ -n "$malformed" ]]; then
   echo "ratchet: expected-red-reasons contains malformed entries:"
   echo "$malformed"
@@ -97,7 +97,7 @@ case_count=0
 green_count=0
 red_count=0
 no_kernel_count=0
-facade_gap_count=0
+v02_deferred_count=0
 
 while IFS= read -r case_id; do
   target=${case_id%%::*}
@@ -128,9 +128,9 @@ while IFS= read -r case_id; do
       reason_needle='NO_KERNEL:'
       no_kernel_count=$((no_kernel_count + 1))
       ;;
-    FACADE_GAP)
-      reason_needle='FACADE_GAP:'
-      facade_gap_count=$((facade_gap_count + 1))
+    V02_DEFERRED:*)
+      reason_needle="$expected_reason"
+      v02_deferred_count=$((v02_deferred_count + 1))
       ;;
   esac
 
@@ -142,4 +142,4 @@ while IFS= read -r case_id; do
   red_count=$((red_count + 1))
 done <"$actual_cases"
 
-echo "ratchet: ok; cases=$case_count expected-green=$green_count expected-red=$red_count no-kernel=$no_kernel_count facade-gap=$facade_gap_count"
+echo "ratchet: ok; cases=$case_count expected-green=$green_count expected-red=$red_count no-kernel=$no_kernel_count v02-deferred=$v02_deferred_count"

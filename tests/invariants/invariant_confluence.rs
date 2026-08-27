@@ -1,4 +1,7 @@
-use jinnd_api::{Kernel, Profile};
+use jinnd_api::{
+    Activation, EntryId, ErrorCode, FiberState, Kernel, KernelError, KernelFuture, PluginContract,
+    PluginRef, Profile, ProfileEntry, Undo,
+};
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -25,21 +28,95 @@ fn history_op() -> impl Strategy<Value = HistoryOp> {
     })
 }
 
-fn touch_fields(history: &[HistoryOp]) -> u64 {
-    history.iter().fold(0_u64, |checksum, operation| {
-        checksum
-            ^ match operation {
-                HistoryOp::Load { entry } => u64::from(*entry),
-                HistoryOp::Unload { entry } => 16 + u64::from(*entry),
-                HistoryOp::Crash { entry } => 32 + u64::from(*entry),
-                HistoryOp::HotSwap { entry, generation } => {
-                    48 + u64::from(*entry) + u64::from(*generation)
-                }
-                HistoryOp::ConfigEdit { entry, value } => {
-                    64 + u64::from(*entry) + u64::from(*value)
-                }
+struct Noop;
+
+impl Undo for Noop {
+    fn undo(self: Box<Self>) -> KernelFuture<'static, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[derive(Debug)]
+struct ConfluencePlugin;
+
+impl PluginContract for ConfluencePlugin {
+    type Config = u8;
+    type Dependencies = ();
+
+    const NAME: &'static str = "jinn.test/confluence";
+
+    fn activate<'a>(&'a self, activation: Activation<'a, ()>, config: u8) -> KernelFuture<'a, ()> {
+        Box::pin(async move {
+            activation
+                .effects
+                .register(format!("config {config}"), Box::new(Noop))?;
+            if config == u8::MAX {
+                return Err(KernelError {
+                    code: ErrorCode::PluginFailed,
+                    message: "history crash".to_owned(),
+                    fiber: None,
+                });
             }
-    })
+            Ok(())
+        })
+    }
+}
+
+fn profile(state: &[Option<u8>; 4]) -> Profile<u8> {
+    Profile {
+        entries: state
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                value.map(|config| ProfileEntry {
+                    id: EntryId(format!("entry-{index}")),
+                    plugin: PluginRef {
+                        package: ConfluencePlugin::NAME.to_owned(),
+                        version: "1".to_owned(),
+                        artifact_hash: String::new(),
+                    },
+                    config,
+                    disabled: false,
+                    parent: None,
+                    isolation: Vec::new(),
+                })
+            })
+            .collect(),
+    }
+}
+
+fn apply(state: &mut [Option<u8>; 4], operation: &HistoryOp) {
+    let (entry, value) = match operation {
+        HistoryOp::Load { entry } => (*entry, Some(0)),
+        HistoryOp::Unload { entry } => (*entry, None),
+        HistoryOp::Crash { entry } => (*entry, Some(u8::MAX)),
+        HistoryOp::HotSwap { entry, generation } => (*entry, Some(*generation)),
+        HistoryOp::ConfigEdit { entry, value } => (*entry, Some(*value)),
+    };
+    state[usize::from(entry)] = value;
+}
+
+fn snapshot(
+    kernel: &impl Kernel,
+    state: &[Option<u8>; 4],
+) -> Vec<(usize, FiberState, Vec<String>)> {
+    state
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            value.map(|_| {
+                let fiber = kernel
+                    .entry_fiber(&EntryId(format!("entry-{index}")))
+                    .unwrap_or_else(|| panic!("live entry {index} should have a fiber"));
+                let labels = kernel
+                    .effect_tree(fiber)
+                    .into_iter()
+                    .map(|effect| effect.label)
+                    .collect();
+                (index, kernel.state(fiber), labels)
+            })
+        })
+        .collect()
 }
 
 proptest! {
@@ -54,22 +131,42 @@ proptest! {
     fn randomized_history_is_observationally_equal_to_fresh_final_boot(
         history in prop::collection::vec(history_op(), 1..65),
     ) {
-        let checksum = touch_fields(&history);
-        let kernel = jinnd_adapter::kernel();
-        let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
-            prop_assert!(false, "the invariant test runtime must build");
-            return Ok(());
-        };
-        let report = runtime.block_on(kernel.reconcile(Profile::<u8> { entries: Vec::new() }));
-        if let Ok(report) = report {
-            prop_assert!(report.created.is_empty());
-            prop_assert!(report.restarted.is_empty());
-            prop_assert!(report.disposed.is_empty());
-            prop_assert!(report.unchanged.is_empty());
-        }
-        prop_assert!(
-            false,
-            "FACADE_GAP: the facade has no history-operation driver, fresh-boot constructor, or whole-kernel observational-equivalence snapshot; generated_history={history:?}; checksum={checksum}"
-        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap_or_else(|error| panic!("invariant runtime: {error}"));
+        runtime.block_on(async {
+            let historical = jinnd_adapter::kernel();
+            historical
+                .register_package(ConfluencePlugin::NAME, |config: u8| Ok((ConfluencePlugin, config)))
+                .unwrap_or_else(|error| panic!("historical lane: {error:?}"));
+            let mut final_state = [None, None, None, None];
+            for operation in &history {
+                apply(&mut final_state, operation);
+                historical
+                    .reconcile(profile(&final_state))
+                    .await
+                    .unwrap_or_else(|error| panic!("history reconcile: {error:?}"));
+                historical
+                    .wait_for_quiescence()
+                    .await
+                    .unwrap_or_else(|error| panic!("history quiescence: {error:?}"));
+            }
+
+            let fresh = jinnd_adapter::kernel();
+            fresh
+                .register_package(ConfluencePlugin::NAME, |config: u8| Ok((ConfluencePlugin, config)))
+                .unwrap_or_else(|error| panic!("fresh lane: {error:?}"));
+            fresh
+                .reconcile(profile(&final_state))
+                .await
+                .unwrap_or_else(|error| panic!("fresh reconcile: {error:?}"));
+            fresh
+                .wait_for_quiescence()
+                .await
+                .unwrap_or_else(|error| panic!("fresh quiescence: {error:?}"));
+
+            prop_assert_eq!(snapshot(&historical, &final_state), snapshot(&fresh, &final_state));
+            Ok(())
+        })?;
     }
 }

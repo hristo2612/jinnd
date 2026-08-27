@@ -11,10 +11,6 @@ use jinnd_api::{
 use loader_fixture::{CONSUMER, Config, PROVIDER, SERVICE};
 use support::{expect_ok, spec_case};
 
-const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
-const FACADE_GAP_REASON: &str =
-    "the facade cannot declare dependencies or invoke a dying service from consumer teardown";
-
 #[derive(Debug)]
 struct StableService(u32);
 
@@ -106,7 +102,42 @@ spec_case! {
     test: "consumer may call dying provider during teardown",
     setup: ["active provider and consumer with one owned dependency snapshot", "consumer undo calls provider method"],
     actions: ["dispose provider and wait for quiescence"],
-    expected: ["provider slot stops accepting new resolutions before teardown", "existing consumer handle remains callable during consumer undo", "consumer finishes before provider value disappears"]
+    expected: ["provider slot stops accepting new resolutions before teardown", "existing consumer handle remains callable during consumer undo", "consumer finishes before provider value disappears"],
+    body: |_case| {
+        const PROVIDER_PACKAGE: &str = "jinn.test/ordering-provider";
+        const CONSUMER_PACKAGE: &str = "jinn.test/ordering-consumer";
+        let kernel = jinnd_adapter::kernel();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        expect_ok(
+            kernel.register_provider_package(PROVIDER_PACKAGE, |value: u32| Ok(Arc::new(StableService(value)))),
+            "provider lane should register",
+        );
+        let teardown = Arc::clone(&observations);
+        expect_ok(
+            kernel.register_package(CONSUMER_PACKAGE, move |config: u32| Ok((StableConsumer(Arc::clone(&teardown)), config))),
+            "consumer lane should register",
+        );
+        let profile = vec![
+            stable_entry("provider-call", PROVIDER_PACKAGE, 73),
+            stable_entry("consumer-call", CONSUMER_PACKAGE, 0),
+        ];
+        let report = expect_ok(kernel.reconcile(Profile { entries: profile }).await, "profile should reconcile");
+        assert!(report.errors.is_empty());
+        expect_ok(kernel.wait_for_quiescence().await, "profile should quiesce");
+        expect_ok(
+            kernel.dispose_entry::<u32>(&jinnd_api::EntryId("provider-call".to_owned())).await,
+            "provider should drain through its consumer",
+        );
+        assert_eq!(
+            observations.lock().unwrap_or_else(|poison| poison.into_inner()).as_slice(),
+            [73],
+            "the consumer undo called the dying provider before its value disappeared",
+        );
+        assert_eq!(
+            kernel.resolve::<StableService>(kernel.root_context()).err().map(|error| error.code),
+            Some(jinnd_api::ErrorCode::MissingDependency),
+        );
+    }
 }
 
 spec_case! {
@@ -178,7 +209,33 @@ spec_case! {
     test: "one resolution per transition",
     setup: ["consumer owns two calls through one provider dependency snapshot"],
     actions: ["hot-swap provider between the two scheduled calls"],
-    expected: ["first activation sees one generation only", "consumer fully unloads before a new activation captures replacement generation"]
+    expected: ["first activation sees one generation only", "consumer fully unloads before a new activation captures replacement generation"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let log = loader_fixture::log();
+        loader_fixture::register(&kernel, &log);
+        loader_fixture::reconcile(
+            &kernel,
+            vec![
+                loader_fixture::entry("generation-provider", PROVIDER, 1),
+                loader_fixture::entry("generation-consumer", CONSUMER, 0),
+            ],
+        ).await;
+        assert_eq!(loader_fixture::observations(&log, "generation-consumer").len(), 1);
+        expect_ok(
+            kernel.update_entry(&loader_fixture::id("generation-provider"), Config {
+                entry: "generation-provider".to_owned(),
+                value: 2,
+            }).await,
+            "provider generation should update",
+        );
+        expect_ok(kernel.wait_for_quiescence().await, "generation update should settle");
+        let observations = loader_fixture::observations(&log, "generation-consumer");
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].0, 1);
+        assert_eq!(observations[1].0, 2);
+        assert!(observations[1].1 > observations[0].1);
+    }
 }
 
 spec_case! {
