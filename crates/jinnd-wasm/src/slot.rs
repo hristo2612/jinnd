@@ -51,7 +51,10 @@ impl SeatState {
     /// inverses run against the instance that registered them, then the
     /// listeners withdraw, then the provisions, then the instance disposes
     /// (R7 instant dispose). The first failing inverse is reported after the
-    /// remaining withdrawal still ran (R9, R11).
+    /// remaining withdrawal still ran (R9, R11). With a `ledger`, every
+    /// effect and listener withdrawal is appended under its registration
+    /// label — the seat is where the labels live, so the dispose trail is
+    /// exactly complete (Law 2).
     ///
     /// # Errors
     ///
@@ -61,15 +64,35 @@ impl SeatState {
         broker: &Broker,
         topics: &LocalTopics,
         peer: PeerId,
+        ledger: Option<(&dyn LedgerSink, FiberId)>,
     ) -> Result<(), KernelError> {
         let mut first = None;
-        for (_, token) in self.effects.iter().rev() {
-            if let Err(error) = self.instance.undo(*token).await {
+        for (label, token) in self.effects.iter().rev() {
+            let outcome = self.instance.undo(*token).await;
+            if let Some((sink, fiber)) = ledger {
+                sink.append(
+                    LedgerEventKind::EffectWithdrawn {
+                        label: label.clone(),
+                        clean: outcome.is_ok(),
+                    },
+                    Some(fiber),
+                );
+            }
+            if let Err(error) = outcome {
                 first.get_or_insert(error);
             }
         }
         for id in &self.listens {
-            topics.unlisten(*id);
+            let topic = topics.unlisten(*id);
+            if let (Some((sink, fiber)), Some(topic)) = (ledger, topic) {
+                sink.append(
+                    LedgerEventKind::EffectWithdrawn {
+                        label: format!("listen {topic}"),
+                        clean: true,
+                    },
+                    Some(fiber),
+                );
+            }
         }
         for contract in &self.provisions {
             broker.withdraw(peer, contract);

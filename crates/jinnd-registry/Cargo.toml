@@ -14,7 +14,9 @@ workspace = true
 loom = ["dep:loom"]
 
 [dependencies]
-jinnd-api = { path = "../jinnd-api" }
+# Types-only contract, WITHOUT the harness lane: production crates never see
+# the in-proc facade (test-harness ruling 2026-08-25; Law 1, M1-P9 gate).
+jinnd-api = { path = "../jinnd-api", default-features = false }
 jinnd-context = { path = "../jinnd-context" }
 jinnd-effects = { path = "../jinnd-effects" }
 jinnd-fiber = { path = "../jinnd-fiber" }

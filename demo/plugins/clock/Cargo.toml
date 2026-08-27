@@ -1,0 +1,29 @@
+# M1 demo plugin `clock`: provides the `demo:clock` contract (a monotonic
+# tick), hands its counter across Mode-1 swaps via snapshot/restore. Built
+# from source by demo/builder — no artifact binary is checked in.
+#
+# Feature `v2` changes the reported version (a byte-distinct healthy swap
+# target); feature `broken-restore` refuses every handoff (a swap rollback
+# demonstrator).
+[package]
+name = "demo-clock"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+v2 = []
+broken-restore = []
+
+[dependencies]
+# Guest-side bindings of wit/plugin.wit. A demo dependency only: it never
+# enters the kernel workspace's dependency graph (R10).
+wit-bindgen = "0.43.0"
+
+# Deliberately NOT a member of the kernel workspace: this crate compiles for
+# wasm32-unknown-unknown only.
+[workspace]

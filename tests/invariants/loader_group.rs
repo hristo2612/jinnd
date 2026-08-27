@@ -5,8 +5,7 @@ mod support;
 use support::spec_case;
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
-const FACADE_GAP_REASON: &str =
-    "the facade has no profile-intercept declaration or intercept-chain observation API";
+const V02_DEFERRED_BOUND: &str = "constitution 04 confines interception changes to profile-admin authority and defines no v0.1 plugin-visible intercept-chain inspection contract";
 
 spec_case! {
     /// TS origin: `packages/loader/tests/group.spec.ts`, test `Group: basic support / initialize`.

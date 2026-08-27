@@ -3,8 +3,7 @@ mod support;
 use support::spec_case;
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Context;
-const FACADE_GAP_REASON: &str =
-    "the facade exposes no logger, bounded-buffer, exporter, or intercept-name observation surface";
+const V02_DEFERRED_BOUND: &str = "constitution 02 makes the append-only ledger the v0.1 diagnostic record; Cordis mutable logger buffers, exporters, and source-intercept inspection are not capability contracts";
 
 spec_case! {
     /// TS origin: `packages/core/tests/logger.spec.ts`, test `keeps the bounded buffer in place and chronological`.

@@ -8,10 +8,6 @@ use jinnd_api::{
 };
 use support::{Listener, expect_ok, ready, spec_case};
 
-const SUBSYSTEM: support::Subsystem = support::Subsystem::Context;
-const FACADE_GAP_REASON: &str =
-    "the facade cannot withdraw a provided service effect or observe isolation-aware event routing";
-
 #[derive(Debug)]
 struct RootVisible(u8);
 
@@ -98,7 +94,43 @@ spec_case! {
     test: "isolated context",
     setup: ["root and two child contexts inject one typed service in distinct local realms"],
     actions: ["provide and withdraw root, child-one, and child-two generations"],
-    expected: ["each consumer activates only for its own realm", "withdrawal unloads only the matching consumer"]
+    expected: ["each consumer resolves only its own realm", "withdrawal removes only the matching slot"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let root = kernel.root_context();
+        let one_realm = Realm::Local(jinnd_api::EntryId("one".to_owned()));
+        let two_realm = Realm::Local(jinnd_api::EntryId("two".to_owned()));
+        let one = kernel.derive_context(root, vec![IsolationBinding {
+            service: RootVisible::NAME.to_owned(),
+            realm: one_realm.clone(),
+        }]);
+        let two = kernel.derive_context(root, vec![IsolationBinding {
+            service: RootVisible::NAME.to_owned(),
+            realm: two_realm.clone(),
+        }]);
+        let root_effect = expect_ok(
+            kernel.provide(root, Realm::Root, Arc::new(RootVisible(1))).await,
+            "root slot should provide",
+        );
+        let one_effect = expect_ok(
+            kernel.provide(one, one_realm, Arc::new(RootVisible(2))).await,
+            "first local slot should provide",
+        );
+        let two_effect = expect_ok(
+            kernel.provide(two, two_realm, Arc::new(RootVisible(3))).await,
+            "second local slot should provide",
+        );
+        assert_eq!(expect_ok(kernel.resolve::<RootVisible>(root), "root").service.observe(), 1);
+        assert_eq!(expect_ok(kernel.resolve::<RootVisible>(one), "one").service.observe(), 2);
+        assert_eq!(expect_ok(kernel.resolve::<RootVisible>(two), "two").service.observe(), 3);
+
+        expect_ok(kernel.dispose_effect(one_effect).await, "withdraw first local slot");
+        assert_eq!(kernel.resolve::<RootVisible>(one).err().map(|error| error.code), Some(ErrorCode::MissingDependency));
+        assert_eq!(expect_ok(kernel.resolve::<RootVisible>(two), "two remains").service.observe(), 3);
+        assert_eq!(expect_ok(kernel.resolve::<RootVisible>(root), "root remains").service.observe(), 1);
+        expect_ok(kernel.dispose_effect(two_effect).await, "withdraw second local slot");
+        expect_ok(kernel.dispose_effect(root_effect).await, "withdraw root slot");
+    }
 }
 
 spec_case! {
@@ -108,7 +140,31 @@ spec_case! {
     test: "shared label",
     setup: ["two child contexts map a service to the same shared realm"],
     actions: ["provide and withdraw a value through the first child"],
-    expected: ["both children resolve the same generation", "both consumers activate and unload together", "root realm remains independent"]
+    expected: ["both children resolve the same generation", "withdrawal removes the shared slot from both", "root realm remains independent"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let root = kernel.root_context();
+        let shared = Realm::Shared("shared".to_owned());
+        let binding = IsolationBinding {
+            service: RootVisible::NAME.to_owned(),
+            realm: shared.clone(),
+        };
+        let one = kernel.derive_context(root, vec![binding.clone()]);
+        let two = kernel.derive_context(root, vec![binding]);
+        let effect = expect_ok(
+            kernel.provide(one, shared, Arc::new(RootVisible(9))).await,
+            "shared slot should provide",
+        );
+        let first = expect_ok(kernel.resolve::<RootVisible>(one), "first child");
+        let second = expect_ok(kernel.resolve::<RootVisible>(two), "second child");
+        assert_eq!(first.service.observe(), 9);
+        assert_eq!(second.service.observe(), 9);
+        assert_eq!(first.generation, second.generation);
+        assert_eq!(kernel.resolve::<RootVisible>(root).err().map(|error| error.code), Some(ErrorCode::MissingDependency));
+        expect_ok(kernel.dispose_effect(effect).await, "withdraw shared slot");
+        assert_eq!(kernel.resolve::<RootVisible>(one).err().map(|error| error.code), Some(ErrorCode::MissingDependency));
+        assert_eq!(kernel.resolve::<RootVisible>(two).err().map(|error| error.code), Some(ErrorCode::MissingDependency));
+    }
 }
 
 spec_case! {

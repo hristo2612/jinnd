@@ -104,8 +104,16 @@ async fn selector_and_unlisten_gate_delivery() {
         .await;
     assert_eq!(report.outputs, vec![b"in".to_vec()]);
 
-    topics.unlisten(selected);
-    topics.unlisten(selected);
+    assert_eq!(
+        topics.unlisten(selected),
+        Some("t".to_owned()),
+        "withdrawal returns the topic — the caller's Law-2 label"
+    );
+    assert_eq!(
+        topics.unlisten(selected),
+        None,
+        "idempotent: the second withdrawal is a no-op"
+    );
     let after = topics
         .emit(
             0,

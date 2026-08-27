@@ -1,0 +1,19 @@
+# M1 demo plugin `greeter`: consumes `demo:clock`, provides `demo:greeting`,
+# and announces every greeting on the `demo:announce` topic. Built from
+# source by demo/builder — no artifact binary is checked in.
+[package]
+name = "demo-greeter"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Guest-side bindings of wit/plugin.wit. A demo dependency only (R10).
+wit-bindgen = "0.43.0"
+
+# Deliberately NOT a member of the kernel workspace.
+[workspace]
