@@ -189,9 +189,12 @@ dependencies = [
  "jinnd-effects",
  "jinnd-events",
  "jinnd-fiber",
+ "jinnd-ledger",
  "jinnd-loader",
  "jinnd-registry",
+ "serde",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

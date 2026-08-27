@@ -2,11 +2,60 @@
 
 use std::sync::Mutex;
 
-use jinnd_api::{Activation, Inject, KernelFuture, PluginContract};
+use jinnd_api::{
+    Activation, EffectHost, ErrorCode, Inject, KernelError, KernelFuture, PluginContract, Undo,
+};
 use jinnd_context::Context;
 use jinnd_effects::Disposer;
 use jinnd_fiber::{FiberBody, Setup};
 use jinnd_registry::{ActivationResolver, Registry};
+
+/// The teardown-effect registrar handed to one activation (authorized M1-P7
+/// additive delta: I2 teardown-time observation). Effects collected here are
+/// flushed into the activation's scope after the plugin body settles —
+/// success or failure alike, so a failing activation still owes its
+/// registered inverses (I1) — and replay LIFO before the injected-service
+/// leases return, so a teardown effect may still observe its dying
+/// dependencies (I2).
+/// One collected teardown effect: its label and its inverse.
+type Collected = (String, Box<dyn Undo>);
+
+pub(crate) struct HostedEffects {
+    collected: Mutex<Option<Vec<Collected>>>,
+}
+
+impl HostedEffects {
+    pub(crate) fn new() -> Self {
+        Self {
+            collected: Mutex::new(Some(Vec::new())),
+        }
+    }
+
+    /// Flushes what the activation registered into its fiber scope, in
+    /// registration order, and closes the host.
+    pub(crate) fn flush(&self, setup: &mut Setup<'_>) -> Result<(), KernelError> {
+        let drained = crate::lock(&self.collected).take().unwrap_or_default();
+        for (label, undo) in drained {
+            setup.effect(label, Disposer::Whole(undo))?;
+        }
+        Ok(())
+    }
+}
+
+impl EffectHost for HostedEffects {
+    fn register(&self, label: String, undo: Box<dyn Undo>) -> Result<(), KernelError> {
+        match &mut *crate::lock(&self.collected) {
+            Some(list) => {
+                list.push((label, undo));
+                Ok(())
+            }
+            None => Err(crate::error(
+                ErrorCode::InactiveContext,
+                "the activation has settled; its teardown effects are closed",
+            )),
+        }
+    }
+}
 
 /// One facade plugin behind the fiber engine's body seam.
 ///
@@ -78,16 +127,24 @@ impl<P: PluginContract> FiberBody for FacadeBody<P> {
                     }),
                 )?;
             }
-            self.plugin
+            let host = HostedEffects::new();
+            let outcome = self
+                .plugin
                 .activate(
                     Activation {
                         context: at.id(),
                         fiber,
                         dependencies: &dependencies,
+                        effects: &host,
                     },
                     config,
                 )
-                .await
+                .await;
+            // Flushed on success AND failure: a failing activation still owes
+            // the inverses it registered (I1); the plugin's own error outranks
+            // a flush refusal.
+            let flushed = host.flush(&mut setup);
+            outcome.and(flushed)
         })
     }
 }

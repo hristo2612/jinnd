@@ -18,6 +18,8 @@
 #![forbid(unsafe_code)]
 
 mod body;
+mod boundary;
+mod providing;
 mod wiring;
 
 use std::collections::HashMap;
@@ -27,14 +29,16 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{
     ContextId, DispatchReport, EffectDescriptor, EffectId, EntryId, ErrorCode, Event,
-    EventListener, FiberId, FiberState, Inject, IsolationBinding, Kernel, KernelError,
-    KernelFuture, PluginContract, Profile, Realm, ReconcileReport, ServiceContract, ServiceHandle,
-    Transition, TransitionCause, Undo,
+    EventListener, FiberId, FiberState, ForwardEffect, Inject, IsolationBinding, Kernel,
+    KernelError, KernelFuture, LedgerEventKind, LedgerQuery, LedgerRecord, PluginContract, Profile,
+    Realm, ReconcileReport, RevertKey, RevertResolution, ServiceContract, ServiceHandle,
+    Transition, TransitionCause, Undo, Witness,
 };
 use jinnd_context::{Context, ContextTree};
 use jinnd_effects::{Disposer, EffectScope};
 use jinnd_events::{EventBus, Registration};
 use jinnd_fiber::Fiber;
+use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::Loader;
 use jinnd_registry::{Injection, Registry, Vitality};
 
@@ -63,9 +67,20 @@ struct Adapter {
     /// one registration by its effect id; removal stays idempotent with the
     /// same undo held by the kernel scope.
     listeners: Mutex<HashMap<EffectId, Registration>>,
-    kernel_scope: Mutex<EffectScope>,
+    kernel_scope: Arc<Mutex<EffectScope>>,
     /// The kernel pseudo-fiber's vitality: always Active, never reported away.
     kernel_vitality: Vitality,
+    /// The device-local append-only event stream (R6; in-memory for the
+    /// conformance-harness lane — same semantics, no device durability).
+    ledger: Ledger,
+    /// The keyed exactly-once revert lane over the ledger (constitution 03).
+    revert: RevertLane,
+    /// Forward effects begun and not yet disposed (M1-P7).
+    pending: boundary::PendingMap,
+    /// How many of each fiber's transitions the ledger has already seen.
+    recorded_transitions: Mutex<HashMap<FiberId, usize>>,
+    /// Where the raw document of record persists, once attached.
+    document_path: Mutex<Option<std::path::PathBuf>>,
 }
 
 /// Returns the facade kernel used by verifier-owned invariant tests.
@@ -87,6 +102,10 @@ pub fn kernel() -> impl Kernel {
             lock(&minted).insert(context.id(), context);
         },
     ));
+    // The harness ledger opens in memory; a refusal here is a broken harness,
+    // not a recoverable kernel state, so the panic is the honest answer.
+    let ledger = Ledger::open_in_memory()
+        .unwrap_or_else(|error| panic!("the harness ledger must open: {error}"));
     Adapter {
         root,
         contexts,
@@ -95,8 +114,13 @@ pub fn kernel() -> impl Kernel {
         loader,
         events: EventBus::new(),
         listeners: Mutex::new(HashMap::new()),
-        kernel_scope: Mutex::new(EffectScope::new()),
+        kernel_scope: Arc::new(Mutex::new(EffectScope::new())),
         kernel_vitality,
+        revert: RevertLane::new(ledger.clone()),
+        ledger,
+        pending: Mutex::new(HashMap::new()),
+        recorded_transitions: Mutex::new(HashMap::new()),
+        document_path: Mutex::new(None),
     }
 }
 
@@ -178,6 +202,69 @@ impl Adapter {
         registered
     }
 
+    /// Emits every committed transition the ledger has not yet seen for
+    /// `fiber` (R6: transitions are ledger events). No lock is held across an
+    /// await or into plugin code — emission is the ordered, unreceipted lane.
+    fn sync_transitions(&self, fiber: FiberId) {
+        let transitions = lock(&self.fibers)
+            .get(&fiber)
+            .map(|entry| entry.fiber.record().transitions);
+        let Some(transitions) = transitions else {
+            return;
+        };
+        let mut seen = lock(&self.recorded_transitions);
+        let count = seen.entry(fiber).or_insert(0);
+        for transition in transitions.iter().skip(*count) {
+            self.ledger.record(
+                LedgerEventKind::FiberTransition(transition.clone()),
+                None,
+                Some(fiber),
+            );
+        }
+        *count = transitions.len();
+    }
+
+    fn sync_all_transitions(&self) {
+        let ids: Vec<FiberId> = lock(&self.fibers).keys().copied().collect();
+        for id in ids {
+            self.sync_transitions(id);
+        }
+    }
+
+    /// Records one amendment attempt, accepted or refused, attributed to its
+    /// entry (R6; constitution 02 family 4). An accepted amendment committed
+    /// the document of record, so a write-back event follows it.
+    fn record_amendment(&self, entry: &EntryId, verb: &str, outcome: &Result<(), KernelError>) {
+        match outcome {
+            Ok(()) => {
+                self.ledger.record(
+                    LedgerEventKind::AmendmentAccepted {
+                        detail: format!("{verb} {}", entry.0),
+                    },
+                    Some(entry.clone()),
+                    self.loader.entry_fiber(entry),
+                );
+                self.ledger.record(
+                    LedgerEventKind::WriteBack {
+                        detail: format!("{verb} {}", entry.0),
+                    },
+                    Some(entry.clone()),
+                    None,
+                );
+                self.sync_all_transitions();
+            }
+            Err(refusal) => {
+                self.ledger.record(
+                    LedgerEventKind::AmendmentRefused {
+                        detail: format!("{verb} {}: {}", entry.0, refusal.message),
+                    },
+                    Some(entry.clone()),
+                    self.loader.entry_fiber(entry),
+                );
+            }
+        }
+    }
+
     /// Validates the caller and runs one full mode walk on the bus.
     async fn report<E: Event>(
         &self,
@@ -241,6 +328,7 @@ impl Kernel for Adapter {
             });
             lock(&self.fibers).insert(id, Arc::clone(&entry));
             entry.fiber.quiesce().await;
+            self.sync_transitions(id);
             Ok(id)
         })
     }
@@ -257,6 +345,7 @@ impl Kernel for Adapter {
             body.state_config(config);
             entry.fiber.restart(TransitionCause::ConfigChanged);
             entry.fiber.quiesce().await;
+            self.sync_transitions(fiber);
             Ok(())
         })
     }
@@ -266,6 +355,7 @@ impl Kernel for Adapter {
             let entry = self.entry(fiber)?;
             entry.fiber.restart(TransitionCause::ExplicitRestart);
             entry.fiber.quiesce().await;
+            self.sync_transitions(fiber);
             Ok(())
         })
     }
@@ -274,6 +364,7 @@ impl Kernel for Adapter {
         Box::pin(async move {
             let entry = self.entry(fiber)?;
             entry.fiber.dispose().await;
+            self.sync_transitions(fiber);
             Ok(())
         })
     }
@@ -336,11 +427,19 @@ impl Kernel for Adapter {
             // The kernel scope's provisions carry the same drain-then-undo
             // shape (I2); every facade provision shares the kernel
             // pseudo-fiber, so re-providing here is the hot-swap lane.
-            lock(&self.kernel_scope).register_draining(
+            let registered = lock(&self.kernel_scope).register_draining(
                 format!("provide {}", S::NAME),
                 provision.drain,
                 provision.undo,
-            )
+            )?;
+            self.ledger.record(
+                LedgerEventKind::ServiceProvided {
+                    service: S::NAME.to_owned(),
+                },
+                None,
+                Some(KERNEL_SCOPE),
+            );
+            Ok(registered)
         })
     }
 
@@ -358,7 +457,13 @@ impl Kernel for Adapter {
         undo: Box<dyn Undo>,
     ) -> Result<EffectId, KernelError> {
         self.context(context)?;
-        lock(&self.kernel_scope).register(label, Disposer::Whole(undo))
+        let registered = lock(&self.kernel_scope).register(label.clone(), Disposer::Whole(undo))?;
+        self.ledger.record(
+            LedgerEventKind::EffectRegistered { label },
+            None,
+            Some(KERNEL_SCOPE),
+        );
+        Ok(registered)
     }
 
     fn effect_tree(&self, fiber: FiberId) -> Vec<EffectDescriptor> {
@@ -429,7 +534,35 @@ impl Kernel for Adapter {
         &self,
         profile: Profile<C>,
     ) -> KernelFuture<'_, ReconcileReport> {
-        Box::pin(async move { self.loader.reconcile(profile).await })
+        Box::pin(async move {
+            let report = self.loader.reconcile(profile).await?;
+            self.ledger.record(
+                LedgerEventKind::WriteBack {
+                    detail: format!(
+                        "reconcile: {} created, {} restarted, {} disposed, {} unchanged",
+                        report.created.len(),
+                        report.restarted.len(),
+                        report.disposed.len(),
+                        report.unchanged.len()
+                    ),
+                },
+                None,
+                None,
+            );
+            // The error→entry rule: every contained fault is reachable from
+            // its entry's ledger events (cycle diagnostics included, I3).
+            for fault in &report.errors {
+                self.ledger.record(
+                    LedgerEventKind::ErrorRecorded {
+                        error: fault.error.clone(),
+                    },
+                    Some(fault.entry.clone()),
+                    self.loader.entry_fiber(&fault.entry),
+                );
+            }
+            self.sync_all_transitions();
+            Ok(report)
+        })
     }
 
     fn register_package<C, P, F>(&self, package: &str, build: F) -> Result<EffectId, KernelError>
@@ -466,7 +599,12 @@ impl Kernel for Adapter {
         config: C,
     ) -> KernelFuture<'_, ()> {
         let entry = entry.clone();
-        Box::pin(async move { self.loader.update_entry(&entry, config).await })
+        Box::pin(async move {
+            let amended = self.loader.update_entry(&entry, config).await;
+            // Amendment attempts land in the ledger accepted AND refused.
+            self.record_amendment(&entry, "update", &amended);
+            amended
+        })
     }
 
     fn dispose_entry<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
@@ -474,13 +612,131 @@ impl Kernel for Adapter {
         entry: &EntryId,
     ) -> KernelFuture<'_, ()> {
         let entry = entry.clone();
-        Box::pin(async move { self.loader.dispose_entry::<C>(&entry).await })
+        Box::pin(async move {
+            let disposed = self.loader.dispose_entry::<C>(&entry).await;
+            self.record_amendment(&entry, "dispose", &disposed);
+            disposed
+        })
     }
 
     fn persisted_profile<C: Clone + Debug + PartialEq + Send + Sync + 'static>(
         &self,
     ) -> Option<Profile<C>> {
         self.loader.persisted::<C>()
+    }
+
+    fn begin_effect(
+        &self,
+        context: ContextId,
+        label: String,
+        forward: ForwardEffect,
+    ) -> Result<EffectId, KernelError> {
+        self.context(context)?;
+        boundary::begin(
+            &self.kernel_scope,
+            &self.pending,
+            &self.ledger,
+            label,
+            forward,
+        )
+    }
+
+    fn effect_outcome(&self, effect: EffectId) -> KernelFuture<'_, ()> {
+        Box::pin(boundary::outcome(&self.pending, effect))
+    }
+
+    fn dispose_effect(&self, effect: EffectId) -> KernelFuture<'_, ()> {
+        Box::pin(boundary::dispose(
+            &self.kernel_scope,
+            &self.pending,
+            &self.ledger,
+            effect,
+        ))
+    }
+
+    fn ledger_events(&self, query: LedgerQuery) -> KernelFuture<'_, Vec<LedgerRecord>> {
+        Box::pin(async move {
+            self.ledger
+                .events(query)
+                .await
+                .map_err(|failure| error(ErrorCode::EffectFailed, &failure.to_string()))
+        })
+    }
+
+    fn revert_effect(
+        &self,
+        effect: EffectId,
+        key: RevertKey,
+        witness: Witness,
+    ) -> KernelFuture<'_, RevertResolution> {
+        Box::pin(async move {
+            boundary::revert_admissible(
+                &self.kernel_scope,
+                &self.pending,
+                self.revert.resolution(effect),
+                effect,
+            )?;
+            let inverse = boundary::revert_inverse(&self.kernel_scope, effect);
+            self.revert.revert(effect, key, witness, inverse).await
+        })
+    }
+
+    fn revert_resolution(&self, effect: EffectId) -> Option<RevertResolution> {
+        self.revert.resolution(effect)
+    }
+
+    fn compensate_effect(
+        &self,
+        effect: EffectId,
+        key: RevertKey,
+        compensator: Box<dyn Undo>,
+        operator_confirmed: bool,
+    ) -> KernelFuture<'_, RevertResolution> {
+        Box::pin(async move {
+            self.revert
+                .compensate(
+                    effect,
+                    key,
+                    boundary::compensator_inverse(compensator),
+                    operator_confirmed,
+                )
+                .await
+        })
+    }
+
+    fn register_providing_package<C, S, P, F>(
+        &self,
+        package: &str,
+        build: F,
+    ) -> Result<EffectId, KernelError>
+    where
+        C: Clone + Debug + PartialEq + Send + Sync + 'static,
+        S: ServiceContract,
+        P: PluginContract,
+        F: Fn(C) -> Result<(P, P::Config, Arc<S>), KernelError> + Send + Sync + 'static,
+    {
+        let lane =
+            providing::providing_lane(Arc::clone(&self.fibers), self.registry.clone(), build)?;
+        self.register_lane_effect::<C>(package, lane)
+    }
+
+    fn attach_document<C>(
+        &self,
+        path: std::path::PathBuf,
+        baseline: &str,
+    ) -> Result<(), KernelError>
+    where
+        C: Clone + Debug + PartialEq + serde::Serialize + Send + Sync + 'static,
+    {
+        let document = jinnd_loader::Document::parse(baseline)?;
+        self.loader.attach_store::<C>(path.clone(), document);
+        *lock(&self.document_path) = Some(path);
+        Ok(())
+    }
+
+    fn document_text(&self) -> Option<String> {
+        let path = lock(&self.document_path).clone()?;
+        std::fs::read_to_string(path).ok()
     }
 }
 

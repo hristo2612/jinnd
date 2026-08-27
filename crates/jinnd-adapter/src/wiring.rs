@@ -99,7 +99,7 @@ where
 /// declaration is plugin-owned code, so its panic is answered as this plugin's
 /// failure — never as an empty declaration — and refuses the operation that
 /// needed it, nothing else (R11; the M1-P4 spawn-boundary pattern).
-fn declared<P: PluginContract>() -> Result<Vec<ServiceType>, KernelError> {
+pub(crate) fn declared<P: PluginContract>() -> Result<Vec<ServiceType>, KernelError> {
     std::panic::catch_unwind(P::Dependencies::declare).map_err(|_| KernelError {
         code: jinnd_api::ErrorCode::PluginFailed,
         message: "the dependency declaration panicked".to_owned(),
@@ -109,7 +109,7 @@ fn declared<P: PluginContract>() -> Result<Vec<ServiceType>, KernelError> {
 
 /// Spawns `body` gated on the loader's signal, records it in the shared fiber
 /// map so the facade answers for it, and wraps it as the loader's handle.
-fn spawned<B, C, R>(
+pub(crate) fn spawned<B, C, R>(
     fibers: &SharedFibers,
     body: Arc<B>,
     request: SpawnRequest<'_>,

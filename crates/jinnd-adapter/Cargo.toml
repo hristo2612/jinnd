@@ -14,9 +14,12 @@ jinnd-context = { path = "../jinnd-context" }
 jinnd-effects = { path = "../jinnd-effects" }
 jinnd-events = { path = "../jinnd-events" }
 jinnd-fiber = { path = "../jinnd-fiber" }
+jinnd-ledger = { path = "../jinnd-ledger" }
 jinnd-loader = { path = "../jinnd-loader" }
 jinnd-registry = { path = "../jinnd-registry" }
+serde = "1.0.219"
 tokio = { version = "1.47.1", features = ["macros", "rt", "sync"] }
+tokio-util = "0.7.19"
 
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["macros", "rt", "sync"] }

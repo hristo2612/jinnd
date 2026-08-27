@@ -84,8 +84,8 @@ fn append(
     entry: Option<&jinnd_api::EntryId>,
     fiber: Option<jinnd_api::FiberId>,
 ) -> Result<Receipt, LedgerError> {
-    let encoded = serde_json::to_string(kind)
-        .map_err(|error| LedgerError::Storage(error.to_string()))?;
+    let encoded =
+        serde_json::to_string(kind).map_err(|error| LedgerError::Storage(error.to_string()))?;
     connection
         .execute(
             "INSERT INTO events (entry, fiber, kind) VALUES (?1, ?2, ?3)",
@@ -100,10 +100,7 @@ fn append(
     Ok(Receipt { sequence })
 }
 
-fn select(
-    connection: &Connection,
-    query: &LedgerQuery,
-) -> Result<Vec<LedgerRecord>, LedgerError> {
+fn select(connection: &Connection, query: &LedgerQuery) -> Result<Vec<LedgerRecord>, LedgerError> {
     let mut statement = connection
         .prepare(
             "SELECT seq, entry, fiber, kind FROM events
@@ -137,8 +134,8 @@ fn select(
     let mut records = Vec::new();
     for row in rows {
         let (sequence, entry, fiber, kind) = row.map_err(storage)?;
-        let kind: LedgerEventKind = serde_json::from_str(&kind)
-            .map_err(|error| LedgerError::Storage(error.to_string()))?;
+        let kind: LedgerEventKind =
+            serde_json::from_str(&kind).map_err(|error| LedgerError::Storage(error.to_string()))?;
         records.push(LedgerRecord {
             sequence: u64::try_from(sequence).unwrap_or(0),
             kind,

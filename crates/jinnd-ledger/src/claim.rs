@@ -73,8 +73,7 @@ impl Branches {
     pub(crate) fn pending_witness(&self, effect: EffectId) -> Option<Witness> {
         let branches = lock(&self.branches);
         branches.get(&effect).and_then(|branch| {
-            matches!(branch.state, RevertResolution::PendingRevert)
-                .then(|| branch.witness.clone())
+            matches!(branch.state, RevertResolution::PendingRevert).then(|| branch.witness.clone())
         })
     }
 
