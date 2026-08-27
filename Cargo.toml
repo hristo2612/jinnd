@@ -4,6 +4,7 @@ members = [
     "crates/jinnd-adapter",
     "crates/jinnd-api",
     "crates/jinnd-context",
+    "crates/jinnd-daemon",
     "crates/jinnd-effects",
     "crates/jinnd-events",
     "crates/jinnd-fiber",
@@ -11,6 +12,7 @@ members = [
     "crates/jinnd-loader",
     "crates/jinnd-registry",
     "crates/jinnd-wasm",
+    "tests/demo",
     "tests/invariants",
 ]
 # Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):

@@ -1,0 +1,48 @@
+# The `jinnd` binary (M1-P9): production assembly ONLY — profile → loader →
+# registry/fiber/effects/events → ledger (real SQLite path) → wasm host
+# through the broker. The conformance-harness lane is NOT in this build:
+# jinnd-api arrives with default-features = false, and this crate never
+# depends on jinnd-adapter (test-harness ruling 2026-08-25; Law 1).
+# Proof: `cargo tree -p jinnd-daemon -e features` shows no `harness`.
+[package]
+name = "jinnd-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "jinnd"
+path = "src/main.rs"
+
+[dependencies]
+jinnd-api = { path = "../jinnd-api", default-features = false }
+jinnd-context = { path = "../jinnd-context" }
+jinnd-effects = { path = "../jinnd-effects" }
+jinnd-fiber = { path = "../jinnd-fiber" }
+jinnd-ledger = { path = "../jinnd-ledger" }
+jinnd-loader = { path = "../jinnd-loader" }
+jinnd-registry = { path = "../jinnd-registry" }
+jinnd-wasm = { path = "../jinnd-wasm" }
+# File watching is the daemon's one job beyond assembly (M1-P9 card:
+# pre-authorized, R10-justified).
+notify = "8"
+serde_json = "1.0"
+# Structured tracing to stderr (M1-P9 card operations requirement; tracing is
+# in the AGENTS.md preferred set).
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio = { version = "1.47.1", features = [
+    "fs",
+    "io-std",
+    "io-util",
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
