@@ -20,6 +20,7 @@ struct MockSlots {
     core: Arc<SwapCore>,
     prepared: AtomicUsize,
     discarded: AtomicUsize,
+    retired: AtomicUsize,
     committed: Mutex<Vec<EntryId>>,
 }
 
@@ -34,6 +35,7 @@ impl MockSlots {
             core: Arc::clone(core),
             prepared: AtomicUsize::new(0),
             discarded: AtomicUsize::new(0),
+            retired: AtomicUsize::new(0),
             committed: Mutex::new(Vec::new()),
         }
     }
@@ -41,6 +43,7 @@ impl MockSlots {
 
 impl SwapSlots for MockSlots {
     type Prepared = usize;
+    type Displaced = usize;
 
     fn entries_pinned_to(&self, _: &str) -> Vec<(EntryId, u64)> {
         self.entries.clone()
@@ -69,11 +72,16 @@ impl SwapSlots for MockSlots {
         })
     }
 
-    fn install(&self, entry: &EntryId, _: u64, _: usize) -> KernelFuture<'_, ()> {
+    fn commit(&self, entry: &EntryId, prepared: usize) -> Option<usize> {
         self.committed
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(entry.clone());
+        Some(prepared)
+    }
+
+    fn retire_displaced(&self, _: usize) -> KernelFuture<'_, ()> {
+        self.retired.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(()) })
     }
 
@@ -114,6 +122,12 @@ async fn healthy_batch_commits_every_entry_sharing_the_artifact() {
         .unwrap_or_else(|error| panic!("swap: {error:?}"));
     assert_eq!(outcome.swapped.len(), 2, "the batch is by artifact hash");
     assert!(!outcome.rolled_back);
+    assert_eq!(committed(&slots).len(), 2, "every entry's seat committed");
+    assert_eq!(
+        slots.retired.load(Ordering::SeqCst),
+        2,
+        "each displaced seat is retired after the critical section"
+    );
     assert_eq!(
         phases(&ledger),
         vec![
@@ -203,14 +217,16 @@ async fn a_disposal_racing_the_batch_rolls_everything_back_with_zero_commits() {
 }
 
 #[test]
-fn tombstoned_slot_refuses_claim_and_swap_reentry() {
+fn tombstoned_slot_refuses_claim_and_never_runs_the_commit_bookkeeping() {
     let core = SwapCore::default();
     assert!(core.begin(9));
     assert_eq!(core.dispose(9), super::SlotPhase::Preparing);
+    let mut ran = false;
     assert!(
-        !core.commit_all(&[9]),
+        core.commit_all_with(&[9], || ran = true).is_none(),
         "disposal won; the claim must discard"
     );
+    assert!(!ran, "a refused claim runs NO commit bookkeeping");
     assert!(!core.begin(9), "no resurrection");
     assert!(core.is_tombstone(9));
 }

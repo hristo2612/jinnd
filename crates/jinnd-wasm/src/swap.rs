@@ -54,21 +54,28 @@ impl SwapCore {
         )
     }
 
-    /// The batch claim: Preparing → Steady for EVERY slot at once, under one
-    /// lock — or for none of them. False when any slot left Preparing (a
-    /// disposal tombstoned it): the caller must roll the whole batch back,
-    /// so a partial commit cannot exist (R8 atomic replacement).
-    pub fn commit_all(&self, slots: &[u64]) -> bool {
+    /// The batch claim AND the commit phase, one critical section: when
+    /// EVERY slot is still `Preparing`, `commit` — the infallible sync
+    /// bookkeeping phase (round-3 ruling: zero fallible operations) — runs
+    /// under the phase lock, then every slot returns to `Steady`. `None`
+    /// when any slot left Preparing (a disposal tombstoned it): nothing
+    /// ran, the caller rolls the whole batch back. A disposal's tombstone
+    /// takes this same lock, so it lands entirely before the claim or
+    /// entirely after the committed bookkeeping — the partial-commit window
+    /// does not exist (R8 atomic replacement).
+    pub fn commit_all_with<T>(&self, slots: &[u64], commit: impl FnOnce() -> T) -> Option<T> {
         self.with(|phases| {
             let all_preparing = slots
                 .iter()
                 .all(|slot| phases.get(slot) == Some(&SlotPhase::Preparing));
-            if all_preparing {
-                for slot in slots {
-                    phases.insert(*slot, SlotPhase::Steady);
-                }
+            if !all_preparing {
+                return None;
             }
-            all_preparing
+            let landed = commit();
+            for slot in slots {
+                phases.insert(*slot, SlotPhase::Steady);
+            }
+            Some(landed)
         })
     }
 
@@ -104,22 +111,28 @@ impl SwapCore {
 /// wasm lane implements it over real instances; unit tests over mocks).
 ///
 /// Contract: `entries_pinned_to` names each live entry with its slot key in
-/// the shared [`SwapCore`]; `prepare` builds and health-gates the NEW
-/// instance — activate, offer the old snapshot, health check — while the old
-/// instance stays warm and untouched; `install` lands a CLAIMED instance
-/// (called only after [`SwapCore::commit_all`] succeeded) and must converge
-/// with a concurrent disposal rather than fail the batch — its error means
-/// "disposal won this entry, the prepared instance is gone"; `discard` drops
-/// a prepared instance without ever touching the old one.
+/// the shared [`SwapCore`]; `prepare` is where EVERY fallible operation
+/// lives (round-3 ruling) — it builds and health-gates the NEW instance
+/// (activate, offer the old snapshot, health check) while the old instance
+/// stays warm and untouched; `commit` is pure infallible SYNC bookkeeping
+/// (seat/pointer swaps, registry updates, ledger appends) run inside the
+/// batch claim's critical section — it must never fail, block, await, or
+/// call guest code (R1), and hands back the displaced seat; `retire_displaced`
+/// disposes a displaced seat after the critical section; `discard` withdraws
+/// a prepared-but-never-committed instance by REPLAYING its staged effects
+/// in reverse before dropping it — a raw dispose that skips them leaves an
+/// off-tree contribution (R5, I1) — without ever touching the old instance.
 pub trait SwapSlots: Send + Sync {
     type Prepared: Send;
+    type Displaced: Send;
 
     fn entries_pinned_to(&self, hash: &str) -> Vec<(EntryId, u64)>;
 
     fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, Self::Prepared>;
 
-    fn install(&self, entry: &EntryId, slot: u64, prepared: Self::Prepared)
-    -> KernelFuture<'_, ()>;
+    fn commit(&self, entry: &EntryId, prepared: Self::Prepared) -> Option<Self::Displaced>;
+
+    fn retire_displaced(&self, displaced: Self::Displaced) -> KernelFuture<'_, ()>;
 
     fn discard(&self, prepared: Self::Prepared) -> KernelFuture<'_, ()>;
 }
@@ -133,11 +146,13 @@ pub struct SwapOutcome {
 
 /// Drives one Mode-1 swap over every entry pinned to `old_hash` — the batch
 /// is by artifact hash, never per entry. Phases run through `core`, the ONE
-/// loom-modeled machine: begin each slot, prepare each instance, then claim
-/// every slot atomically with [`SwapCore::commit_all`] before any install.
+/// loom-modeled machine: begin each slot, prepare each instance (all the
+/// fallible work), then claim every slot AND run the infallible commit
+/// bookkeeping inside one critical section ([`SwapCore::commit_all_with`]).
 /// A failed preparation, a refused begin, or a lost claim rolls the WHOLE
-/// batch back — old instances stay warm, zero entries commit. Every phase is
-/// a ledger event.
+/// batch back — old instances stay warm, zero entries commit, every staged
+/// instance is discarded with its effects replayed. Every phase is a ledger
+/// event.
 ///
 /// # Errors
 ///
@@ -157,7 +172,7 @@ pub async fn swap_batch<S: SwapSlots>(
         },
         None,
     );
-    let mut prepared: Vec<(EntryId, u64, S::Prepared)> = Vec::new();
+    let mut prepared: Vec<(EntryId, S::Prepared)> = Vec::new();
     let mut begun: Vec<u64> = Vec::new();
     let mut lost = false;
     for (entry, slot) in &entries {
@@ -175,7 +190,7 @@ pub async fn swap_batch<S: SwapSlots>(
                     },
                     None,
                 );
-                prepared.push((entry.clone(), *slot, instance));
+                prepared.push((entry.clone(), instance));
             }
             Err(_) => {
                 lost = true;
@@ -183,44 +198,60 @@ pub async fn swap_batch<S: SwapSlots>(
             }
         }
     }
-    if lost || !core.commit_all(&begun) {
-        for slot in &begun {
-            core.rollback(*slot);
-        }
-        for (_, _, instance) in prepared {
-            let _ = slots.discard(instance).await;
-        }
-        ledger.append(
-            LedgerEventKind::SwapPhase {
-                artifact: new_hash.to_owned(),
-                phase: SwapPhaseKind::RolledBack,
-            },
-            None,
-        );
-        return Ok(SwapOutcome {
-            swapped: Vec::new(),
-            rolled_back: true,
+    let leftover = if lost {
+        prepared
+    } else {
+        // The commit phase holds zero fallible operations (round-3 ruling):
+        // it runs inside the claim's critical section, so a concurrent
+        // disposal either tombstones first — the claim refuses, the whole
+        // batch rolls back below — or arrives after every seat landed and
+        // retires the committed seat itself.
+        let mut moved = Some(prepared);
+        let landed = core.commit_all_with(&begun, || {
+            let mut swapped = Vec::new();
+            let mut displaced = Vec::new();
+            for (entry, instance) in moved.take().unwrap_or_default() {
+                if let Some(seat) = slots.commit(&entry, instance) {
+                    displaced.push(seat);
+                }
+                swapped.push(entry);
+            }
+            (swapped, displaced)
         });
-    }
-    let mut swapped = Vec::new();
-    for (entry, slot, instance) in prepared {
-        // A failed install means disposal won this entry post-claim: the
-        // lane converged (the prepared instance is retired), the rest of
-        // the batch stands.
-        if slots.install(&entry, slot, instance).await.is_ok() {
-            swapped.push(entry);
+        if let Some((swapped, displaced)) = landed {
+            ledger.append(
+                LedgerEventKind::SwapPhase {
+                    artifact: new_hash.to_owned(),
+                    phase: SwapPhaseKind::Committed,
+                },
+                None,
+            );
+            for seat in displaced {
+                let _ = slots.retire_displaced(seat).await;
+            }
+            return Ok(SwapOutcome {
+                swapped,
+                rolled_back: false,
+            });
         }
+        moved.take().unwrap_or_default()
+    };
+    for slot in &begun {
+        core.rollback(*slot);
+    }
+    for (_, instance) in leftover {
+        let _ = slots.discard(instance).await;
     }
     ledger.append(
         LedgerEventKind::SwapPhase {
             artifact: new_hash.to_owned(),
-            phase: SwapPhaseKind::Committed,
+            phase: SwapPhaseKind::RolledBack,
         },
         None,
     );
     Ok(SwapOutcome {
-        swapped,
-        rolled_back: false,
+        swapped: Vec::new(),
+        rolled_back: true,
     })
 }
 

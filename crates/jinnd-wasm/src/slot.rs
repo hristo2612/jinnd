@@ -129,16 +129,22 @@ impl SharedSlot {
 }
 
 /// Commits a staged activation as the slot's live seat — the Mode-1 commit
-/// (R8), run only after the batch claim: the staged listens register
+/// (R8), run INSIDE the batch claim's critical section: every operation
+/// here is infallible sync bookkeeping (round-3 ruling — nothing may fail,
+/// block, await, or call guest code). The staged listens register
 /// atomically against the NEW instance's own delivery face, the new seat
 /// replaces the old for contract-call routing, provisions the predecessor
 /// did not hold are provided through the slot face (kept ones never
 /// re-provide, so their generation and live handles stand — Mode-1
-/// continuity), orphaned ones withdraw, and the displaced instance disposes.
-/// The staged outcome is COMMITTED, exactly as an initial activation
-/// registers its own (round-2 blocker-4 ruling; R5, I1).
+/// continuity), orphaned ones withdraw. The staged outcome is COMMITTED,
+/// exactly as an initial activation registers its own (round-2 blocker-4
+/// ruling; R5, I1). The displaced seat is handed back for disposal AFTER
+/// the critical section — dispose-only: the handoff transferred its
+/// contribution to the successor, whose own activation registered its own
+/// inverses (warm until commit, R8).
 #[allow(clippy::too_many_arguments)]
-pub async fn commit_staged(
+#[must_use = "the displaced seat must be disposed after the critical section"]
+pub fn commit_staged(
     slot: &Arc<SharedSlot>,
     staged: InstanceHandle,
     outcome: ActivationOutcome,
@@ -148,7 +154,7 @@ pub async fn commit_staged(
     fiber: Option<FiberId>,
     context: u64,
     ledger: &dyn LedgerSink,
-) {
+) -> Option<SeatState> {
     let (old_provisions, old_listens) = slot.registrations();
     let face = peer_face(&staged);
     let registrations: Vec<Rebind> = outcome
@@ -184,12 +190,7 @@ pub async fn commit_staged(
             broker.withdraw(peer, contract);
         }
     }
-    if let Some(old) = displaced {
-        // Its guest effects are not undone: the state handoff transferred
-        // the contribution to the successor, whose own activation registered
-        // its own inverses. Warm until this instant (R8).
-        old.instance.dispose().await;
-    }
+    displaced
 }
 
 impl Peer for Arc<SharedSlot> {

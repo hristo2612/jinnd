@@ -1,7 +1,8 @@
 //! The loom models of the swap core's racy seams (R8; CI runs them with
 //! `--features loom --release`). The production driver and lane run these
 //! same transitions — the model protects the shipped path (round-2
-//! blocker-3 ruling).
+//! blocker-3 ruling): the commit bookkeeping runs INSIDE the claim's
+//! critical section, exactly as [`super::swap_batch`] drives it.
 
 use loom::sync::{Arc, Mutex};
 use loom::thread;
@@ -18,7 +19,7 @@ fn claim_and_dispose_agree_on_ownership() {
 
         let claimer = {
             let core = Arc::clone(&core);
-            thread::spawn(move || core.commit_all(&[1]))
+            thread::spawn(move || core.commit_all_with(&[1], || ()).is_some())
         };
         let disposer = {
             let core = Arc::clone(&core);
@@ -36,8 +37,9 @@ fn claim_and_dispose_agree_on_ownership() {
 }
 
 /// The batch claim is atomic across slots: a disposal that beats it refuses
-/// the WHOLE claim and leaves the untouched slots still preparing (so the
-/// driver's rollback finds them), never a partial commit.
+/// the WHOLE claim — the bookkeeping never runs — and leaves the untouched
+/// slots still preparing (so the driver's rollback finds them), never a
+/// partial commit.
 #[test]
 fn batch_claim_is_all_or_nothing() {
     loom::model(|| {
@@ -47,7 +49,7 @@ fn batch_claim_is_all_or_nothing() {
 
         let claimer = {
             let core = Arc::clone(&core);
-            thread::spawn(move || core.commit_all(&[1, 2]))
+            thread::spawn(move || core.commit_all_with(&[1, 2], || ()).is_some())
         };
         let disposer = {
             let core = Arc::clone(&core);
@@ -61,7 +63,7 @@ fn batch_claim_is_all_or_nothing() {
             // Nothing was half-committed: slot 1 is still Preparing, exactly
             // where the driver's rollback expects it.
             assert!(
-                core.commit_all(&[1]),
+                core.commit_all_with(&[1], || ()).is_some(),
                 "a refused batch claim must leave the other slots preparing"
             );
         }
@@ -69,12 +71,14 @@ fn batch_claim_is_all_or_nothing() {
     });
 }
 
-/// The post-claim convergence: an install racing a disposal always ends with
-/// the cell empty and BOTH instances retired exactly once — the installer
-/// rechecks the tombstone after landing, the disposer tombstones before it
-/// takes, and whoever finds the cell occupied retires what it finds.
+/// The production commit shape: the seat lands INSIDE the claim's critical
+/// section, so a concurrent disposal either tombstones first — the claim
+/// refuses, the staged instance is discarded, the disposer retires the OLD
+/// seat — or arrives after the whole commit and retires the NEW seat. In
+/// every interleaving the cell ends empty and both instances are retired
+/// exactly once; the partial-commit window does not exist (round-3 ruling).
 #[test]
-fn a_claimed_install_converges_with_disposal() {
+fn commit_inside_the_claim_converges_with_disposal() {
     const OLD: u8 = 1;
     const NEW: u8 = 2;
     loom::model(|| {
@@ -87,21 +91,15 @@ fn a_claimed_install_converges_with_disposal() {
             let (core, cell, retired) =
                 (Arc::clone(&core), Arc::clone(&cell), Arc::clone(&retired));
             thread::spawn(move || {
-                if core.commit_all(&[1]) {
-                    // The lane's install: land the new seat, retire the
-                    // displaced one, then converge on the tombstone.
-                    let displaced = cell.lock().unwrap().replace(NEW);
-                    if let Some(old) = displaced {
-                        retired.lock().unwrap().push(old);
-                    }
-                    if core.is_tombstone(1)
-                        && let Some(landed) = cell.lock().unwrap().take()
-                    {
-                        retired.lock().unwrap().push(landed);
-                    }
-                } else {
+                // The lane's commit: the seat swap is the bookkeeping run
+                // inside the critical section; the displaced seat retires
+                // after it (swap_batch's retire_displaced).
+                let displaced = core.commit_all_with(&[1], || cell.lock().unwrap().replace(NEW));
+                match displaced {
+                    Some(Some(old)) => retired.lock().unwrap().push(old),
+                    Some(None) => {}
                     // Disposal won before the claim: discard the staged one.
-                    retired.lock().unwrap().push(NEW);
+                    None => retired.lock().unwrap().push(NEW),
                 }
             })
         };

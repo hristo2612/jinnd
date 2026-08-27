@@ -63,7 +63,11 @@ pub(crate) struct HostState {
 /// Spawns the supervisor for one instance of a world-typechecked component
 /// and returns its handle. Instantiation happens inside the task, under the
 /// deadline, from the [`PluginPre`] the load-time validation produced.
-pub(crate) fn spawn(engine: wasmtime::Engine, pre: PluginPre<HostState>, seat: Seat) -> InstanceHandle {
+pub(crate) fn spawn(
+    engine: wasmtime::Engine,
+    pre: PluginPre<HostState>,
+    seat: Seat,
+) -> InstanceHandle {
     let (handle, rx) = pair();
     let face = peer_face(&handle);
     tokio::spawn(run(engine, pre, seat, face, rx));

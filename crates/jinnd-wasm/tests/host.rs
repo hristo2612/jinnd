@@ -131,8 +131,7 @@ async fn a_component_without_the_plugin_world_is_refused_at_registration() {
     // check, not from malformed input.
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
-    let engine =
-        wasmtime::Engine::new(&config).unwrap_or_else(|error| panic!("engine: {error:#}"));
+    let engine = wasmtime::Engine::new(&config).unwrap_or_else(|error| panic!("engine: {error:#}"));
     assert!(
         wasmtime::component::Component::new(&engine, &bytes).is_ok(),
         "the probe must be a VALID component"
@@ -504,7 +503,8 @@ impl Lane {
 }
 
 impl SwapSlots for Lane {
-    type Prepared = InstanceHandle;
+    type Prepared = (InstanceHandle, jinnd_wasm::ActivationOutcome);
+    type Displaced = InstanceHandle;
 
     fn entries_pinned_to(&self, _: &str) -> Vec<(EntryId, u64)> {
         let mut entries: Vec<EntryId> = self
@@ -522,7 +522,7 @@ impl SwapSlots for Lane {
             .collect()
     }
 
-    fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, InstanceHandle> {
+    fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, Self::Prepared> {
         let entry = entry.clone();
         Box::pin(async move {
             let old = self
@@ -543,37 +543,45 @@ impl SwapSlots for Lane {
                 .get(&entry)
                 .cloned()
                 .unwrap_or_else(|| b"plain".to_vec());
-            let (outcome, _) = fresh.activate(config).await;
-            if let Err(error) = outcome {
+            let (outcome, contributed) = fresh.activate(config).await;
+            let healthy = match outcome {
+                Ok(()) => fresh.restore(handoff).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = healthy {
+                for (_, token) in contributed.effects.iter().rev() {
+                    let _ = fresh.undo(*token).await;
+                }
                 fresh.dispose().await;
                 return Err(error);
             }
-            if let Err(error) = fresh.restore(handoff).await {
-                fresh.dispose().await;
-                return Err(error);
-            }
-            Ok(fresh)
+            Ok((fresh, contributed))
         })
     }
 
-    fn install(&self, entry: &EntryId, _: u64, prepared: InstanceHandle) -> KernelFuture<'_, ()> {
-        let entry = entry.clone();
+    fn commit(&self, entry: &EntryId, prepared: Self::Prepared) -> Option<InstanceHandle> {
+        // Sync, infallible bookkeeping: the seat pointer swap (round-3).
+        self.live
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(entry.clone(), prepared.0)
+    }
+
+    fn retire_displaced(&self, displaced: InstanceHandle) -> KernelFuture<'_, ()> {
         Box::pin(async move {
-            let old = self
-                .live
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(entry, prepared);
-            if let Some(old) = old {
-                old.dispose().await;
-            }
+            displaced.dispose().await;
             Ok(())
         })
     }
 
-    fn discard(&self, prepared: InstanceHandle) -> KernelFuture<'_, ()> {
+    fn discard(&self, prepared: Self::Prepared) -> KernelFuture<'_, ()> {
         Box::pin(async move {
-            prepared.dispose().await;
+            // Replay the staged effects in reverse before disposal (R5, I1).
+            let (instance, contributed) = prepared;
+            for (_, token) in contributed.effects.iter().rev() {
+                let _ = instance.undo(*token).await;
+            }
+            instance.dispose().await;
             Ok(())
         })
     }
