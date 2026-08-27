@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use jinnd_api::{ErrorCode, FiberId, KernelFuture, LedgerEventKind};
 
-use crate::broker::{Broker, LedgerSink, Peer, PeerId};
+use crate::broker::Broker;
+use crate::peer::{LedgerSink, Peer, PeerId};
 
 #[derive(Default)]
 pub(crate) struct CapturedLedger {
@@ -132,10 +133,12 @@ async fn a_handle_is_caller_scoped_never_transferable() {
     let provider = broker.register_peer(None);
     broker
         .provide(provider, "jinn:echo", Arc::new(Echo))
-        .unwrap();
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let owner = broker.register_peer(None);
     broker.grant(owner, "jinn:echo");
-    let handle = broker.resolve(owner, "jinn:echo").unwrap();
+    let handle = broker
+        .resolve(owner, "jinn:echo")
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let thief = broker.register_peer(None);
     let stolen = broker.call(thief, handle, "ping", Vec::new()).await;
     assert_eq!(
@@ -148,7 +151,9 @@ async fn a_handle_is_caller_scoped_never_transferable() {
 async fn second_provider_for_an_occupied_slot_is_refused_never_silent() {
     let (broker, _) = fixture();
     let first = broker.register_peer(None);
-    broker.provide(first, "jinn:echo", Arc::new(Echo)).unwrap();
+    broker
+        .provide(first, "jinn:echo", Arc::new(Echo))
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let second = broker.register_peer(None);
     let refused = broker.provide(second, "jinn:echo", Arc::new(Echo));
     assert_eq!(
@@ -163,19 +168,23 @@ async fn peer_removal_withdraws_exactly_its_contribution() {
     let dying = broker.register_peer(Some(FiberId(3)));
     broker
         .provide(dying, "jinn:doomed", Arc::new(Echo))
-        .unwrap();
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let survivor = broker.register_peer(Some(FiberId(4)));
     broker
         .provide(survivor, "jinn:kept", Arc::new(Echo))
-        .unwrap();
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     broker.remove_peer(dying);
 
     let caller = broker.register_peer(None);
     broker.grant(caller, "jinn:kept");
     broker.grant(caller, "jinn:doomed");
-    let kept = broker.resolve(caller, "jinn:kept").unwrap();
+    let kept = broker
+        .resolve(caller, "jinn:kept")
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     assert!(broker.call(caller, kept, "ping", Vec::new()).await.is_ok());
-    let doomed = broker.resolve(caller, "jinn:doomed").unwrap();
+    let doomed = broker
+        .resolve(caller, "jinn:doomed")
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     assert_eq!(
         broker
             .call(caller, doomed, "ping", Vec::new())
@@ -200,11 +209,18 @@ async fn dispatch_holds_no_broker_lock_across_the_peer() {
         broker: Arc::clone(&broker),
         own_peer: provider,
     });
-    broker.provide(provider, "jinn:reenter", reentrant).unwrap();
+    broker
+        .provide(provider, "jinn:reenter", reentrant)
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let caller = broker.register_peer(None);
     broker.grant(caller, "jinn:reenter");
-    let handle = broker.resolve(caller, "jinn:reenter").unwrap();
-    let answer = broker.call(caller, handle, "go", Vec::new()).await.unwrap();
+    let handle = broker
+        .resolve(caller, "jinn:reenter")
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
+    let answer = broker
+        .call(caller, handle, "go", Vec::new())
+        .await
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     assert_eq!(answer, b"reentered".to_vec());
 }
 
@@ -223,7 +239,7 @@ async fn vitality_routes_to_the_provider_per_consumer() {
     let provider = broker.register_peer(None);
     broker
         .provide(provider, "jinn:picky", Arc::new(Picky))
-        .unwrap();
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     assert_eq!(broker.vitality("jinn:picky", 2).await, Ok(true));
     assert_eq!(broker.vitality("jinn:picky", 3).await, Ok(false));
     assert_eq!(

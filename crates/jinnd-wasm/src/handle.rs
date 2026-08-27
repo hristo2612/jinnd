@@ -10,7 +10,7 @@ use std::sync::Arc;
 use jinnd_api::{ErrorCode, KernelError, KernelFuture};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::broker::{Peer, PeerId};
+use crate::peer::{Peer, PeerId};
 use crate::topics::EventTarget;
 
 /// What one activation contributed, in registration order: the harness lane

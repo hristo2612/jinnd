@@ -11,9 +11,9 @@ use wasmtime::{Config, Engine};
 
 use crate::artifact::{self, PinnedArtifact};
 use crate::bindings::Plugin;
-use crate::broker::LedgerSink;
 use crate::handle::InstanceHandle;
 use crate::instance::{HostState, Seat, spawn};
+use crate::peer::LedgerSink;
 
 /// One compiled component, still carrying the pin it was admitted under.
 #[derive(Clone)]

@@ -212,7 +212,10 @@ async fn a_trapping_guest_deactivates_only_its_own_instance() {
     let rig = rig();
     let (_, trapping) = rig.spawn(1);
     let (outcome, _) = trapping.activate(b"trap".to_vec()).await;
-    let error = outcome.expect_err("a trap must surface as a contained error");
+    let error = match outcome {
+        Err(error) => error,
+        Ok(()) => panic!("a trap must surface as a contained error"),
+    };
     assert_eq!(error.code, ErrorCode::PluginFailed);
     assert!(error.message.contains("trap"), "attributed: {error:?}");
 
@@ -234,7 +237,10 @@ async fn a_spinning_guest_is_killed_at_the_deadline_not_the_executor() {
     let spinning = rig.host.instantiate(&rig.component, seat);
     let started = std::time::Instant::now();
     let (outcome, _) = spinning.activate(b"spin".to_vec()).await;
-    let error = outcome.expect_err("a spin must hit the deadline");
+    let error = match outcome {
+        Err(error) => error,
+        Ok(()) => panic!("a spin must hit the deadline"),
+    };
     assert!(error.message.contains("deadline"), "{error:?}");
     assert!(
         started.elapsed() < Duration::from_secs(5),
@@ -259,7 +265,10 @@ async fn disposal_withdraws_exactly_the_instance_contribution() {
 
     let native = rig.broker.register_peer(None);
     rig.broker.grant(native, COUNTER);
-    let handle = rig.broker.resolve(native, COUNTER).unwrap();
+    let handle = rig
+        .broker
+        .resolve(native, COUNTER)
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     assert_eq!(
         rig.broker
             .call(native, handle, "get", Vec::new())
@@ -281,12 +290,15 @@ async fn disposal_withdraws_exactly_the_instance_contribution() {
     let (_, fresh) = rig.spawn(3);
     let (outcome, _) = fresh.activate(b"provider".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("fresh activate: {error:?}"));
-    let handle = rig.broker.resolve(native, COUNTER).unwrap();
+    let handle = rig
+        .broker
+        .resolve(native, COUNTER)
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     let answer = rig
         .broker
         .call(native, handle, "get", Vec::new())
         .await
-        .unwrap();
+        .unwrap_or_else(|error| panic!("unexpected: {error:?}"));
     assert_eq!(answer, 0u64.to_le_bytes().to_vec());
 }
 

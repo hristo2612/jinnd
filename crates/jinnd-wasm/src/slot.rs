@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{ErrorCode, KernelError, KernelFuture};
 
-use crate::broker::{Peer, PeerId};
 use crate::handle::InstanceHandle;
+use crate::peer::{Peer, PeerId};
 use crate::topics::EventTarget;
 
 /// The live instance behind one fiber, swappable in place.

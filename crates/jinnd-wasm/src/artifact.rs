@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use jinnd_api::{ErrorCode, KernelError, LedgerEventKind};
 
-use crate::broker::LedgerSink;
+use crate::peer::LedgerSink;
 use crate::sha256;
 
 /// A component artifact admitted under its content hash. Constructible only

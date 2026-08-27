@@ -192,8 +192,12 @@ async fn mode1_swap_replaces_both_instances_of_one_artifact_without_restarting_f
         .await
         .unwrap_or_else(|error| panic!("reconcile: {error:?}"));
     assert_eq!(report.errors, Vec::new());
-    let fiber_one = k.entry_fiber(&EntryId("wasm-1".to_owned())).unwrap();
-    let fiber_two = k.entry_fiber(&EntryId("wasm-2".to_owned())).unwrap();
+    let fiber_one = k
+        .entry_fiber(&EntryId("wasm-1".to_owned()))
+        .unwrap_or_else(|| panic!("wasm-1 has a fiber"));
+    let fiber_two = k
+        .entry_fiber(&EntryId("wasm-2".to_owned()))
+        .unwrap_or_else(|| panic!("wasm-2 has a fiber"));
     let transitions_before = (
         k.transitions(fiber_one).len(),
         k.transitions(fiber_two).len(),
