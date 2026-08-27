@@ -14,11 +14,15 @@ workspace = true
 jinnd-adapter = { path = "../../crates/jinnd-adapter" }
 jinnd-api = { path = "../../crates/jinnd-api" }
 proptest = "1.11.0"
-tokio = { version = "1.47.1", features = ["macros", "rt"] }
+tokio = { version = "1.47.1", features = ["macros", "rt", "time"] }
 
 [[test]]
 name = "cordis_fiber"
 path = "cordis_fiber.rs"
+
+[[test]]
+name = "cordis_fiber_divergence"
+path = "cordis_fiber_divergence.rs"
 
 [[test]]
 name = "cordis_dispose"
@@ -87,3 +91,7 @@ path = "invariant_confluence.rs"
 [[test]]
 name = "hazard_absence"
 path = "hazard_absence.rs"
+
+[[test]]
+name = "hazard_registry"
+path = "hazard_registry.rs"

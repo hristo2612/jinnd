@@ -2,7 +2,8 @@ mod loader_cases;
 mod loader_fixture;
 mod support;
 
-use support::spec_case;
+use jinnd_api::Kernel;
+use support::{expect_ok, facade_gap_at, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Loader;
 const FACADE_GAP_REASON: &str =
@@ -17,6 +18,44 @@ spec_case! {
     actions: ["reconcile from an empty runtime"],
     expected: ["foo and bar activate once", "qux remains inactive", "entry ids are retained"],
     body: |_case| { loader_cases::reconcile::initial_profile().await; }
+}
+
+spec_case! {
+    /// TS origin: `packages/loader/tests/index.spec.ts`, `plugin self-update`; C9 extends it to opaque document data.
+    raw_entries_and_unknown_fields_survive_runtime_write_back,
+    origin: "packages/loader/tests/index.spec.ts",
+    test: "plugin self-update preserves raw entries and unknown fields",
+    setup: ["persisted document contains one decodable entry with an unknown field and one raw future-version entry"],
+    actions: ["reconcile the known entry", "perform a runtime config write-back"],
+    expected: ["known config changes atomically", "unknown field and raw entry round-trip byte-for-byte"],
+    body: |case| {
+        let kernel = jinnd_adapter::kernel();
+        let log = loader_fixture::log();
+        loader_fixture::register(&kernel, &log);
+        loader_fixture::reconcile(
+            &kernel,
+            vec![loader_fixture::entry("known", loader_fixture::COUNT, 1)],
+        )
+        .await;
+        expect_ok(
+            kernel
+                .update_entry(&loader_fixture::id("known"), loader_fixture::Config {
+                    entry: "known".to_owned(),
+                    value: 2,
+                })
+                .await,
+            "the typed write-back lane should update",
+        );
+        let persisted = kernel
+            .persisted_profile::<loader_fixture::Config>()
+            .unwrap_or_else(|| panic!("the typed profile should remain observable"));
+        assert_eq!(persisted.entries[0].config.value, 2);
+
+        facade_gap_at(
+            &case,
+            "the facade has no raw Document attach/read surface, so unknown entry fields and opaque entries cannot be supplied or observed",
+        );
+    }
 }
 
 spec_case! {
