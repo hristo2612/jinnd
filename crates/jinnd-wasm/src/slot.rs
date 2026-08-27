@@ -31,6 +31,22 @@ pub struct SeatState {
 }
 
 impl SeatState {
+    /// The seat of a LIVE activation: its registrations were routed as it
+    /// ran, so the listens carry the ids they were minted under.
+    #[must_use]
+    pub fn live(instance: InstanceHandle, outcome: ActivationOutcome) -> Self {
+        Self {
+            instance,
+            effects: outcome.effects,
+            provisions: outcome.provisions,
+            listens: outcome
+                .listens
+                .iter()
+                .filter_map(|record| record.id)
+                .collect(),
+        }
+    }
+
     /// Withdraws exactly this seat's contribution (I1), LIFO: the guest
     /// inverses run against the instance that registered them, then the
     /// listeners withdraw, then the provisions, then the instance disposes

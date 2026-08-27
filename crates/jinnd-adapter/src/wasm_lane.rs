@@ -87,11 +87,11 @@ impl WasmState {
     }
 }
 
-/// One wasm entry behind the fiber engine's body seam. Its instance lives in
-/// a [`SharedSlot`] seat so Mode-1 swap replaces it without touching the
-/// fiber — the seat pairs the instance with ITS OWN registrations, so
-/// teardown always withdraws exactly the current instance's contribution
-/// with the tokens that instance minted (I1, R5; round-2 blocker-4).
+/// One wasm entry behind the fiber engine's body seam. Its instance lives
+/// in a [`SharedSlot`] seat — instance PAIRED with its own registrations —
+/// so Mode-1 swap replaces it whole without touching the fiber, and
+/// teardown withdraws exactly the current instance's contribution with the
+/// tokens that instance minted (I1, R5; round-2 blocker-4).
 struct WasmBody {
     state: Arc<WasmState>,
     entry: EntryId,
@@ -147,11 +147,9 @@ impl FiberBody for WasmBody {
                     component: Arc::clone(&self.component),
                 },
             );
-            // ONE effect owns the whole guest contribution. It tombstones
-            // the swap slot FIRST (the loom-modeled arbitration: a racing
-            // swap claim refuses and discards), then retires the live seat —
-            // guest inverses LIFO against the instance that minted them,
-            // listeners, provisions, instance — exactly and nothing else.
+            // ONE effect owns the whole guest contribution: tombstone the
+            // swap slot FIRST (loom-modeled arbitration — a racing claim
+            // refuses and discards), then retire the live seat exactly.
             let (slot, broker, topics, entry) = (
                 Arc::clone(&self.slot),
                 Arc::clone(&state.broker),
@@ -174,21 +172,10 @@ impl FiberBody for WasmBody {
             )?;
             // The body runs once per fiber; its contribution commits into
             // the seat, success or failure alike — a failing activation
-            // still owes its inverses (I1).
+            // still owes its inverses (I1). A predecessor was retired by its
+            // own teardown; anything still seated is disposed defensively.
             let (outcome, contributed) = handle.activate(config).await;
-            let seat = SeatState {
-                instance: handle,
-                effects: contributed.effects,
-                provisions: contributed.provisions,
-                listens: contributed
-                    .listens
-                    .iter()
-                    .filter_map(|record| record.id)
-                    .collect(),
-            };
-            if let Some(previous) = self.slot.install(seat) {
-                // A predecessor was already retired by its own teardown;
-                // anything still seated here is disposed defensively.
+            if let Some(previous) = self.slot.install(SeatState::live(handle, contributed)) {
                 previous.instance.dispose().await;
             }
             outcome

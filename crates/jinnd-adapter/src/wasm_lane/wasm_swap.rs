@@ -16,8 +16,7 @@ use super::{DEADLINE, WasmState};
 use crate::{error, lock};
 
 /// One health-gated staged instance WITH the outcome its activation
-/// registered: the outcome is committed at install, never discarded
-/// (round-2 blocker-4).
+/// registered — committed at install, never discarded (round-2 blocker-4).
 pub(super) struct Staged {
     instance: InstanceHandle,
     outcome: ActivationOutcome,
@@ -32,23 +31,20 @@ pub(super) struct LaneSlots {
     pub(super) fresh: LoadedComponent,
 }
 
-struct Live {
-    slot: Arc<SharedSlot>,
-    peer: PeerId,
-    fiber: FiberId,
-    context: u64,
-    config: Vec<u8>,
-}
+/// One roster row's swap-relevant view: (slot, peer, fiber, context, config).
+type Live = (Arc<SharedSlot>, PeerId, FiberId, u64, Vec<u8>);
 
 impl LaneSlots {
     fn live(&self, entry: &EntryId) -> Option<Live> {
         let roster = lock(&self.state.roster);
-        roster.get(entry).map(|live| Live {
-            slot: Arc::clone(&live.slot),
-            peer: live.peer,
-            fiber: live.fiber,
-            context: live.context,
-            config: live.config.clone(),
+        roster.get(entry).map(|live| {
+            (
+                Arc::clone(&live.slot),
+                live.peer,
+                live.fiber,
+                live.context,
+                live.config.clone(),
+            )
         })
     }
 }
@@ -70,11 +66,10 @@ impl SwapSlots for LaneSlots {
     fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, Staged> {
         let entry = entry.clone();
         Box::pin(async move {
-            let live = self
+            let (slot, peer, fiber, context, config) = self
                 .live(&entry)
                 .ok_or_else(|| error(ErrorCode::InvalidProfile, "entry left the roster"))?;
-            let old = live
-                .slot
+            let old = slot
                 .current()
                 .ok_or_else(|| error(ErrorCode::PluginFailed, "no live instance to hand off"))?;
             let handoff = old.snapshot().await?;
@@ -84,15 +79,15 @@ impl SwapSlots for LaneSlots {
                     broker: Arc::clone(&self.state.broker),
                     topics: Arc::clone(&self.state.topics),
                     oracle: Arc::new(NoRealms),
-                    peer: live.peer,
-                    fiber: Some(live.fiber),
-                    context: live.context,
+                    peer,
+                    fiber: Some(fiber),
+                    context,
                     deadline: DEADLINE,
                     slot: None,
                     staging: true,
                 },
             );
-            let (outcome, contributed) = staged.activate(live.config).await;
+            let (outcome, contributed) = staged.activate(config).await;
             let healthy = match outcome {
                 Ok(()) => staged.restore(handoff).await,
                 Err(refused) => Err(refused),
@@ -108,15 +103,14 @@ impl SwapSlots for LaneSlots {
         })
     }
 
-    /// Runs only after the batch claim landed. Commits the staged outcome —
-    /// listens rebound to the new instance's own face, provisions diffed,
-    /// old instance disposed — then converges with any disposal that raced
-    /// the install: a tombstone observed afterwards means the disposer could
-    /// not see what we landed, so we retire it ourselves.
+    /// Runs only after the batch claim landed: commits the staged outcome,
+    /// then converges with any disposal that raced the install — a tombstone
+    /// observed afterwards means the disposer could not see what we landed,
+    /// so we retire it ourselves.
     fn install(&self, entry: &EntryId, slot_id: u64, staged: Staged) -> KernelFuture<'_, ()> {
         let entry = entry.clone();
         Box::pin(async move {
-            let Some(live) = self.live(&entry) else {
+            let Some((slot, peer, fiber, context, _)) = self.live(&entry) else {
                 staged.instance.dispose().await;
                 return Err(error(
                     ErrorCode::InvalidProfile,
@@ -124,21 +118,21 @@ impl SwapSlots for LaneSlots {
                 ));
             };
             commit_staged(
-                &live.slot,
+                &slot,
                 staged.instance,
                 staged.outcome,
                 &self.state.broker,
                 &self.state.topics,
-                live.peer,
-                Some(live.fiber),
-                live.context,
+                peer,
+                Some(fiber),
+                context,
                 self.state.sink.as_ref(),
             )
             .await;
             if self.state.swap.is_tombstone(slot_id) {
-                if let Some(seat) = live.slot.take() {
+                if let Some(seat) = slot.take() {
                     let _ = seat
-                        .retire(&self.state.broker, &self.state.topics, live.peer)
+                        .retire(&self.state.broker, &self.state.topics, peer)
                         .await;
                 }
                 return Err(error(
