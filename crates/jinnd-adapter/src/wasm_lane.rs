@@ -42,7 +42,7 @@ impl LedgerSink for Sink {
 /// One live wasm entry, addressable by the swap machine.
 struct Roster {
     slot: Arc<SharedSlot>,
-    /// This activation's key in the shared [`SwapCore`] — never reused.
+    /// This activation's [`SwapCore`] key — never reused.
     slot_id: u64,
     peer: PeerId,
     fiber: FiberId,
@@ -52,8 +52,8 @@ struct Roster {
 }
 
 /// Adapter-held wasm-lane state: ONE broker, one topic registry, one host,
-/// one swap phase machine (the loom-modeled [`SwapCore`] IS the production
-/// path — round-2 blocker-3).
+/// and one swap phase machine — the loom-modeled [`SwapCore`] IS the
+/// production path (round-2 blocker-3).
 pub(crate) struct WasmState {
     broker: Arc<Broker>,
     topics: Arc<LocalTopics>,

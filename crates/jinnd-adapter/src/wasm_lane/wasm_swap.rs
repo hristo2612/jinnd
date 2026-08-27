@@ -1,8 +1,7 @@
-//! The Mode-1 swap view over the adapter's live wasm roster (R8): part of
-//! the wasm lane, split by responsibility (R10 file hygiene). Every phase
-//! runs through the shared loom-modeled [`jinnd_wasm::SwapCore`] — the
-//! driver claims atomically before any install, and the disposer effect
-//! tombstones the same machine (round-2 blocker-3: one swap machine).
+//! The Mode-1 swap view over the adapter's live wasm roster (R8), split by
+//! responsibility (R10). Every phase runs through the shared loom-modeled
+//! [`jinnd_wasm::SwapCore`]: the driver claims atomically before any
+//! install; the disposer effect tombstones the same machine (blocker-3).
 
 use std::sync::Arc;
 
@@ -22,10 +21,9 @@ pub(super) struct Staged {
     outcome: ActivationOutcome,
 }
 
-/// The swap machine's view over the live roster (R8): prepare stages a new
-/// instance (staging seat — nothing routes to it), install commits it into
-/// the seat after the batch claim, discard disposes it; the old instance
-/// stays warm throughout.
+/// The swap machine's roster view (R8): prepare stages a new instance
+/// (staging seat — nothing routes to it), install commits it after the
+/// batch claim, discard disposes it; the old instance stays warm throughout.
 pub(super) struct LaneSlots {
     pub(super) state: Arc<WasmState>,
     pub(super) fresh: LoadedComponent,
