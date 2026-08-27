@@ -39,6 +39,7 @@
 mod contain;
 mod disposer;
 mod drain;
+mod forward;
 mod report;
 mod scope;
 mod tree;
@@ -46,6 +47,7 @@ mod undo;
 mod withdrawal;
 
 pub use disposer::Disposer;
+pub use forward::{ForwardAction, ForwardEffect, ForwardEnd, advance, discharge};
 pub use report::{EffectReport, ReplayReport, UndoOutcome};
 pub use scope::{Detached, EffectScope};
 pub use undo::{FutureUndo, StepwiseUndo, UndoStep, step};

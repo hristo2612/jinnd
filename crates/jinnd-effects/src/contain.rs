@@ -22,9 +22,9 @@ use jinnd_api::{KernelError, KernelFuture};
 /// immediately and never polled again, and nothing this crate keeps is left borrowed
 /// across the call, so no half-updated state is observable afterwards. Whatever the
 /// inverse itself half-did is exactly what the returned outcome reports.
-pub(crate) async fn contained<F>(make: F) -> Result<Result<(), KernelError>, String>
+pub(crate) async fn contained<T, F>(make: F) -> Result<Result<T, KernelError>, String>
 where
-    F: FnOnce() -> KernelFuture<'static, ()>,
+    F: FnOnce() -> KernelFuture<'static, T>,
 {
     match panic::catch_unwind(AssertUnwindSafe(make)) {
         Ok(future) => {
@@ -57,12 +57,12 @@ where
 ///
 /// `KernelFuture` is a `Pin<Box<_>>`, so this wrapper is `Unpin` and needs no pin
 /// projection — and therefore no unsafe code — to poll what it holds.
-struct Contained {
-    future: Option<KernelFuture<'static, ()>>,
+struct Contained<T> {
+    future: Option<KernelFuture<'static, T>>,
 }
 
-impl Future for Contained {
-    type Output = Result<Result<(), KernelError>, String>;
+impl<T> Future for Contained<T> {
+    type Output = Result<Result<T, KernelError>, String>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

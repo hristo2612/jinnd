@@ -188,6 +188,20 @@ pub struct Detached {
 }
 
 impl Detached {
+    /// Withdraws every detached record as an ordinary future, children before
+    /// the effect they nested under, and reports what each inverse did — the
+    /// awaited counterpart of [`Detached::withdraw_now`] for callers whose
+    /// inverses are allowed to wait (an in-flight forward effect landing, say).
+    /// Failures and panics are contained and recorded exactly as a replay
+    /// records them (R9, R11); no lock is held while an inverse runs (R1).
+    pub async fn withdraw(self) -> ReplayReport {
+        let mut effects = Vec::new();
+        for record in self.records {
+            Withdrawal::new(&mut effects, record).await;
+        }
+        ReplayReport { effects }
+    }
+
     /// Withdraws every detached record now, children before the effect they
     /// nested under, and reports what each inverse did.
     ///
