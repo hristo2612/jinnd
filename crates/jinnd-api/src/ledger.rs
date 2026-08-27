@@ -59,6 +59,39 @@ pub enum LedgerEventKind {
     /// RESERVED (M1-P7): the event-bus dispatch trace class. The variant and
     /// schema exist now; emission is wired when the bus gains its ledger tap.
     DispatchTrace { event: String },
+    /// A capability grant was exercised: the broker resolved a granted
+    /// contract to a caller-scoped handle (constitution 01 §Grants;
+    /// authorized M1-P8 additive delta).
+    ContractResolved { contract: String },
+    /// The grant check refused a resolution — every denial is a ledger event
+    /// (constitution 01 §Grants; authorized M1-P8 additive delta).
+    GrantRefused { contract: String },
+    /// One contract call crossed the broker's single dispatch point
+    /// (Law 2, R6; decision log 2026-08-25; authorized M1-P8 additive delta).
+    ContractCall { contract: String, operation: String },
+    /// A component artifact was admitted under its pinned content hash
+    /// (Law 5, constitution 05 pin-by-hash; authorized M1-P8 additive delta).
+    ArtifactLoaded { hash: String },
+    /// An artifact was refused — hash mismatch or malformed component; the
+    /// refusal is recorded, never silent (authorized M1-P8 additive delta).
+    ArtifactRefused { detail: String },
+    /// One phase of a Mode-1 hot-swap (R8): every phase is a ledger event
+    /// (authorized M1-P8 additive delta).
+    SwapPhase {
+        artifact: String,
+        phase: SwapPhaseKind,
+    },
+}
+
+/// The ledgered phases of one Mode-1 hot-swap batch (R8; authorized M1-P8
+/// additive delta): begun → per-entry healthy → committed, or rolled back
+/// with the old instances still warm.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SwapPhaseKind {
+    Began,
+    InstanceHealthy,
+    Committed,
+    RolledBack,
 }
 
 /// One event as recorded: monotonic sequence, wall-clock timestamp, typed
