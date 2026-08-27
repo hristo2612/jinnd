@@ -36,3 +36,13 @@ driving the closest available subsystem. `expected-green.txt` records every gree
 `expected-red-reasons.txt` records the expected reason class for every red. Listed-red,
 unlisted-green, unknown, missing, duplicate, and reason-drifted cases all fail
 `check-ratchet.sh`.
+
+## Deliberate Cordis divergences
+
+Two temporal differences are paper-conformant kernel policy, not parity bugs:
+
+- Teardown is serial LIFO, rather than Cordis's parallel disposer walk. This preserves
+  the reversible-effect stack's ordering and deterministic recovery boundary.
+- A failed activation immediately withdraws every partial contribution it registered,
+  rather than leaving listeners live until later explicit disposal. I1 recovery
+  exactness applies at the failure boundary.
