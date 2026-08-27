@@ -29,7 +29,7 @@ pub(super) struct LaneSlots {
     pub(super) fresh: LoadedComponent,
 }
 
-/// One roster row's swap-relevant view: (slot, peer, fiber, context, config).
+/// One roster row's view: (slot, peer, fiber, context, config).
 type Live = (Arc<SharedSlot>, PeerId, FiberId, u64, Vec<u8>);
 
 impl LaneSlots {

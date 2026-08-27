@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
+use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
 
 use crate::broker_state::{PeerRecord, Provider, refusal};
 use crate::peer::{HandleId, LedgerSink, Peer, PeerId};

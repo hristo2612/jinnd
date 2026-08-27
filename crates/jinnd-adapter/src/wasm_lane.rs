@@ -150,30 +150,27 @@ impl FiberBody for WasmBody {
             // ONE effect owns the whole guest contribution: tombstone the
             // swap slot FIRST (loom-modeled arbitration — a racing claim
             // refuses and discards), then retire the live seat exactly.
-            let (slot, broker, topics, entry) = (
+            let (slot, entry, owner) = (
                 Arc::clone(&self.slot),
-                Arc::clone(&state.broker),
-                Arc::clone(&state.topics),
                 self.entry.clone(),
+                Arc::clone(&state),
             );
-            let disposer_state = Arc::clone(&state);
             setup.effect(
                 "wasm guest seat",
                 Disposer::future(move || async move {
-                    disposer_state.swap.dispose(slot_id);
+                    owner.swap.dispose(slot_id);
                     let retired = match slot.take() {
-                        Some(seat) => seat.retire(&broker, &topics, peer).await,
+                        Some(seat) => seat.retire(&owner.broker, &owner.topics, peer).await,
                         None => Ok(()),
                     };
-                    broker.remove_peer(peer);
-                    lock(&disposer_state.roster).remove(&entry);
+                    owner.broker.remove_peer(peer);
+                    lock(&owner.roster).remove(&entry);
                     retired
                 }),
             )?;
             // The body runs once per fiber; its contribution commits into
             // the seat, success or failure alike — a failing activation
-            // still owes its inverses (I1). A predecessor was retired by its
-            // own teardown; anything still seated is disposed defensively.
+            // still owes its inverses (I1).
             let (outcome, contributed) = handle.activate(config).await;
             if let Some(previous) = self.slot.install(SeatState::live(handle, contributed)) {
                 previous.instance.dispose().await;
