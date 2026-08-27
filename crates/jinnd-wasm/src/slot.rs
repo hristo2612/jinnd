@@ -14,47 +14,55 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use jinnd_api::{ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
 use crate::broker::Broker;
-use crate::handle::{ActivationOutcome, InstanceHandle, peer_face};
+use crate::handle::{ActivationOutcome, InstanceHandle, Registration, peer_face};
 use crate::peer::{LedgerSink, Peer, PeerId};
 use crate::topics::{EventTarget, LocalTopics, Rebind};
 
-/// One instance's committed contribution: the instance PAIRED with what it
-/// registered, in registration order.
+/// One instance's committed contribution: the instance PAIRED with its
+/// registration journal — ONE list, in registration order (R5: teardown has
+/// no second list to iterate).
 pub struct SeatState {
     pub instance: InstanceHandle,
-    /// Guest effects: (label, undo token) — tokens of THIS instance.
-    pub effects: Vec<(String, u64)>,
-    /// Contracts provided over the broker, routed through the slot face.
-    pub provisions: Vec<String>,
-    /// Topic-registry ids, each targeting THIS instance's delivery face.
-    pub listens: Vec<u64>,
+    /// Everything THIS instance registered, in the order it happened;
+    /// listens carry the topic-registry ids they were minted under.
+    pub registrations: Vec<Registration>,
 }
 
 impl SeatState {
     /// The seat of a LIVE activation: its registrations were routed as it
-    /// ran, so the listens carry the ids they were minted under.
+    /// ran, so the journal already carries minted listener ids.
     #[must_use]
     pub fn live(instance: InstanceHandle, outcome: ActivationOutcome) -> Self {
         Self {
             instance,
-            effects: outcome.effects,
-            provisions: outcome.provisions,
-            listens: outcome
-                .listens
-                .iter()
-                .filter_map(|record| record.id)
-                .collect(),
+            registrations: outcome.registrations,
         }
     }
 
-    /// Withdraws exactly this seat's contribution (I1), LIFO: the guest
-    /// inverses run against the instance that registered them, then the
-    /// listeners withdraw, then the provisions, then the instance disposes
-    /// (R7 instant dispose). The first failing inverse is reported after the
-    /// remaining withdrawal still ran (R9, R11). With a `ledger`, every
-    /// effect and listener withdrawal is appended under its registration
-    /// label — the seat is where the labels live, so the dispose trail is
-    /// exactly complete (Law 2).
+    /// The seat's provided contracts and minted listener ids (derived
+    /// per-category views over the one journal).
+    fn views(&self) -> (Vec<String>, Vec<u64>) {
+        let mut provisions = Vec::new();
+        let mut listens = Vec::new();
+        for registration in &self.registrations {
+            match registration {
+                Registration::Provision { contract } => provisions.push(contract.clone()),
+                Registration::Listen(record) => listens.extend(record.id),
+                Registration::Effect { .. } => {}
+            }
+        }
+        (provisions, listens)
+    }
+
+    /// Withdraws exactly this seat's contribution (I1) as ONE LIFO replay of
+    /// the registration journal (LAW §3; R5: no parallel per-category
+    /// loops): each undo runs against the instance that registered it, and
+    /// with a `ledger` every withdrawal — effect, listener, and provision
+    /// alike — is appended at the moment it actually runs, so the recorded
+    /// trail is strictly reverse of the registration sequence (Law 2). The
+    /// instance disposes last (R7 instant dispose). The first failing
+    /// inverse is reported after the remaining withdrawal still ran
+    /// (R9, R11).
     ///
     /// # Errors
     ///
@@ -67,35 +75,39 @@ impl SeatState {
         ledger: Option<(&dyn LedgerSink, FiberId)>,
     ) -> Result<(), KernelError> {
         let mut first = None;
-        for (label, token) in self.effects.iter().rev() {
-            let outcome = self.instance.undo(*token).await;
-            if let Some((sink, fiber)) = ledger {
-                sink.append(
-                    LedgerEventKind::EffectWithdrawn {
-                        label: label.clone(),
-                        clean: outcome.is_ok(),
-                    },
-                    Some(fiber),
-                );
+        for registration in self.registrations.iter().rev() {
+            match registration {
+                Registration::Effect { label, token } => {
+                    let outcome = self.instance.undo(*token).await;
+                    if let Some((sink, fiber)) = ledger {
+                        sink.append(
+                            LedgerEventKind::EffectWithdrawn {
+                                label: label.clone(),
+                                clean: outcome.is_ok(),
+                            },
+                            Some(fiber),
+                        );
+                    }
+                    if let Err(error) = outcome {
+                        first.get_or_insert(error);
+                    }
+                }
+                Registration::Listen(record) => {
+                    let topic = record.id.and_then(|id| topics.unlisten(id));
+                    if let (Some((sink, fiber)), Some(topic)) = (ledger, topic) {
+                        sink.append(
+                            LedgerEventKind::EffectWithdrawn {
+                                label: format!("listen {topic}"),
+                                clean: true,
+                            },
+                            Some(fiber),
+                        );
+                    }
+                }
+                // The broker appends the withdrawal itself (R6), so it too
+                // lands at the moment it runs.
+                Registration::Provision { contract } => broker.withdraw(peer, contract),
             }
-            if let Err(error) = outcome {
-                first.get_or_insert(error);
-            }
-        }
-        for id in &self.listens {
-            let topic = topics.unlisten(*id);
-            if let (Some((sink, fiber)), Some(topic)) = (ledger, topic) {
-                sink.append(
-                    LedgerEventKind::EffectWithdrawn {
-                        label: format!("listen {topic}"),
-                        clean: true,
-                    },
-                    Some(fiber),
-                );
-            }
-        }
-        for contract in &self.provisions {
-            broker.withdraw(peer, contract);
         }
         self.instance.dispose().await;
         match first {
@@ -145,7 +157,7 @@ impl SharedSlot {
     /// The live seat's broker provisions and listener ids.
     pub fn registrations(&self) -> (Vec<String>, Vec<u64>) {
         match self.lock().as_ref() {
-            Some(seat) => (seat.provisions.clone(), seat.listens.clone()),
+            Some(seat) => seat.views(),
             None => (Vec::new(), Vec::new()),
         }
     }
@@ -180,9 +192,8 @@ pub fn commit_staged(
 ) -> Option<SeatState> {
     let (old_provisions, old_listens) = slot.registrations();
     let face = peer_face(&staged);
-    let registrations: Vec<Rebind> = outcome
-        .listens
-        .iter()
+    let rebinds: Vec<Rebind> = outcome
+        .listens()
         .map(|record| Rebind {
             topic: record.topic.clone(),
             context,
@@ -190,14 +201,28 @@ pub fn commit_staged(
             target: Arc::clone(&face) as Arc<dyn EventTarget>,
         })
         .collect();
-    let ids = topics.rebind(&old_listens, registrations);
+    let ids = topics.rebind(&old_listens, rebinds);
+    // The minted ids land back in the journal, in order: the committed seat
+    // carries ONE registration list, exactly as an initial activation's.
+    let mut registrations = outcome.registrations;
+    let mut minted = ids.into_iter();
+    for registration in &mut registrations {
+        if let Registration::Listen(record) = registration {
+            record.id = minted.next();
+        }
+    }
+    let new_provisions: Vec<String> = registrations
+        .iter()
+        .filter_map(|registration| match registration {
+            Registration::Provision { contract } => Some(contract.clone()),
+            _ => None,
+        })
+        .collect();
     let displaced = slot.install(SeatState {
         instance: staged,
-        effects: outcome.effects,
-        provisions: outcome.provisions.clone(),
-        listens: ids,
+        registrations,
     });
-    for contract in &outcome.provisions {
+    for contract in &new_provisions {
         if !old_provisions.contains(contract) {
             let provided =
                 broker.provide(peer, contract, Arc::new(Arc::clone(slot)) as Arc<dyn Peer>);
@@ -209,7 +234,7 @@ pub fn commit_staged(
         }
     }
     for contract in &old_provisions {
-        if !outcome.provisions.contains(contract) {
+        if !new_provisions.contains(contract) {
             broker.withdraw(peer, contract);
         }
     }

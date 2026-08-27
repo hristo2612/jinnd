@@ -193,6 +193,38 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
         "the scribe's listener withdrawal is ledger-recorded (Law 2: \
          every registration's undo shows in the dispose trail)"
     );
+    // M1-P9b: the dispose trail is LIFO — the scribe's withdrawals appear in
+    // strictly REVERSE registration order within its trail (LAW §3, R5,
+    // Law 2).
+    let scribe_label = |label: &str| label == "scribe on duty" || label == "listen demo:announce";
+    let registered: Vec<&str> = kinds
+        .iter()
+        .filter_map(|kind| match kind {
+            LedgerEventKind::EffectRegistered { label } if scribe_label(label) => {
+                Some(label.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let withdrawn: Vec<&str> = kinds
+        .iter()
+        .filter_map(|kind| match kind {
+            LedgerEventKind::EffectWithdrawn { label, clean: true } if scribe_label(label) => {
+                Some(label.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let reversed: Vec<&str> = registered.iter().rev().copied().collect();
+    assert_eq!(
+        registered.len(),
+        2,
+        "the scribe registered exactly its effect and its listener once"
+    );
+    assert_eq!(
+        withdrawn, reversed,
+        "the dispose trail replays the scribe's registrations LIFO"
+    );
 
     // Step 5 — keyed revert with receipts: revert the last journal write;
     // the file returns to its prior content and the ledger shows the

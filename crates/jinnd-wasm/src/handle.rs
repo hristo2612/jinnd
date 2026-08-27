@@ -13,17 +13,58 @@ use tokio::sync::{mpsc, oneshot};
 use crate::peer::{Peer, PeerId};
 use crate::topics::EventTarget;
 
-/// What one activation contributed, in registration order: the lane commits
-/// these into the fiber's live seat, so teardown withdraws exactly this
-/// instance's contribution with this instance's own tokens (R5, I1).
+/// What one activation contributed — ONE journal, in registration order:
+/// the lane commits it into the fiber's live seat, so teardown withdraws
+/// exactly this instance's contribution with this instance's own tokens by
+/// replaying the journal in reverse (LIFO, LAW §3; R5, I1). Per-category
+/// views are derived, never stored: there is no second list to iterate.
 #[derive(Debug, Default)]
 pub struct ActivationOutcome {
-    /// Guest effect registrations: (label, undo token), in order.
-    pub effects: Vec<(String, u64)>,
-    /// Contracts provided over the broker.
-    pub provisions: Vec<String>,
-    /// Topic listener registrations, in order.
-    pub listens: Vec<ListenRecord>,
+    /// Everything the activation registered, in the order it happened.
+    pub registrations: Vec<Registration>,
+}
+
+/// One guest registration in the activation journal.
+#[derive(Debug)]
+pub enum Registration {
+    /// A guest effect: its label and the undo token of THIS instance.
+    Effect { label: String, token: u64 },
+    /// A contract provided over the broker.
+    Provision { contract: String },
+    /// A topic listener registration.
+    Listen(ListenRecord),
+}
+
+impl ActivationOutcome {
+    /// The guest effects `(label, token)`, in registration order.
+    pub fn effects(&self) -> impl DoubleEndedIterator<Item = (&str, u64)> {
+        self.registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Effect { label, token } => Some((label.as_str(), *token)),
+                _ => None,
+            })
+    }
+
+    /// The provided contracts, in registration order.
+    pub fn provisions(&self) -> impl Iterator<Item = &str> {
+        self.registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Provision { contract } => Some(contract.as_str()),
+                _ => None,
+            })
+    }
+
+    /// The listener registrations, in registration order.
+    pub fn listens(&self) -> impl Iterator<Item = &ListenRecord> {
+        self.registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Listen(record) => Some(record),
+                _ => None,
+            })
+    }
 }
 
 /// One guest listener registration. A live activation carries the topic

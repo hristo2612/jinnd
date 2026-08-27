@@ -15,15 +15,17 @@ impl bindings::effects::Host for HostState {
         label: String,
         token: u64,
     ) -> Result<u64, bindings::types::KernelError> {
-        let index = self.outcome.effects.len() as u64;
-        self.outcome.effects.push((label, token));
+        let index = self.outcome.effects().count() as u64;
+        self.outcome
+            .registrations
+            .push(crate::handle::Registration::Effect { label, token });
         Ok(index)
     }
 }
 
 impl bindings::services::Host for HostState {
     async fn provide(&mut self, contract: String) -> Result<u64, bindings::types::KernelError> {
-        let index = self.outcome.provisions.len() as u64;
+        let index = self.outcome.provisions().count() as u64;
         if self.seat.staging {
             // A staged provision is recorded, not routed (R8) — but it is
             // grant-checked NOW, exactly as a live one: refusal fails the
@@ -42,7 +44,9 @@ impl bindings::services::Host for HostState {
                 .provide(self.seat.peer, &contract, face)
                 .map_err(bindings::wire_error)?;
         }
-        self.outcome.provisions.push(contract);
+        self.outcome
+            .registrations
+            .push(crate::handle::Registration::Provision { contract });
         Ok(index)
     }
 
@@ -105,11 +109,15 @@ impl bindings::events::Host for HostState {
         if self.seat.staging {
             // Recorded, not routed (R8): the registration is committed at
             // swap commit, against the new instance's own delivery face.
-            self.outcome.listens.push(crate::handle::ListenRecord {
-                topic,
-                token,
-                id: None,
-            });
+            self.outcome
+                .registrations
+                .push(crate::handle::Registration::Listen(
+                    crate::handle::ListenRecord {
+                        topic,
+                        token,
+                        id: None,
+                    },
+                ));
             return Ok(0);
         }
         // The delivery target is THIS instance's own face: a token pairs
@@ -120,11 +128,15 @@ impl bindings::events::Host for HostState {
             token,
             self.face.clone() as Arc<dyn crate::topics::EventTarget>,
         );
-        self.outcome.listens.push(crate::handle::ListenRecord {
-            topic,
-            token,
-            id: Some(id),
-        });
+        self.outcome
+            .registrations
+            .push(crate::handle::Registration::Listen(
+                crate::handle::ListenRecord {
+                    topic,
+                    token,
+                    id: Some(id),
+                },
+            ));
         Ok(id)
     }
 }
