@@ -1,0 +1,26 @@
+[package]
+name = "jinnd-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Model checking only: pins the Mode-1 swap core's interleavings under loom.
+# Off by default, never a runtime dependency.
+loom = ["dep:loom"]
+
+[dependencies]
+# Types-only contract crate, WITHOUT the harness lane: the production plugin
+# path is WIT/broker only (test-harness ruling 2026-08-25; M1-P8 acceptance).
+jinnd-api = { path = "../jinnd-api", default-features = false }
+loom = { version = "0.7.2", optional = true }
+tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }
+wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "async"] }
+
+[dev-dependencies]
+tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+wit-component = "0.233.0"

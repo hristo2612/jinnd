@@ -16,6 +16,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # The wasm host tests build the fixture guest from source (M1-P8).
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all --check
@@ -47,6 +49,8 @@ jobs:
         run: cargo test -p jinnd-registry --features loom --release
       - name: loom models — the event bus's once-claim and snapshot (R1, R9)
         run: cargo test -p jinnd-events --features loom --release
+      - name: loom models — the swap core's commit/dispose race (R8, M1-P8)
+        run: cargo test -p jinnd-wasm --features loom --release --lib
 
   miri:
     if: github.event_name == 'push'

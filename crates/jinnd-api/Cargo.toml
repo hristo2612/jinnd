@@ -8,6 +8,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The conformance-harness lane (test-harness ruling, 2026-08-25): the in-proc
+# `Kernel`/`WasmLane` facade exists so the verifier-owned invariant suite can
+# drive kernel semantics. Production plugin hosting is WIT/broker only, so
+# production builds take this crate with `default-features = false` and the
+# facade lane does not exist in them (Law 1 closure; M1-P8 acceptance b).
+default = ["harness"]
+harness = []
+
 [dependencies]
 # R3: ledger events are serde-typed at the contract boundary (M1-P7; the
 # preferred-set dependency named by AGENTS.md, no new crate class).

@@ -1,0 +1,249 @@
+/// jinn:plugin@0.1.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+///
+/// This file is the product: it is designed to outlive any particular kernel
+/// implementation or host OS (R12). Versioned; within a major version every
+/// change is strictly additive.
+///
+/// Law 1: everything is a plugin behind a typed capability contract; there is
+/// no other way for a plugin to affect the world. A Tier A component's only
+/// imports are the kernel surfaces below. Authority over real contracts
+/// (jinn:fs, jinn:ledger, ...) is held as GRANTS: the broker refuses `resolve`
+/// for a contract the plugin was not granted, so no handle exists and no call
+/// can be made — mechanical closure at the single dispatch point (decision log
+/// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
+/// Law 2: every crossing of these surfaces is a ledger event.
+package jinn:plugin@0.1.0;
+
+/// Shared vocabulary of the plugin world (R3: typed, not stringly — the
+/// stringly lanes here are the declared dynamic-plugin lane, never the
+/// primary API surface).
+interface types {
+  /// Stable identity of one reversible effect at the kernel boundary.
+  type effect-id = u64;
+
+  /// A resolved capability handle: pairs a granted contract with the caller's
+  /// scope (R4). Handles are minted by the broker and are not forgeable or
+  /// transferable across instances.
+  type handle-id = u64;
+
+  /// Stable error classes exposed by the kernel boundary. Guest panics and
+  /// traps never cross it (R11); they surface to SIBLINGS only as declared
+  /// dependency failures.
+  variant kernel-error {
+    /// The calling instance's context is no longer active.
+    inactive-context,
+    /// The named contract has no active provider in the caller's realm.
+    missing-dependency(string),
+    /// The grant check refused this call; every refusal is a ledger event
+    /// (constitution 01 §Grants).
+    grant-refused(string),
+    /// The provider failed while answering; contained per R11.
+    provider-failed(string),
+    /// The kernel refused the operation as malformed.
+    invalid(string),
+  }
+
+  /// The five dispatch modes of the one event bus (LAW §3).
+  enum dispatch-mode { emit, parallel, serial, bail, waterfall }
+
+  /// Declarative listener selector (decision log 2026-08-25, C4 binding):
+  /// closures cannot cross the component boundary, so the payload's routing
+  /// choice is DATA; realm queries are evaluated kernel-side. Routing stays
+  /// inverted (LAW §3): the payload selects listeners, listeners never filter
+  /// the payload.
+  variant selector {
+    /// Every registered listener of the topic.
+    all,
+    /// Listeners whose registration context is in this set.
+    context-set(list<u64>),
+    /// Listeners whose registration context resolves the named service in
+    /// the same realm the emitter's context resolves it (evaluated by the
+    /// kernel against the isolation map).
+    realm-of(string),
+  }
+}
+
+/// Reversible-effect registration (Law 3, R5: the one mutation primitive).
+/// A guest registers its inverse at the point of action; teardown replays
+/// inverses in reverse order (LIFO). Instance disposal withdraws exactly the
+/// instance's contribution and nothing else (I1).
+interface effects {
+  use types.{effect-id, kernel-error};
+
+  /// Registers one reversible effect charged to the calling fiber. `token`
+  /// names the guest-side inverse: on withdrawal the host calls
+  /// `lifecycle.undo(token)` — exactly once — before the effect is gone.
+  /// The registration itself is a ledger event (Law 2).
+  register: func(label: string, token: u64) -> result<effect-id, kernel-error>;
+}
+
+/// Service provision and injection over the capability broker (R7).
+/// Every operation here crosses the single broker dispatch point:
+/// grant check → ledger append → dispatch. Whether the peer answering is a
+/// linked component instance or a sandboxed process is a transport detail.
+interface services {
+  use types.{effect-id, handle-id, kernel-error};
+
+  /// Provides the named contract from this instance's fiber, in the realm the
+  /// fiber's context resolves it. Provision is an effect (R5): it is
+  /// withdrawn with the fiber (I2), and a second provider for an occupied
+  /// slot is refused — replacement is never silent (R9).
+  provide: func(contract: string) -> result<effect-id, kernel-error>;
+
+  /// Resolves a granted contract to a caller-scoped handle (R4). Refused
+  /// without a grant (constitution 01: a plugin may call only the contracts
+  /// it was granted); refusals are ledger events.
+  resolve: func(contract: string) -> result<handle-id, kernel-error>;
+
+  /// Calls one operation on a resolved handle. The payload is the contract's
+  /// serialized request (the contract bundle in `contracts/` governs its
+  /// schema, effect class, and equality semantics); the ledger records the
+  /// crossing, never a copy of data-plane traffic beyond the contract-level
+  /// record (decision log 2026-08-25).
+  call: func(handle: handle-id, operation: string, payload: list<u8>)
+    -> result<list<u8>, kernel-error>;
+}
+
+/// The one event bus (LAW §3), five dispatch modes, inverted routing.
+interface events {
+  use types.{effect-id, kernel-error, dispatch-mode, selector};
+
+  /// Emits one typed payload under the declared mode. `target` is the
+  /// payload's declarative listener selection (C4). Outputs are the settled
+  /// listener answers per mode; a failing listener never aborts a collecting
+  /// walk (R9) — its failure is contained and recorded.
+  emit: func(topic: string, mode: dispatch-mode, target: selector, payload: list<u8>)
+    -> result<list<list<u8>>, kernel-error>;
+
+  /// Registers this instance as a listener of `topic`. Registration is just
+  /// an effect (LAW §3); withdrawal is `lifecycle.undo` like any other.
+  /// Deliveries arrive as `lifecycle.handle-event(token, ...)`.
+  listen: func(topic: string, token: u64) -> result<effect-id, kernel-error>;
+}
+
+/// Base host-provider contract `jinn:fs` (R7): the kernel supplies this
+/// import; authority over it is a GRANT. Every call crosses the broker's
+/// single dispatch point under the contract name `jinn:fs` — grant check →
+/// ledger append → dispatch to the contract's live provider — so an
+/// ungranted call is refused and the refusal is a ledger event (Law 1
+/// mechanical closure; constitution 01 §Grants). Effect classes and
+/// inverse obligations live in the contract bundle (constitution 01).
+interface fs {
+  use types.{kernel-error};
+
+  /// Reads one file. Effect class: read.
+  /// Broker wire: operation `read`, payload = the path's UTF-8 bytes.
+  read: func(path: string) -> result<list<u8>, kernel-error>;
+
+  /// Writes one file. Effect class: revertible — the provider registers the
+  /// inverse (constitution 03).
+  /// Broker wire: operation `write`, payload = u32-LE length of the path's
+  /// UTF-8 bytes, the path bytes, then the data.
+  write: func(path: string, data: list<u8>) -> result<_, kernel-error>;
+}
+
+/// Base host-provider contract `jinn:process` (R7). Same grant discipline
+/// and broker choke point as `fs`.
+interface process {
+  use types.{kernel-error};
+
+  /// Runs one command to completion, answering its output bytes.
+  /// Broker wire: operation `run`, payload = for the command and then each
+  /// argument, a u32-LE byte length followed by the UTF-8 bytes.
+  run: func(command: string, args: list<string>) -> result<list<u8>, kernel-error>;
+}
+
+/// Base host-provider contract `jinn:net` (R7). Same grant discipline and
+/// broker choke point as `fs`.
+interface net {
+  use types.{kernel-error};
+
+  /// Performs one request, answering the response body.
+  /// Broker wire: operation `request`, payload = u32-LE length + method
+  /// bytes, u32-LE length + url bytes, then the body.
+  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, kernel-error>;
+}
+
+/// Base host-provider contract `jinn:keystore` (R7). Same grant discipline
+/// and broker choke point as `fs`. Sensitivity class: secret
+/// (constitution 02 §Redaction — values never land in the ledger).
+interface keystore {
+  use types.{kernel-error};
+
+  /// Reads one secret. Broker wire: operation `get`, payload = key bytes.
+  get: func(key: string) -> result<list<u8>, kernel-error>;
+
+  /// Stores one secret. Effect class: revertible.
+  /// Broker wire: operation `put`, payload = u32-LE length + key bytes,
+  /// then the value.
+  put: func(key: string, value: list<u8>) -> result<_, kernel-error>;
+}
+
+/// The lifecycle surface every Tier A plugin exports. A plugin body runs once
+/// per fiber (LAW §3 "Fiber"); the host instantiates one component instance
+/// per fiber and disposes it instantly and completely on teardown (R7, I1).
+interface lifecycle {
+  /// A contained guest failure. It deactivates the guest's own fiber and its
+  /// declared dependents, cleanly, and touches nothing else (R11).
+  variant guest-fault {
+    failed(string),
+  }
+
+  /// The plugin body: runs exactly once per fiber, receiving the entry's
+  /// serialized config (constitution 04). Effects registered here are the
+  /// fiber's contribution; they are withdrawn LIFO on teardown (I1).
+  activate: func(config: list<u8>) -> result<_, guest-fault>;
+
+  /// Per-consumer vitality check (decision log 2026-08-25, C3 binding): the
+  /// kernel evaluates provider checks per consumer, per notify — `consumer`
+  /// identifies the asking fiber, and the provider answers for that consumer
+  /// specifically. A trap here reads as `false` and is contained (R11).
+  check: func(consumer: u64) -> bool;
+
+  /// Runs the inverse registered under `token` (effects.register /
+  /// events.listen). Called exactly once per withdrawal, in LIFO order
+  /// (Law 3). A trap is recorded as an unclean withdrawal, never retried
+  /// silently (R9).
+  undo: func(token: u64) -> result<_, guest-fault>;
+
+  /// Delivers one selected event to the listener registered under `token`.
+  handle-event: func(token: u64, topic: string, payload: list<u8>)
+    -> result<list<u8>, guest-fault>;
+
+  /// Answers one contract call dispatched to this instance as a provider
+  /// (services.provide). The broker has already grant-checked and ledgered
+  /// the crossing on the caller's side; `caller` is the calling peer's
+  /// identity (R4) — a handle pairs the implementation with the caller's
+  /// scope, so the provider always knows who is calling.
+  handle-call: func(caller: u64, contract: string, operation: string, payload: list<u8>)
+    -> result<list<u8>, guest-fault>;
+
+  /// Mode-1 hot-swap state handoff, old instance side (R8): an optional
+  /// opaque blob the retiring instance offers its successor. Empty means
+  /// nothing to hand off.
+  snapshot: func() -> list<u8>;
+
+  /// Mode-1 hot-swap state handoff, new instance side (R8): offered the old
+  /// instance's blob after its own `activate` succeeded. Refusing the blob
+  /// fails the swap's health gate and rolls back to the old instance.
+  restore: func(blob: list<u8>) -> result<_, guest-fault>;
+}
+
+/// The Tier A plugin world (R7): logic and orchestration plugins and ALL
+/// machine-written code, first-party included. Imports are exactly the kernel
+/// surfaces plus the base host-provider contracts the kernel supplies
+/// (fs, process, net, keystore); capability authority arrives only as grants
+/// checked at the broker (constitution 01 §Mechanical closure) — the linker
+/// binds every import for every component, but every call through one is
+/// refused without its grant, and every refusal is a ledger event.
+world plugin {
+  import effects;
+  import services;
+  import events;
+  import fs;
+  import process;
+  import net;
+  import keystore;
+
+  export lifecycle;
+}

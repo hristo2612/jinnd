@@ -1,0 +1,24 @@
+# The M1-P8 fixture component: a tiny Tier A guest exercising the plugin
+# world (effects, provide/resolve/call, snapshot/restore, trap and spin
+# containment). Built from source — the artifact binary is never checked in:
+#   rustup target add wasm32-unknown-unknown
+#   cargo build --release --target wasm32-unknown-unknown
+# then encoded to a component by the host tests (see fixtures/README.md).
+[package]
+name = "counter-plugin"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Guest-side bindings of wit/plugin.wit. A fixture dependency only: it never
+# enters the kernel workspace's dependency graph (R10).
+wit-bindgen = "0.43.0"
+
+# Deliberately NOT a member of the kernel workspace: this crate compiles for
+# wasm32-unknown-unknown only.
+[workspace]

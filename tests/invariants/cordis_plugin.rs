@@ -1,6 +1,7 @@
 mod support;
 
-use support::spec_case;
+use jinnd_api::{EntryId, ErrorCode, Kernel, LedgerEventKind, LedgerQuery, WasmArtifact, WasmLane};
+use support::{expect_ok, spec_case};
 
 const SUBSYSTEM: support::Subsystem = support::Subsystem::Fiber;
 const FACADE_GAP_REASON: &str = "the facade has no dynamic fixture registry, nested plugin activation, root disposal, or context inspection API";
@@ -32,7 +33,52 @@ spec_case! {
     test: "apply invalid plugin (dynamic contract equivalent)",
     setup: ["construct dynamic manifests missing entrypoint or contract metadata"],
     actions: ["request spawn for each invalid manifest"],
-    expected: ["every invalid manifest is rejected before a fiber is registered"]
+    expected: ["every invalid manifest is rejected before a fiber is registered"],
+    body: |_case| {
+        const EMPTY_COMPONENT: &[u8] = &[
+            0, 97, 115, 109, 13, 0, 1, 0, 1, 8, 0, 97, 115, 109, 1, 0, 0, 0, 2, 4, 1, 0,
+            0, 0, 0, 47, 9, 112, 114, 111, 100, 117, 99, 101, 114, 115, 1, 12, 112, 114,
+            111, 99, 101, 115, 115, 101, 100, 45, 98, 121, 1, 13, 119, 105, 116, 45, 99,
+            111, 109, 112, 111, 110, 101, 110, 116, 7, 48, 46, 50, 51, 51, 46, 48,
+        ];
+        let kernel = jinnd_adapter::kernel();
+        let invalid = [
+            (
+                "missing-contract",
+                WasmArtifact {
+                    bytes: EMPTY_COMPONENT.to_vec(),
+                    expected_hash:
+                        "2b6794829bd9876746a6ddb4b314fca30d215b33d71f6940b89c845dc1a040e5"
+                            .to_owned(),
+                },
+            ),
+            (
+                "missing-entrypoint",
+                WasmArtifact {
+                    bytes: vec![0x00, 0x61],
+                    expected_hash:
+                        "022a6979e6dab7aa5ae4c3e5e45f7e977112a7e63593820dbec1ec738a24f93c"
+                            .to_owned(),
+                },
+            ),
+        ];
+        for (name, artifact) in invalid {
+            let error = match kernel.register_wasm_package(name, artifact, Vec::new()) {
+                Ok(_) => panic!("an invalid dynamic plugin contract must be refused"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, ErrorCode::InvalidProfile);
+            assert_eq!(kernel.entry_fiber(&EntryId(name.to_owned())), None);
+        }
+        let refusals = expect_ok(
+            kernel.ledger_events(LedgerQuery::default()).await,
+            "artifact refusals should be readable",
+        )
+        .into_iter()
+        .filter(|record| matches!(record.kind, LedgerEventKind::ArtifactRefused { .. }))
+        .count();
+        assert_eq!(refusals, 2, "both invalid contracts must be ledgered");
+    }
 }
 
 spec_case! {

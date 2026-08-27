@@ -17,9 +17,11 @@ jinnd-fiber = { path = "../jinnd-fiber" }
 jinnd-ledger = { path = "../jinnd-ledger" }
 jinnd-loader = { path = "../jinnd-loader" }
 jinnd-registry = { path = "../jinnd-registry" }
+jinnd-wasm = { version = "0.0.1", path = "../jinnd-wasm" }
 serde = "1.0.219"
 tokio = { version = "1.47.1", features = ["macros", "rt", "sync"] }
 tokio-util = "0.7.19"
 
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["macros", "rt", "sync"] }
+wit-component = "0.233.0"
