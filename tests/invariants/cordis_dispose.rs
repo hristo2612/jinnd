@@ -8,9 +8,6 @@ use jinnd_api::{
 };
 use support::spec_case;
 
-const SUBSYSTEM: support::Subsystem = support::Subsystem::Effects;
-const FACADE_GAP_REASON: &str = "the facade registers an Undo directly and exposes no effect-disposal or async forward-effect API";
-
 type Log = Arc<Mutex<Vec<u32>>>;
 
 fn log() -> Log {
@@ -151,7 +148,51 @@ spec_case! {
     test: "yield dispose",
     setup: ["register nested effects with listener children and undo markers 1, 2, 3"],
     actions: ["inspect nested labels", "dispose outer effect twice"],
-    expected: ["effect tree preserves parent-child shape", "undo sequence is 3, 2, 1 exactly once"]
+    expected: ["effect tree preserves parent-child shape", "undo sequence is 3, 2, 1 exactly once"],
+    body: |_case| {
+        let kernel = jinnd_adapter::kernel();
+        let log = log();
+        let parent = support::expect_ok(
+            kernel.register_effect(
+                kernel.root_context(),
+                "parent".to_owned(),
+                Box::new(MarkUndo(Arc::clone(&log), 1)),
+            ),
+            "parent effect should register",
+        );
+        let child = support::expect_ok(
+            kernel.register_child_effect(
+                parent,
+                "child".to_owned(),
+                Box::new(MarkUndo(Arc::clone(&log), 2)),
+            ),
+            "child effect should register",
+        );
+        support::expect_ok(
+            kernel.register_child_effect(
+                child,
+                "grandchild".to_owned(),
+                Box::new(MarkUndo(Arc::clone(&log), 3)),
+            ),
+            "grandchild effect should register",
+        );
+
+        let tree = kernel.effect_tree(jinnd_adapter::KERNEL_SCOPE);
+        let root = tree
+            .iter()
+            .find(|effect| effect.id == parent)
+            .unwrap_or_else(|| panic!("the parent must be live in the tree"));
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].label, "child");
+        assert_eq!(root.children[0].children[0].label, "grandchild");
+
+        support::expect_ok(kernel.dispose_effect(parent).await, "parent should dispose");
+        support::expect_ok(
+            kernel.dispose_effect(parent).await,
+            "parent disposal should be idempotent",
+        );
+        assert_eq!(read(&log), vec![3, 2, 1]);
+    }
 }
 
 spec_case! {
