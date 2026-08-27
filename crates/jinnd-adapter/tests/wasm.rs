@@ -180,6 +180,106 @@ async fn a_wrong_hash_registration_is_refused_and_recorded_through_the_facade() 
     );
 }
 
+fn provider_artifact() -> WasmArtifact {
+    let (bytes, expected_hash) = support::pinned_provider_fixture();
+    WasmArtifact {
+        bytes,
+        expected_hash,
+    }
+}
+
+/// The round-2 blocker-4 pin: the STAGED activation's outcome is committed
+/// at swap commit — its provision goes live, and disposal withdraws exactly
+/// the swapped instance's contribution, cleanly (undo tokens belong to the
+/// instance that created them; the swap-target guest refuses foreign
+/// tokens, so a mispaired replay would end the fiber Failed, not Disposed).
+#[tokio::test]
+async fn mode1_swap_commits_the_staged_contribution_and_disposes_it_exactly() {
+    let k = kernel();
+    k.register_wasm_package(PACKAGE, artifact(), vec![COUNTER.to_owned()])
+        .unwrap_or_else(|error| panic!("register: {error:?}"));
+    let report = k
+        .reconcile(Profile {
+            entries: vec![wasm_entry("wasm-1", "plain")],
+        })
+        .await
+        .unwrap_or_else(|error| panic!("reconcile: {error:?}"));
+    assert_eq!(report.errors, Vec::new());
+    let fiber = k
+        .entry_fiber(&EntryId("wasm-1".to_owned()))
+        .unwrap_or_else(|| panic!("wasm-1 has a fiber"));
+
+    // Before the swap, `plain` provides nothing: the contract is missing.
+    k.broker_grant(COUNTER);
+    let before = k
+        .broker_resolve(COUNTER)
+        .unwrap_or_else(|error| panic!("resolve: {error:?}"));
+    assert_eq!(
+        k.broker_call(before, "get", Vec::new())
+            .await
+            .err()
+            .map(|error| error.code),
+        Some(ErrorCode::MissingDependency)
+    );
+
+    // Swap to an artifact whose activation DOES provide the counter.
+    let outcome = k
+        .swap_wasm_artifact(&artifact().expected_hash, provider_artifact())
+        .await
+        .unwrap_or_else(|error| panic!("swap: {error:?}"));
+    assert!(!outcome.rolled_back);
+    assert_eq!(outcome.swapped, vec![EntryId("wasm-1".to_owned())]);
+
+    // The staged outcome was COMMITTED: the provision is live and answers.
+    let handle = k
+        .broker_resolve(COUNTER)
+        .unwrap_or_else(|error| panic!("resolve after swap: {error:?}"));
+    let answer = k
+        .broker_call(handle, "get", Vec::new())
+        .await
+        .unwrap_or_else(|error| panic!("the committed provision must answer: {error:?}"));
+    assert_eq!(answer, 0u64.to_le_bytes().to_vec(), "state handed off");
+
+    // Disposal withdraws exactly the swapped instance's contribution —
+    // cleanly: the seat replays the NEW instance's own tokens (I1, R5).
+    let report = k
+        .reconcile(Profile::<String> {
+            entries: Vec::new(),
+        })
+        .await
+        .unwrap_or_else(|error| panic!("dispose reconcile: {error:?}"));
+    assert_eq!(report.disposed.len(), 1);
+    assert_eq!(
+        k.state(fiber),
+        FiberState::Disposed,
+        "a mispaired undo token would have ended the fiber Failed"
+    );
+    let kinds: Vec<LedgerEventKind> = k
+        .ledger_events(LedgerQuery::default())
+        .await
+        .unwrap_or_else(|error| panic!("ledger: {error:?}"))
+        .into_iter()
+        .map(|record| record.kind)
+        .collect();
+    assert!(kinds.contains(&LedgerEventKind::ServiceProvided {
+        service: COUNTER.to_owned()
+    }));
+    assert!(kinds.contains(&LedgerEventKind::ServiceWithdrawn {
+        service: COUNTER.to_owned()
+    }));
+    let after = k
+        .broker_resolve(COUNTER)
+        .unwrap_or_else(|error| panic!("resolve after dispose: {error:?}"));
+    assert_eq!(
+        k.broker_call(after, "get", Vec::new())
+            .await
+            .err()
+            .map(|error| error.code),
+        Some(ErrorCode::MissingDependency),
+        "no trace of the swapped instance remains (I1)"
+    );
+}
+
 #[tokio::test]
 async fn mode1_swap_replaces_both_instances_of_one_artifact_without_restarting_fibers() {
     let k = kernel();

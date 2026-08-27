@@ -4,6 +4,7 @@
 //! choke point, two transports (decision log 2026-08-25; R6, R7).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,8 +18,8 @@ use jinnd_fiber::{FiberBody, Setup};
 use jinnd_loader::PackageLane;
 use jinnd_loader::host::{Rebind, config_of};
 use jinnd_wasm::{
-    Broker, LedgerSink, LoadedComponent, LocalTopics, NoRealms, PeerId, Seat, SharedSlot, WasmHost,
-    swap_batch,
+    Broker, LedgerSink, LoadedComponent, LocalTopics, NoRealms, PeerId, Seat, SeatState,
+    SharedSlot, SwapCore, WasmHost, swap_batch,
 };
 
 use crate::{Adapter, KERNEL_SCOPE, lock};
@@ -41,6 +42,8 @@ impl LedgerSink for Sink {
 /// One live wasm entry, addressable by the swap machine.
 struct Roster {
     slot: Arc<SharedSlot>,
+    /// This activation's key in the shared [`SwapCore`] — never reused.
+    slot_id: u64,
     peer: PeerId,
     fiber: FiberId,
     context: u64,
@@ -48,7 +51,9 @@ struct Roster {
     component: Arc<Mutex<LoadedComponent>>,
 }
 
-/// Adapter-held wasm-lane state: ONE broker, one topic registry, one host.
+/// Adapter-held wasm-lane state: ONE broker, one topic registry, one host,
+/// one swap phase machine (the loom-modeled [`SwapCore`] IS the production
+/// path — round-2 blocker-3).
 pub(crate) struct WasmState {
     broker: Arc<Broker>,
     topics: Arc<LocalTopics>,
@@ -57,6 +62,8 @@ pub(crate) struct WasmState {
     packages: Mutex<HashMap<String, Arc<Mutex<LoadedComponent>>>>,
     roster: Mutex<HashMap<EntryId, Roster>>,
     harness: Mutex<Option<PeerId>>,
+    swap: SwapCore,
+    next_slot: AtomicU64,
 }
 
 impl WasmState {
@@ -70,6 +77,8 @@ impl WasmState {
             packages: Mutex::new(HashMap::new()),
             roster: Mutex::new(HashMap::new()),
             harness: Mutex::new(None),
+            swap: SwapCore::default(),
+            next_slot: AtomicU64::new(0),
         })
     }
 
@@ -79,7 +88,10 @@ impl WasmState {
 }
 
 /// One wasm entry behind the fiber engine's body seam. Its instance lives in
-/// a [`SharedSlot`] so Mode-1 swap replaces it without touching the fiber.
+/// a [`SharedSlot`] seat so Mode-1 swap replaces it without touching the
+/// fiber — the seat pairs the instance with ITS OWN registrations, so
+/// teardown always withdraws exactly the current instance's contribution
+/// with the tokens that instance minted (I1, R5; round-2 blocker-4).
 struct WasmBody {
     state: Arc<WasmState>,
     entry: EntryId,
@@ -107,6 +119,7 @@ impl FiberBody for WasmBody {
             for contract in self.grants.iter() {
                 state.broker.grant(peer, contract);
             }
+            let slot_id = state.next_slot.fetch_add(1, Ordering::SeqCst) + 1;
             let component = lock(&self.component).clone();
             let handle = state.host.instantiate(
                 &component,
@@ -122,13 +135,11 @@ impl FiberBody for WasmBody {
                     staging: false,
                 },
             );
-            if let Some(previous) = self.slot.install(handle.clone()) {
-                previous.dispose().await;
-            }
             lock(&state.roster).insert(
                 self.entry.clone(),
                 Roster {
                     slot: Arc::clone(&self.slot),
+                    slot_id,
                     peer,
                     fiber,
                     context: at.id().0,
@@ -136,58 +147,49 @@ impl FiberBody for WasmBody {
                     component: Arc::clone(&self.component),
                 },
             );
-            // Registered FIRST: LIFO replay runs it LAST, after every guest
-            // inverse below reached a still-live instance (I1, I2 shape).
-            let (slot, broker, entry) = (
+            // ONE effect owns the whole guest contribution. It tombstones
+            // the swap slot FIRST (the loom-modeled arbitration: a racing
+            // swap claim refuses and discards), then retires the live seat —
+            // guest inverses LIFO against the instance that minted them,
+            // listeners, provisions, instance — exactly and nothing else.
+            let (slot, broker, topics, entry) = (
                 Arc::clone(&self.slot),
                 Arc::clone(&state.broker),
+                Arc::clone(&state.topics),
                 self.entry.clone(),
             );
+            let disposer_state = Arc::clone(&state);
             setup.effect(
-                "wasm instance",
+                "wasm guest seat",
                 Disposer::future(move || async move {
-                    if let Some(instance) = slot.take() {
-                        instance.dispose().await;
-                    }
+                    disposer_state.swap.dispose(slot_id);
+                    let retired = match slot.take() {
+                        Some(seat) => seat.retire(&broker, &topics, peer).await,
+                        None => Ok(()),
+                    };
                     broker.remove_peer(peer);
-                    lock(&state.roster).remove(&entry);
-                    Ok(())
+                    lock(&disposer_state.roster).remove(&entry);
+                    retired
                 }),
             )?;
-            // The body runs once per fiber; its contribution flushes into the
-            // fiber's effects, success or failure alike (I1).
+            // The body runs once per fiber; its contribution commits into
+            // the seat, success or failure alike — a failing activation
+            // still owes its inverses (I1).
             let (outcome, contributed) = handle.activate(config).await;
-            for contract in contributed.provisions {
-                let broker = Arc::clone(&self.state.broker);
-                setup.effect(
-                    format!("wasm provide {contract}"),
-                    Disposer::sync(move || {
-                        broker.withdraw(peer, &contract);
-                        Ok(())
-                    }),
-                )?;
-            }
-            for id in contributed.listens {
-                let topics = Arc::clone(&self.state.topics);
-                setup.effect(
-                    "wasm listener",
-                    Disposer::sync(move || {
-                        topics.unlisten(id);
-                        Ok(())
-                    }),
-                )?;
-            }
-            for (label, token) in contributed.effects {
-                let slot = Arc::clone(&self.slot);
-                setup.effect(
-                    label,
-                    Disposer::future(move || async move {
-                        match slot.current() {
-                            Some(instance) => instance.undo(token).await,
-                            None => Ok(()),
-                        }
-                    }),
-                )?;
+            let seat = SeatState {
+                instance: handle,
+                effects: contributed.effects,
+                provisions: contributed.provisions,
+                listens: contributed
+                    .listens
+                    .iter()
+                    .filter_map(|record| record.id)
+                    .collect(),
+            };
+            if let Some(previous) = self.slot.install(seat) {
+                // A predecessor was already retired by its own teardown;
+                // anything still seated here is disposed defensively.
+                previous.instance.dispose().await;
             }
             outcome
         })
@@ -272,7 +274,14 @@ impl WasmLane for Adapter {
                 state: Arc::clone(&state),
                 fresh: fresh.clone(),
             };
-            let outcome = swap_batch(&slots, &old_hash, fresh.hash(), state.sink.as_ref()).await?;
+            let outcome = swap_batch(
+                &slots,
+                &state.swap,
+                &old_hash,
+                fresh.hash(),
+                state.sink.as_ref(),
+            )
+            .await?;
             if !outcome.rolled_back {
                 // Retarget every package pinned to the old artifact: live
                 // roster slots share these cells, and future activations of

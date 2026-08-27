@@ -459,7 +459,7 @@ impl Lane {
 impl SwapSlots for Lane {
     type Prepared = InstanceHandle;
 
-    fn entries_pinned_to(&self, _: &str) -> Vec<EntryId> {
+    fn entries_pinned_to(&self, _: &str) -> Vec<(EntryId, u64)> {
         let mut entries: Vec<EntryId> = self
             .live
             .lock()
@@ -469,6 +469,10 @@ impl SwapSlots for Lane {
             .collect();
         entries.sort();
         entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| (entry, index as u64 + 1))
+            .collect()
     }
 
     fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, InstanceHandle> {
@@ -505,7 +509,7 @@ impl SwapSlots for Lane {
         })
     }
 
-    fn commit(&self, entry: &EntryId, prepared: InstanceHandle) -> KernelFuture<'_, ()> {
+    fn install(&self, entry: &EntryId, _: u64, prepared: InstanceHandle) -> KernelFuture<'_, ()> {
         let entry = entry.clone();
         Box::pin(async move {
             let old = self
@@ -592,7 +596,8 @@ impl Peer for TestFace {
 async fn mode1_swap_batches_by_artifact_and_hands_state_across() {
     let lane = seeded_lane(rig()).await;
     let hash = lane.rig.component.hash().to_owned();
-    let outcome = swap_batch(&lane, &hash, &hash, lane.rig.ledger.as_ref())
+    let core = jinnd_wasm::SwapCore::default();
+    let outcome = swap_batch(&lane, &core, &hash, &hash, lane.rig.ledger.as_ref())
         .await
         .unwrap_or_else(|error| panic!("swap: {error:?}"));
     assert!(!outcome.rolled_back);
@@ -630,7 +635,8 @@ async fn mode1_swap_rolls_back_whole_batch_with_old_instances_warm() {
     lane.swap_config
         .insert(EntryId("entry-b".to_owned()), b"trap".to_vec());
     let hash = lane.rig.component.hash().to_owned();
-    let outcome = swap_batch(&lane, &hash, &hash, lane.rig.ledger.as_ref())
+    let core = jinnd_wasm::SwapCore::default();
+    let outcome = swap_batch(&lane, &core, &hash, &hash, lane.rig.ledger.as_ref())
         .await
         .unwrap_or_else(|error| panic!("swap: {error:?}"));
     assert!(outcome.rolled_back);

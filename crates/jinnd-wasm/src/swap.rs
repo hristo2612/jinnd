@@ -4,8 +4,9 @@
 //!
 //! The interleaving-sensitive part — a swap racing an entry disposal — lives
 //! in [`SwapCore`], a sync phase machine modeled under loom (`--features
-//! loom`). The async driver above it never holds the core's lock across an
-//! await (R1).
+//! loom`) and driven by [`swap_batch`] itself: the model and the production
+//! path are ONE machine (round-2 blocker-3 ruling). The async driver never
+//! holds the core's lock across an await (R1).
 
 use jinnd_api::{EntryId, KernelError, KernelFuture, LedgerEventKind, SwapPhaseKind};
 
@@ -23,8 +24,8 @@ pub enum SlotPhase {
 }
 
 /// The phase machine deciding ownership between a swap's commit and a
-/// concurrent disposal. Exactly one side ends up owning the prepared
-/// instance: a commit that loses to a tombstone reports `false` and the
+/// concurrent disposal. Exactly one side ends up owning a prepared
+/// instance: a claim that loses to a tombstone reports `false` and the
 /// disposer's answer says whether it observed a preparation to discard.
 #[derive(Default)]
 pub struct SwapCore {
@@ -53,16 +54,21 @@ impl SwapCore {
         )
     }
 
-    /// Preparing → Steady with the new instance live. False when disposal
-    /// won the race: the caller must discard the prepared instance and must
-    /// not resurrect the slot.
-    pub fn commit(&self, slot: u64) -> bool {
-        self.with(|slots| match slots.get_mut(&slot) {
-            Some(phase @ SlotPhase::Preparing) => {
-                *phase = SlotPhase::Steady;
-                true
+    /// The batch claim: Preparing → Steady for EVERY slot at once, under one
+    /// lock — or for none of them. False when any slot left Preparing (a
+    /// disposal tombstoned it): the caller must roll the whole batch back,
+    /// so a partial commit cannot exist (R8 atomic replacement).
+    pub fn commit_all(&self, slots: &[u64]) -> bool {
+        self.with(|phases| {
+            let all_preparing = slots
+                .iter()
+                .all(|slot| phases.get(slot) == Some(&SlotPhase::Preparing));
+            if all_preparing {
+                for slot in slots {
+                    phases.insert(*slot, SlotPhase::Steady);
+                }
             }
-            _ => false,
+            all_preparing
         })
     }
 
@@ -79,30 +85,41 @@ impl SwapCore {
 
     /// Any phase → Tombstone. Returns the phase the disposer observed: seeing
     /// `Preparing` transfers ownership of the prepared instance to the
-    /// disposer, which discards it.
+    /// disposer's side — the swap's claim will refuse and discard it.
     pub fn dispose(&self, slot: u64) -> SlotPhase {
         self.with(|slots| {
             let previous = slots.insert(slot, SlotPhase::Tombstone);
             previous.unwrap_or(SlotPhase::Steady)
         })
     }
+
+    /// True once `slot` was disposed — the installer's convergence check:
+    /// an install that observes the tombstone retires what it installed.
+    pub fn is_tombstone(&self, slot: u64) -> bool {
+        self.with(|slots| slots.get(&slot) == Some(&SlotPhase::Tombstone))
+    }
 }
 
 /// The lane seam the swap driver drives (transport-agnostic: the adapter's
 /// wasm lane implements it over real instances; unit tests over mocks).
 ///
-/// Contract: `prepare` builds and health-gates the NEW instance — activate,
-/// offer the old snapshot, health check — while the old instance stays warm
-/// and untouched; `commit` atomically replaces old with new; `discard` drops
+/// Contract: `entries_pinned_to` names each live entry with its slot key in
+/// the shared [`SwapCore`]; `prepare` builds and health-gates the NEW
+/// instance — activate, offer the old snapshot, health check — while the old
+/// instance stays warm and untouched; `install` lands a CLAIMED instance
+/// (called only after [`SwapCore::commit_all`] succeeded) and must converge
+/// with a concurrent disposal rather than fail the batch — its error means
+/// "disposal won this entry, the prepared instance is gone"; `discard` drops
 /// a prepared instance without ever touching the old one.
 pub trait SwapSlots: Send + Sync {
     type Prepared: Send;
 
-    fn entries_pinned_to(&self, hash: &str) -> Vec<EntryId>;
+    fn entries_pinned_to(&self, hash: &str) -> Vec<(EntryId, u64)>;
 
     fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, Self::Prepared>;
 
-    fn commit(&self, entry: &EntryId, prepared: Self::Prepared) -> KernelFuture<'_, ()>;
+    fn install(&self, entry: &EntryId, slot: u64, prepared: Self::Prepared)
+    -> KernelFuture<'_, ()>;
 
     fn discard(&self, prepared: Self::Prepared) -> KernelFuture<'_, ()>;
 }
@@ -115,15 +132,19 @@ pub struct SwapOutcome {
 }
 
 /// Drives one Mode-1 swap over every entry pinned to `old_hash` — the batch
-/// is by artifact hash, never per entry. Every phase is a ledger event.
+/// is by artifact hash, never per entry. Phases run through `core`, the ONE
+/// loom-modeled machine: begin each slot, prepare each instance, then claim
+/// every slot atomically with [`SwapCore::commit_all`] before any install.
+/// A failed preparation, a refused begin, or a lost claim rolls the WHOLE
+/// batch back — old instances stay warm, zero entries commit. Every phase is
+/// a ledger event.
 ///
 /// # Errors
 ///
-/// None of its own: a failed preparation is the ROLLBACK outcome, recorded,
-/// with every already-prepared instance discarded and every old instance
-/// still live.
+/// None of its own: every failure path is the ROLLBACK outcome, recorded.
 pub async fn swap_batch<S: SwapSlots>(
     slots: &S,
+    core: &SwapCore,
     old_hash: &str,
     new_hash: &str,
     ledger: &dyn LedgerSink,
@@ -136,8 +157,15 @@ pub async fn swap_batch<S: SwapSlots>(
         },
         None,
     );
-    let mut prepared: Vec<(EntryId, S::Prepared)> = Vec::new();
-    for entry in &entries {
+    let mut prepared: Vec<(EntryId, u64, S::Prepared)> = Vec::new();
+    let mut begun: Vec<u64> = Vec::new();
+    let mut lost = false;
+    for (entry, slot) in &entries {
+        if !core.begin(*slot) {
+            lost = true;
+            break;
+        }
+        begun.push(*slot);
         match slots.prepare(entry).await {
             Ok(instance) => {
                 ledger.append(
@@ -147,30 +175,41 @@ pub async fn swap_batch<S: SwapSlots>(
                     },
                     None,
                 );
-                prepared.push((entry.clone(), instance));
+                prepared.push((entry.clone(), *slot, instance));
             }
             Err(_) => {
-                for (_, instance) in prepared {
-                    let _ = slots.discard(instance).await;
-                }
-                ledger.append(
-                    LedgerEventKind::SwapPhase {
-                        artifact: new_hash.to_owned(),
-                        phase: SwapPhaseKind::RolledBack,
-                    },
-                    None,
-                );
-                return Ok(SwapOutcome {
-                    swapped: Vec::new(),
-                    rolled_back: true,
-                });
+                lost = true;
+                break;
             }
         }
     }
+    if lost || !core.commit_all(&begun) {
+        for slot in &begun {
+            core.rollback(*slot);
+        }
+        for (_, _, instance) in prepared {
+            let _ = slots.discard(instance).await;
+        }
+        ledger.append(
+            LedgerEventKind::SwapPhase {
+                artifact: new_hash.to_owned(),
+                phase: SwapPhaseKind::RolledBack,
+            },
+            None,
+        );
+        return Ok(SwapOutcome {
+            swapped: Vec::new(),
+            rolled_back: true,
+        });
+    }
     let mut swapped = Vec::new();
-    for (entry, instance) in prepared {
-        slots.commit(&entry, instance).await?;
-        swapped.push(entry);
+    for (entry, slot, instance) in prepared {
+        // A failed install means disposal won this entry post-claim: the
+        // lane converged (the prepared instance is retired), the rest of
+        // the batch stands.
+        if slots.install(&entry, slot, instance).await.is_ok() {
+            swapped.push(entry);
+        }
     }
     ledger.append(
         LedgerEventKind::SwapPhase {

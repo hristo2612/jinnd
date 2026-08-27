@@ -103,18 +103,28 @@ impl bindings::events::Host for HostState {
             .check_grant(self.seat.peer, &topic)
             .map_err(bindings::wire_error)?;
         if self.seat.staging {
-            self.outcome.listens.push(0);
+            // Recorded, not routed (R8): the registration is committed at
+            // swap commit, against the new instance's own delivery face.
+            self.outcome.listens.push(crate::handle::ListenRecord {
+                topic,
+                token,
+                id: None,
+            });
             return Ok(0);
         }
-        let target: Arc<dyn crate::topics::EventTarget> = match &self.seat.slot {
-            Some(slot) => Arc::new(Arc::clone(slot)),
-            None => self.face.clone(),
-        };
-        let id = self
-            .seat
-            .topics
-            .listen(&topic, self.seat.context, token, target);
-        self.outcome.listens.push(id);
+        // The delivery target is THIS instance's own face: a token pairs
+        // with the instance that minted it, never rebound through a slot.
+        let id = self.seat.topics.listen(
+            &topic,
+            self.seat.context,
+            token,
+            self.face.clone() as Arc<dyn crate::topics::EventTarget>,
+        );
+        self.outcome.listens.push(crate::handle::ListenRecord {
+            topic,
+            token,
+            id: Some(id),
+        });
         Ok(id)
     }
 }

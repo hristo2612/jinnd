@@ -28,6 +28,14 @@ struct Listener {
     target: Arc<dyn EventTarget>,
 }
 
+/// One listener registration for an atomic [`LocalTopics::rebind`].
+pub struct Rebind {
+    pub topic: String,
+    pub context: u64,
+    pub token: u64,
+    pub target: Arc<dyn EventTarget>,
+}
+
 #[derive(Default)]
 struct Inner {
     listeners: Vec<Listener>,
@@ -80,6 +88,30 @@ impl LocalTopics {
     /// Withdraws one registration. Idempotent.
     pub fn unlisten(&self, id: u64) {
         self.lock().listeners.retain(|listener| listener.id != id);
+    }
+
+    /// Atomically withdraws `old` and registers `new`, under ONE lock: no
+    /// emit ever selects a half-swapped listener set — the Mode-1 commit
+    /// shape (R8 atomic replacement).
+    pub fn rebind(&self, old: &[u64], new: Vec<Rebind>) -> Vec<u64> {
+        let mut inner = self.lock();
+        inner
+            .listeners
+            .retain(|listener| !old.contains(&listener.id));
+        new.into_iter()
+            .map(|registration| {
+                inner.next += 1;
+                let id = inner.next;
+                inner.listeners.push(Listener {
+                    id,
+                    topic: registration.topic,
+                    context: registration.context,
+                    token: registration.token,
+                    target: registration.target,
+                });
+                id
+            })
+            .collect()
     }
 
     /// Dispatches one payload: listeners are selected kernel-side from a

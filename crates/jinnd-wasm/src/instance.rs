@@ -39,10 +39,12 @@ pub struct Seat {
     /// The guest-call horizon: a guest that neither returns nor traps by
     /// this deadline is killed, deactivating only its own fiber (R11).
     pub deadline: Duration,
-    /// The provider/listener face the broker and topic registry route to;
-    /// `None` routes straight to this instance. A lane passes its per-fiber
-    /// [`crate::SharedSlot`] so a Mode-1 swap redirects every route
-    /// atomically at commit (R8) — provisions never re-run.
+    /// The provider face the broker routes contract calls to; `None` routes
+    /// straight to this instance. A lane passes its per-fiber
+    /// [`crate::SharedSlot`] so a Mode-1 swap redirects call routing
+    /// atomically at commit (R8) — kept provisions never re-run. Listener
+    /// deliveries never route here: each registration targets the delivery
+    /// face of the instance that minted its token (round-2 blocker-4).
     pub slot: Option<Arc<crate::slot::SharedSlot>>,
     /// A staging instance (the not-yet-committed side of a Mode-1 swap):
     /// its provide/listen registrations are RECORDED but not routed — the

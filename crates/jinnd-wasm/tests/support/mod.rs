@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/counter-plugin")
+fn fixture_dir(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../fixtures/{name}"))
 }
 
 /// The build must use a rustc whose wasm32-unknown-unknown std is installed.
@@ -31,9 +31,13 @@ fn candidates() -> Vec<(PathBuf, Option<PathBuf>)> {
     found
 }
 
-fn build_core_module() -> Vec<u8> {
-    let dir = fixture_dir();
-    let artifact = dir.join("target/wasm32-unknown-unknown/release/counter_plugin.wasm");
+fn build_core_module(name: &str) -> Vec<u8> {
+    let dir = fixture_dir(name);
+    let module = format!(
+        "target/wasm32-unknown-unknown/release/{}.wasm",
+        name.replace('-', "_")
+    );
+    let artifact = dir.join(module);
     let mut failures = Vec::new();
     for (cargo, rustc) in candidates() {
         let mut command = Command::new(&cargo);
@@ -70,23 +74,41 @@ fn build_core_module() -> Vec<u8> {
     );
 }
 
-/// The fixture as component bytes, built and encoded once per process.
-pub fn fixture_component() -> &'static [u8] {
-    static COMPONENT: OnceLock<Vec<u8>> = OnceLock::new();
-    COMPONENT.get_or_init(|| {
-        let core = build_core_module();
-        wit_component::ComponentEncoder::default()
-            .module(&core)
-            .unwrap_or_else(|error| panic!("core module rejected: {error:#}"))
-            .validate(true)
-            .encode()
-            .unwrap_or_else(|error| panic!("component encoding failed: {error:#}"))
-    })
+fn encode(name: &str) -> Vec<u8> {
+    let core = build_core_module(name);
+    wit_component::ComponentEncoder::default()
+        .module(&core)
+        .unwrap_or_else(|error| panic!("core module rejected: {error:#}"))
+        .validate(true)
+        .encode()
+        .unwrap_or_else(|error| panic!("component encoding failed: {error:#}"))
 }
 
-/// The component and its true pin (Law 5), computed the honest way.
+/// The counter fixture as component bytes, built and encoded once per
+/// process.
+pub fn fixture_component() -> &'static [u8] {
+    static COMPONENT: OnceLock<Vec<u8>> = OnceLock::new();
+    COMPONENT.get_or_init(|| encode("counter-plugin"))
+}
+
+/// The swap-target fixture (a providing activation), built once per process.
+#[allow(dead_code)]
+pub fn provider_component() -> &'static [u8] {
+    static COMPONENT: OnceLock<Vec<u8>> = OnceLock::new();
+    COMPONENT.get_or_init(|| encode("provider-plugin"))
+}
+
+/// A component and its true pin (Law 5), computed the honest way.
 pub fn pinned_fixture() -> (Vec<u8>, String) {
     let bytes = fixture_component().to_vec();
+    let hash = jinnd_wasm::hex_digest(&bytes);
+    (bytes, hash)
+}
+
+/// The swap-target component and its pin.
+#[allow(dead_code)]
+pub fn pinned_provider_fixture() -> (Vec<u8>, String) {
+    let bytes = provider_component().to_vec();
     let hash = jinnd_wasm::hex_digest(&bytes);
     (bytes, hash)
 }

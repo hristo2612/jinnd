@@ -13,16 +13,29 @@ use tokio::sync::{mpsc, oneshot};
 use crate::peer::{Peer, PeerId};
 use crate::topics::EventTarget;
 
-/// What one activation contributed, in registration order: the harness lane
-/// turns these into kernel effects charged to the fiber (R5, I1).
+/// What one activation contributed, in registration order: the lane commits
+/// these into the fiber's live seat, so teardown withdraws exactly this
+/// instance's contribution with this instance's own tokens (R5, I1).
 #[derive(Debug, Default)]
 pub struct ActivationOutcome {
     /// Guest effect registrations: (label, undo token), in order.
     pub effects: Vec<(String, u64)>,
     /// Contracts provided over the broker.
     pub provisions: Vec<String>,
-    /// Topic listener registration ids, in order.
-    pub listens: Vec<u64>,
+    /// Topic listener registrations, in order.
+    pub listens: Vec<ListenRecord>,
+}
+
+/// One guest listener registration. A live activation carries the topic
+/// registry id it registered under; a STAGED activation (the uncommitted
+/// side of a Mode-1 swap) records topic and token only — the id is minted
+/// at commit, against the new instance's own delivery face (R8; tokens
+/// never leave the instance that registered them).
+#[derive(Clone, Debug)]
+pub struct ListenRecord {
+    pub topic: String,
+    pub token: u64,
+    pub id: Option<u64>,
 }
 
 pub(crate) enum Command {

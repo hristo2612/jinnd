@@ -34,12 +34,12 @@ mod topics;
 
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
-pub use handle::{ActivationOutcome, InstanceHandle};
+pub use handle::{ActivationOutcome, InstanceHandle, ListenRecord};
 pub use host::{LoadedComponent, WasmHost};
 pub use instance::Seat;
 pub use peer::{HandleId, LedgerSink, Peer, PeerId};
 pub use selector::{NoRealms, RealmOracle, Selector};
 pub use sha256::hex_digest;
-pub use slot::SharedSlot;
+pub use slot::{SeatState, SharedSlot, commit_staged};
 pub use swap::{SlotPhase, SwapCore, SwapOutcome, SwapSlots, swap_batch};
-pub use topics::{EmitReport, EventTarget, LocalTopics};
+pub use topics::{EmitReport, EventTarget, LocalTopics, Rebind};
