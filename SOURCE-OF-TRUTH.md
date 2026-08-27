@@ -376,6 +376,22 @@ Ordering rule: never touch a layer until the layer above it is already useful.
      cannot cross the component boundary; realm queries evaluated kernel-side);
      Mode-1 swap batches all entries sharing an artifact hash.
 
+- **2026-08-27** — **M1-P7 escalation adjudicated (plain-effect atomicity).** The
+  implementer proved joint unsatisfiability between "the kernel erases a failing
+  plain closure's partial mutations" and the pinned no-inverse-on-Err semantics;
+  accepted. The paper's "a plain effect installs all or none" (p.36) is a claim
+  about effect REGISTRATION in a model whose actions are atomic transformers —
+  not a mandate to undo hostile closure side effects, which is impossible
+  without an inverse the failing action never registered. Codified obligation:
+  **a plain-effect action must be internally atomic; the kernel guarantees
+  no-registration and no-inverse-run on Err; partial mutation inside a failing
+  plain action is a provider contract violation**, in the same class as the
+  commutativity obligation (Thm 42). Kernel-enforceable atomicity lives in
+  Steps/iterator effects (prefix unwind, Alg 1); the invariant case was
+  reshaped accordingly (verifier-lane). Same packet: crash-safe revert claims
+  resume under their durable intent (constitution 03), and the harness-lane
+  LOC ceilings were re-priced on evidence (M1-P2 precedent).
+
 - **2026-08-24** — M1-P1 delivered (jinnd-context, 468 LOC, miri clean) but exposed
   a P0 suite defect: cases never call the facade, so no packet can green a case
   without breaking the two-key rule. Implementer correctly BLOCKED instead of
