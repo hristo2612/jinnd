@@ -10,8 +10,9 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{DispatchMode, KernelError, KernelFuture};
+use jinnd_api::{DispatchMode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
+use crate::peer::LedgerSink;
 use crate::selector::{RealmOracle, Selector, selects};
 
 /// One event delivery answered by a listener's host — the transport seam,
@@ -54,9 +55,22 @@ pub struct EmitReport {
 #[derive(Default)]
 pub struct LocalTopics {
     inner: Mutex<Inner>,
+    /// The dispatch-trace tap (M2-K2; Law 2): with a sink, every emit lands
+    /// exactly one `DispatchTrace` after its walk settled. `None` keeps the
+    /// registry a pure port (crate tests, pre-tap callers).
+    sink: Option<Arc<dyn LedgerSink>>,
 }
 
 impl LocalTopics {
+    /// A registry whose every emit lands one `DispatchTrace` on `sink`.
+    #[must_use]
+    pub fn traced(sink: Arc<dyn LedgerSink>) -> Self {
+        Self {
+            inner: Mutex::new(Inner::default()),
+            sink: Some(sink),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner
             .lock()
@@ -124,7 +138,11 @@ impl LocalTopics {
     /// Dispatches one payload: listeners are selected kernel-side from a
     /// snapshot (no lock is held across a delivery, R1), then walked per the
     /// mode. A failing listener is contained and recorded, never aborting a
-    /// collecting walk (R9).
+    /// collecting walk (R9). With a trace sink, exactly one `DispatchTrace`
+    /// lands after the walk settled, attributed to `fiber` — the append is
+    /// fire-and-forget relative to the walk and never changes the report
+    /// (M2-K2; Law 2, R11).
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         &self,
         emitter: u64,
@@ -132,6 +150,7 @@ impl LocalTopics {
         mode: DispatchMode,
         selector: &Selector,
         payload: Vec<u8>,
+        fiber: Option<FiberId>,
         oracle: &dyn RealmOracle,
     ) -> EmitReport {
         let selected: Vec<(u64, Arc<dyn EventTarget>)> = {
@@ -144,6 +163,7 @@ impl LocalTopics {
                 .map(|listener| (listener.token, Arc::clone(&listener.target)))
                 .collect()
         };
+        let listeners = selected.len();
         let mut report = EmitReport::default();
         match mode {
             DispatchMode::Emit | DispatchMode::Parallel | DispatchMode::Serial => {
@@ -180,6 +200,18 @@ impl LocalTopics {
                 }
                 report.outputs.push(current);
             }
+        }
+        if let Some(sink) = &self.sink {
+            sink.append(
+                LedgerEventKind::DispatchTrace {
+                    topic: topic.to_owned(),
+                    mode,
+                    listeners: u32::try_from(listeners).unwrap_or(u32::MAX),
+                    failures: u32::try_from(report.failures.len()).unwrap_or(u32::MAX),
+                    emitter,
+                },
+                fiber,
+            );
         }
         report
     }

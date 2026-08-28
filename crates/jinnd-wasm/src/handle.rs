@@ -33,6 +33,9 @@ pub enum Registration {
     Provision { contract: String },
     /// A topic listener registration.
     Listen(ListenRecord),
+    /// A `jinn:clock` alarm request — an effect whose undo cancels the
+    /// host-side alarm (M2-K2; R5).
+    Alarm(AlarmRecord),
 }
 
 impl ActivationOutcome {
@@ -65,6 +68,16 @@ impl ActivationOutcome {
                 _ => None,
             })
     }
+
+    /// The alarm requests, in registration order (M2-K2).
+    pub fn alarms(&self) -> impl Iterator<Item = &AlarmRecord> {
+        self.registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Alarm(record) => Some(record),
+                _ => None,
+            })
+    }
 }
 
 /// One guest listener registration. A live activation carries the topic
@@ -75,6 +88,20 @@ impl ActivationOutcome {
 #[derive(Clone, Debug)]
 pub struct ListenRecord {
     pub topic: String,
+    pub token: u64,
+    pub id: Option<u64>,
+}
+
+/// One guest alarm request (M2-K2). A live activation carries the alarm
+/// registry id it was armed under; a STAGED activation records the request
+/// only — the id is minted at commit, armed against the new instance's own
+/// delivery face (R8; the seat's staged outcome carries alarms exactly
+/// like any effect).
+#[derive(Clone, Debug)]
+pub struct AlarmRecord {
+    /// The request's Law-2 label, shared by registration and withdrawal.
+    pub label: String,
+    pub spec: crate::alarms::AlarmSpec,
     pub token: u64,
     pub id: Option<u64>,
 }

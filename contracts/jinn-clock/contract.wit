@@ -1,0 +1,34 @@
+// jinn:clock@0.1.0 (M2-K2) — time enters the system honestly.
+// Host capability contract supplied by the kernel (01 §Mechanical closure):
+// reads cross the broker choke point, alarm requests are reversible effects
+// whose inverse cancels, and every wake is a ledger event (Law 2). The
+// guest-facing import of this contract lives in the plugin world
+// (wit/plugin.wit `interface clock`); this bundle is the contract of record
+// (R12), with effect classes and scope in `metadata.toml`.
+package jinn:clock@0.1.0;
+
+interface clock {
+  variant clock-error { denied(string), invalid(string) }
+
+  // effect = read. Milliseconds since the Unix epoch — a plain instant;
+  // v0.1 defines no civil-time (timezone/DST) semantics, and ordering
+  // authority stays with the ledger's sequence, never this reading.
+  // Broker wire: operation `now`, empty payload, answer = 8-byte LE u64.
+  now: func() -> result<u64, clock-error>;
+
+  // effect = revertible: inverse obligation = cancel-alarm. One wake at
+  // `instant-ms` (the `now` domain); an instant already past wakes once,
+  // immediately. Delivery: `handle-event(token, "jinn:clock/alarm",
+  // payload)`, payload = 8-byte LE wake instant. Alarms do not survive a
+  // kernel restart (re-request on activate); a Mode-1 swap carries them.
+  alarm-at: func(instant-ms: u64, token: u64) -> result<u64, clock-error>;
+
+  // effect = revertible: inverse obligation = cancel-alarm. A wake every
+  // `period-ms`, first one period from now. Refused below the granted
+  // resolution floor (scope type `rate`; default floor 250ms — R9).
+  alarm-every: func(period-ms: u64, token: u64) -> result<u64, clock-error>;
+}
+
+world clock-provider {
+  export clock;
+}

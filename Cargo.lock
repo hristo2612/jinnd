@@ -553,6 +553,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wit-component",
 ]
 
 [[package]]
@@ -614,6 +615,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -164,6 +164,43 @@ interface net {
   request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, kernel-error>;
 }
 
+/// Host capability contract `jinn:clock` (M2-K2; contract bundle
+/// `contracts/jinn-clock`). Time enters the system honestly: reads cross
+/// the broker's choke point, and every wake is a ledger event (Law 2).
+///
+/// An alarm request IS an effect (R5): the kernel registers its
+/// cancellation as the undo, teardown cancels it with the rest of the
+/// instance's contribution (LIFO), and a Mode-1 swap carries live alarms
+/// through the seat's staged outcome exactly like any registration (R8).
+/// Alarms do NOT survive a kernel restart in v0.1: a plugin re-requests
+/// its alarms in `activate` — that is the honest contract, not a defect.
+///
+/// Resolution is scoped (R9: no free high-frequency wake hazard): a
+/// periodic alarm finer than the granted floor is refused. The kernel's
+/// default floor is 250ms (the contract bundle documents it).
+interface clock {
+  use types.{effect-id, kernel-error};
+
+  /// Reads the host clock: milliseconds since the Unix epoch. A plain
+  /// instant — v0.1 defines no civil-time (timezone/DST) semantics; the
+  /// ledger's sequence, never this clock, carries ordering authority.
+  /// Effect class: read. Broker wire: operation `now`, empty payload,
+  /// answer = 8-byte little-endian milliseconds.
+  now: func() -> result<u64, kernel-error>;
+
+  /// Requests one wake at `instant-ms` (the `now` domain). An instant
+  /// already past wakes once, immediately. Delivery:
+  /// `lifecycle.handle-event(token, "jinn:clock/alarm", payload)` with
+  /// payload = 8-byte little-endian wake instant. Effect class:
+  /// revertible — the undo cancels the alarm.
+  alarm-at: func(instant-ms: u64, token: u64) -> result<effect-id, kernel-error>;
+
+  /// Requests a wake every `period-ms`, first wake one period from now,
+  /// delivered as `alarm-at` describes. Refused below the granted
+  /// resolution floor. Effect class: revertible — the undo cancels.
+  alarm-every: func(period-ms: u64, token: u64) -> result<effect-id, kernel-error>;
+}
+
 /// Base host-provider contract `jinn:keystore` (R7). Same grant discipline
 /// and broker choke point as `fs`. Sensitivity class: secret
 /// (constitution 02 §Redaction — values never land in the ledger).
@@ -244,6 +281,7 @@ world plugin {
   import process;
   import net;
   import keystore;
+  import clock;
 
   export lifecycle;
 }

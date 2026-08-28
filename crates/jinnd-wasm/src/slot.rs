@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
+use crate::alarms::{Alarms, ArmRequest};
 use crate::broker::Broker;
 use crate::handle::{ActivationOutcome, InstanceHandle, Registration, peer_face};
 use crate::peer::{LedgerSink, Peer, PeerId};
@@ -39,19 +40,21 @@ impl SeatState {
         }
     }
 
-    /// The seat's provided contracts and minted listener ids (derived
-    /// per-category views over the one journal).
-    fn views(&self) -> (Vec<String>, Vec<u64>) {
+    /// The seat's provided contracts, minted listener ids, and armed alarm
+    /// ids (derived per-category views over the one journal).
+    fn views(&self) -> (Vec<String>, Vec<u64>, Vec<u64>) {
         let mut provisions = Vec::new();
         let mut listens = Vec::new();
+        let mut alarms = Vec::new();
         for registration in &self.registrations {
             match registration {
                 Registration::Provision { contract } => provisions.push(contract.clone()),
                 Registration::Listen(record) => listens.extend(record.id),
+                Registration::Alarm(record) => alarms.extend(record.id),
                 Registration::Effect { .. } => {}
             }
         }
-        (provisions, listens)
+        (provisions, listens, alarms)
     }
 
     /// Withdraws exactly this seat's contribution (I1) as ONE LIFO replay of
@@ -71,6 +74,7 @@ impl SeatState {
         self,
         broker: &Broker,
         topics: &LocalTopics,
+        alarms: &Alarms,
         peer: PeerId,
         ledger: Option<(&dyn LedgerSink, FiberId)>,
     ) -> Result<(), KernelError> {
@@ -98,6 +102,22 @@ impl SeatState {
                         sink.append(
                             LedgerEventKind::EffectWithdrawn {
                                 label: format!("listen {topic}"),
+                                clean: true,
+                            },
+                            Some(fiber),
+                        );
+                    }
+                }
+                // The alarm effect's undo: cancel host-side (M2-K2, R5).
+                // After this, no wake of the id is ever ledgered again.
+                Registration::Alarm(record) => {
+                    let cancelled = record.id.is_some_and(|id| alarms.cancel(id));
+                    if let Some((sink, fiber)) = ledger
+                        && cancelled
+                    {
+                        sink.append(
+                            LedgerEventKind::EffectWithdrawn {
+                                label: record.label.clone(),
                                 clean: true,
                             },
                             Some(fiber),
@@ -154,11 +174,11 @@ impl SharedSlot {
         self.lock().as_ref().map(|seat| seat.instance.clone())
     }
 
-    /// The live seat's broker provisions and listener ids.
-    pub fn registrations(&self) -> (Vec<String>, Vec<u64>) {
+    /// The live seat's broker provisions, listener ids, and alarm ids.
+    pub fn registrations(&self) -> (Vec<String>, Vec<u64>, Vec<u64>) {
         match self.lock().as_ref() {
             Some(seat) => seat.views(),
-            None => (Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), Vec::new()),
         }
     }
 }
@@ -185,12 +205,13 @@ pub fn commit_staged(
     outcome: ActivationOutcome,
     broker: &Broker,
     topics: &LocalTopics,
+    alarms: &Arc<Alarms>,
     peer: PeerId,
     fiber: Option<FiberId>,
     context: u64,
     ledger: &dyn LedgerSink,
 ) -> Option<SeatState> {
-    let (old_provisions, old_listens) = slot.registrations();
+    let (old_provisions, old_listens, old_alarms) = slot.registrations();
     let face = peer_face(&staged);
     let rebinds: Vec<Rebind> = outcome
         .listens()
@@ -202,13 +223,30 @@ pub fn commit_staged(
         })
         .collect();
     let ids = topics.rebind(&old_listens, rebinds);
+    // The staged alarms arm against the NEW instance's own face, the
+    // displaced seat's alarms cancel — live alarms survive the swap through
+    // the staged outcome, exactly like any effect (M2-K2, R8); their floor
+    // was validated at staging, so nothing here can fail.
+    let arm_requests: Vec<ArmRequest> = outcome
+        .alarms()
+        .map(|record| ArmRequest {
+            spec: record.spec,
+            token: record.token,
+            fiber,
+            target: Arc::clone(&face) as Arc<dyn EventTarget>,
+        })
+        .collect();
+    let alarm_ids = alarms.rebind(&old_alarms, arm_requests);
     // The minted ids land back in the journal, in order: the committed seat
     // carries ONE registration list, exactly as an initial activation's.
     let mut registrations = outcome.registrations;
     let mut minted = ids.into_iter();
+    let mut minted_alarms = alarm_ids.into_iter();
     for registration in &mut registrations {
-        if let Registration::Listen(record) = registration {
-            record.id = minted.next();
+        match registration {
+            Registration::Listen(record) => record.id = minted.next(),
+            Registration::Alarm(record) => record.id = minted_alarms.next(),
+            _ => {}
         }
     }
     let new_provisions: Vec<String> = registrations

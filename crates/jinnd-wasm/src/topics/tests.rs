@@ -1,11 +1,33 @@
 //! Topic registry unit tests (crate lane).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use jinnd_api::{DispatchMode, ErrorCode, KernelError, KernelFuture};
+use jinnd_api::{DispatchMode, ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
 use super::{EventTarget, LocalTopics};
+use crate::peer::LedgerSink;
 use crate::selector::{NoRealms, Selector};
+
+#[derive(Default)]
+struct RecordingSink(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
+
+impl LedgerSink for RecordingSink {
+    fn append(&self, kind: LedgerEventKind, fiber: Option<FiberId>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push((kind, fiber));
+    }
+}
+
+impl RecordingSink {
+    fn recorded(&self) -> Vec<(LedgerEventKind, Option<FiberId>)> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+}
 
 struct Answer(Vec<u8>);
 
@@ -31,6 +53,77 @@ impl EventTarget for Failing {
 }
 
 #[tokio::test]
+async fn every_traced_emit_lands_exactly_one_dispatch_trace() {
+    let sink = Arc::new(RecordingSink::default());
+    let topics = LocalTopics::traced(Arc::clone(&sink) as Arc<dyn LedgerSink>);
+    topics.listen("t", 1, 0, Arc::new(Failing));
+    topics.listen("t", 2, 0, Arc::new(Answer(b"ok".to_vec())));
+    topics.listen("other", 3, 0, Arc::new(Answer(b"off-topic".to_vec())));
+
+    let report = topics
+        .emit(
+            7,
+            "t",
+            DispatchMode::Parallel,
+            &Selector::All,
+            Vec::new(),
+            Some(FiberId(3)),
+            &NoRealms,
+        )
+        .await;
+    assert_eq!(report.outputs, vec![b"ok".to_vec()]);
+
+    let recorded = sink.recorded();
+    assert_eq!(recorded.len(), 1, "exactly one trace per emit");
+    let (kind, fiber) = &recorded[0];
+    assert_eq!(
+        *fiber,
+        Some(FiberId(3)),
+        "emitter fiber attribution (Law 2)"
+    );
+    assert_eq!(
+        *kind,
+        LedgerEventKind::DispatchTrace {
+            topic: "t".to_owned(),
+            mode: DispatchMode::Parallel,
+            listeners: 2,
+            failures: 1,
+            emitter: 7,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_listenerless_traced_emit_still_traces() {
+    let sink = Arc::new(RecordingSink::default());
+    let topics = LocalTopics::traced(Arc::clone(&sink) as Arc<dyn LedgerSink>);
+    topics
+        .emit(
+            1,
+            "quiet",
+            DispatchMode::Emit,
+            &Selector::All,
+            Vec::new(),
+            None,
+            &NoRealms,
+        )
+        .await;
+    assert_eq!(
+        sink.recorded(),
+        vec![(
+            LedgerEventKind::DispatchTrace {
+                topic: "quiet".to_owned(),
+                mode: DispatchMode::Emit,
+                listeners: 0,
+                failures: 0,
+                emitter: 1,
+            },
+            None
+        )]
+    );
+}
+
+#[tokio::test]
 async fn failing_listener_never_aborts_a_collecting_walk() {
     let topics = LocalTopics::default();
     topics.listen("t", 1, 0, Arc::new(Failing));
@@ -42,6 +135,7 @@ async fn failing_listener_never_aborts_a_collecting_walk() {
             DispatchMode::Parallel,
             &Selector::All,
             Vec::new(),
+            None,
             &NoRealms,
         )
         .await;
@@ -62,6 +156,7 @@ async fn bail_takes_the_first_non_empty_output_only() {
             DispatchMode::Bail,
             &Selector::All,
             Vec::new(),
+            None,
             &NoRealms,
         )
         .await;
@@ -81,6 +176,7 @@ async fn waterfall_folds_non_empty_outputs_into_the_payload() {
             DispatchMode::Waterfall,
             &Selector::All,
             b"seed".to_vec(),
+            None,
             &NoRealms,
         )
         .await;
@@ -99,6 +195,7 @@ async fn selector_and_unlisten_gate_delivery() {
             DispatchMode::Serial,
             &Selector::ContextSet(vec![1]),
             Vec::new(),
+            None,
             &NoRealms,
         )
         .await;
@@ -121,6 +218,7 @@ async fn selector_and_unlisten_gate_delivery() {
             DispatchMode::Serial,
             &Selector::ContextSet(vec![1]),
             Vec::new(),
+            None,
             &NoRealms,
         )
         .await;

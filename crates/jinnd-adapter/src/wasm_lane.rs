@@ -13,7 +13,7 @@ use jinnd_api::{
     EffectId, FiberId, KernelError, KernelFuture, LedgerEventKind, SwapReport, WasmArtifact,
     WasmLane,
 };
-use jinnd_wasm::{LaneCore, LedgerSink, PeerId, SeatSpec, WasmBody, swap_pinned, wasm_lane};
+use jinnd_wasm::{Grant, LaneCore, LedgerSink, PeerId, SeatSpec, WasmBody, swap_pinned, wasm_lane};
 
 use crate::{Adapter, KERNEL_SCOPE, lock};
 
@@ -63,13 +63,24 @@ impl WasmLane for Adapter {
             state.core.sink.as_ref(),
         )?;
         let shared = Arc::new(Mutex::new(component));
-        let grants = Arc::new(grants);
+        // The facade grants by name; harness-lane grants carry no scope
+        // (scoped grants are the profile document's syntax, daemon-side).
+        let grants: Arc<Vec<Grant>> = Arc::new(
+            grants
+                .into_iter()
+                .map(|contract| Grant {
+                    contract,
+                    scope: None,
+                })
+                .collect(),
+        );
         let fibers = Arc::clone(&self.fibers);
         // Registration-time grants restate unchanged on every config edit
         // (the facade fixes them per package); the payload is the entry's
         // String config, verbatim.
         let decode = move |config: &String| SeatSpec {
             grants: (*grants).clone(),
+            faults: Vec::new(),
             payload: config.clone().into_bytes(),
         };
         let track = move |body: Arc<WasmBody>, signal| {

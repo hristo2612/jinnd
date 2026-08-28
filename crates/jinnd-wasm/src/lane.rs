@@ -22,7 +22,11 @@ use jinnd_fiber::{Fiber, FiberBody, Setup, WatchReadiness};
 use jinnd_loader::host::{LaneHandle, Rebind, config_of};
 use jinnd_loader::{PackageLane, SpawnRequest};
 
+use crate::alarms::{Alarms, clock_floor};
 use crate::broker::Broker;
+use crate::broker_state::refusal;
+use crate::grants::admission;
+pub use crate::grants::{Grant, SeatSpec};
 use crate::handle::Registration;
 use crate::host::{LoadedComponent, WasmHost};
 use crate::instance::Seat;
@@ -39,15 +43,6 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// One entry's seat configuration: `grants` are the contract names the
-/// profile side grants the instance (constitution 01: requests are not
-/// grants), `payload` is the opaque payload handed to the guest's `activate`
-/// (R9: data, never behavior).
-pub struct SeatSpec {
-    pub grants: Vec<String>,
-    pub payload: Vec<u8>,
-}
-
 /// One live wasm entry, addressable by the swap machine.
 pub(crate) struct Roster {
     pub(crate) slot: Arc<SharedSlot>,
@@ -56,6 +51,9 @@ pub(crate) struct Roster {
     pub(crate) peer: PeerId,
     pub(crate) fiber: FiberId,
     pub(crate) context: u64,
+    /// The entry's granted `jinn:clock` floor — a staging seat revalidates
+    /// against the SAME grant scope its live seat holds (M2-K2, R9).
+    pub(crate) clock_floor_ms: u64,
     pub(crate) config: Vec<u8>,
     pub(crate) component: Arc<Mutex<LoadedComponent>>,
 }
@@ -66,6 +64,9 @@ pub(crate) struct Roster {
 pub struct LaneCore {
     pub broker: Arc<Broker>,
     pub topics: Arc<LocalTopics>,
+    /// The `jinn:clock` alarm registry (M2-K2): one per assembly, wakes
+    /// ledgered on the same sink.
+    pub alarms: Arc<Alarms>,
     pub host: WasmHost,
     pub sink: Arc<dyn LedgerSink>,
     pub packages: Mutex<HashMap<String, Arc<Mutex<LoadedComponent>>>>,
@@ -83,7 +84,10 @@ impl LaneCore {
     pub fn new(sink: Arc<dyn LedgerSink>) -> Result<Self, KernelError> {
         Ok(Self {
             broker: Arc::new(Broker::new(Arc::clone(&sink))),
-            topics: Arc::new(LocalTopics::default()),
+            // The byte-lane tap (M2-K2; Law 2): every emit through this
+            // assembly's port lands one DispatchTrace on the same sink.
+            topics: Arc::new(LocalTopics::traced(Arc::clone(&sink))),
+            alarms: Arc::new(Alarms::new(Arc::clone(&sink))),
             host: WasmHost::new()?,
             sink,
             packages: Mutex::new(HashMap::new()),
@@ -127,17 +131,46 @@ impl Rebind for WasmBody {
 impl FiberBody for WasmBody {
     fn activate<'a>(&'a self, mut setup: Setup<'a>) -> KernelFuture<'a, ()> {
         Box::pin(async move {
-            let (grants, config) = {
+            let (grants, faults, config) = {
                 let seat = lock(&self.seat);
-                (seat.grants.clone(), seat.payload.clone())
+                (
+                    seat.grants.clone(),
+                    seat.faults.clone(),
+                    seat.payload.clone(),
+                )
             };
             let at = lock(&self.at).clone();
             let fiber = setup.fiber();
             let core = Arc::clone(&self.core);
             let peer = core.broker.register_peer(Some(fiber));
-            for contract in &grants {
-                core.broker.grant(peer, contract);
+            // Fail-closed scope admission (round-3 ruling; Law 1, 01
+            // §Grants): only admitted grants become broker authority; every
+            // refusal — an invalid scope, or an entry unreadable as a grant
+            // at all — is a ledgered per-entry error, never a silent drop
+            // and never a widened unscoped grant.
+            for fault in &faults {
+                core.sink.append(
+                    LedgerEventKind::ErrorRecorded {
+                        error: refusal(
+                            jinnd_api::ErrorCode::EffectFailed,
+                            format!("grant entry refused: {fault}"),
+                        ),
+                    },
+                    Some(fiber),
+                );
             }
+            let (admitted, refusals) = admission(&grants);
+            for error in refusals {
+                core.sink
+                    .append(LedgerEventKind::ErrorRecorded { error }, Some(fiber));
+            }
+            for grant in &admitted {
+                core.broker.grant(peer, &grant.contract);
+            }
+            // The entry's granted `jinn:clock` resolution floor (M2-K2,
+            // R9): grants scope alarm resolution per entry — read off the
+            // ADMITTED grants only.
+            let clock_floor_ms = clock_floor(&admitted);
             let slot_id = core.next_slot.fetch_add(1, Ordering::SeqCst) + 1;
             let component = lock(&self.component).clone();
             let handle = core.host.instantiate(
@@ -145,11 +178,13 @@ impl FiberBody for WasmBody {
                 Seat {
                     broker: Arc::clone(&core.broker),
                     topics: Arc::clone(&core.topics),
+                    alarms: Arc::clone(&core.alarms),
                     oracle: Arc::new(NoRealms),
                     peer,
                     fiber: Some(fiber),
                     context: at.id().0,
                     deadline: DEADLINE,
+                    clock_floor_ms,
                     slot: Some(Arc::clone(&self.slot)),
                     staging: false,
                 },
@@ -162,6 +197,7 @@ impl FiberBody for WasmBody {
                     peer,
                     fiber,
                     context: at.id().0,
+                    clock_floor_ms,
                     config: config.clone(),
                     component: Arc::clone(&self.component),
                 },
@@ -185,7 +221,7 @@ impl FiberBody for WasmBody {
                     let ledger = trail.then_some((owner.sink.as_ref(), fiber));
                     let retired = match slot.take() {
                         Some(seat) => {
-                            seat.retire(&owner.broker, &owner.topics, peer, ledger)
+                            seat.retire(&owner.broker, &owner.topics, &owner.alarms, peer, ledger)
                                 .await
                         }
                         None => Ok(()),
@@ -205,6 +241,9 @@ impl FiberBody for WasmBody {
                     let label = match registration {
                         Registration::Effect { label, .. } => label.clone(),
                         Registration::Listen(listen) => format!("listen {}", listen.topic),
+                        // An alarm request IS an effect (M2-K2, R5); its
+                        // registration is a ledger event like any other.
+                        Registration::Alarm(alarm) => alarm.label.clone(),
                         // The broker ledgered the provide crossing itself
                         // (R6).
                         Registration::Provision { .. } => continue,

@@ -3,10 +3,14 @@
 
 use std::fmt::Debug;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{ContextId, KernelError, KernelFuture};
 
-/// Dispatch semantics are part of an event's type-level contract.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Dispatch semantics are part of an event's type-level contract. Serde is
+/// for the ledger's `DispatchTrace` record (M2-K2): the mode is part of one
+/// emit's typed audit line (R3, R6).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum DispatchMode {
     Emit,
     Parallel,

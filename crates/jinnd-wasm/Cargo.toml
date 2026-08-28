@@ -32,5 +32,7 @@ tracing = "0.1"
 wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "async"] }
 
 [dev-dependencies]
-tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+# test-util: paused-clock tests drive the alarm timers deterministically
+# (M2-K2); dev-only, never a runtime dependency.
+tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 wit-component = "0.233.0"

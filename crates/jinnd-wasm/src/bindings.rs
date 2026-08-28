@@ -13,7 +13,9 @@ mod generated {
 }
 
 pub use generated::exports::jinn::plugin::lifecycle;
-pub use generated::jinn::plugin::{effects, events, fs, keystore, net, process, services, types};
+pub use generated::jinn::plugin::{
+    clock, effects, events, fs, keystore, net, process, services, types,
+};
 pub use generated::{Plugin, PluginPre};
 
 use jinnd_api::ErrorCode;

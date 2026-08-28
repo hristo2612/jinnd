@@ -80,7 +80,7 @@ impl SwapSlots for LaneSlots {
     fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, Staged> {
         let entry = entry.clone();
         Box::pin(async move {
-            let (slot, peer, fiber, context, config) = {
+            let (slot, peer, fiber, context, clock_floor_ms, config) = {
                 let roster = lock(&self.core.roster);
                 let live = roster.get(&entry).ok_or_else(|| {
                     refusal(ErrorCode::InvalidProfile, "entry left the roster".into())
@@ -90,6 +90,7 @@ impl SwapSlots for LaneSlots {
                     live.peer,
                     live.fiber,
                     live.context,
+                    live.clock_floor_ms,
                     live.config.clone(),
                 )
             };
@@ -105,11 +106,15 @@ impl SwapSlots for LaneSlots {
                 Seat {
                     broker: Arc::clone(&self.core.broker),
                     topics: Arc::clone(&self.core.topics),
+                    alarms: Arc::clone(&self.core.alarms),
                     oracle: Arc::new(NoRealms),
                     peer,
                     fiber: Some(fiber),
                     context,
                     deadline: DEADLINE,
+                    // Staging revalidates alarm floors under the SAME
+                    // grant scope the live seat holds (M2-K2, R9).
+                    clock_floor_ms,
                     slot: None,
                     staging: true,
                 },
@@ -145,6 +150,7 @@ impl SwapSlots for LaneSlots {
             staged.outcome,
             &self.core.broker,
             &self.core.topics,
+            &self.core.alarms,
             staged.peer,
             Some(staged.fiber),
             staged.context,

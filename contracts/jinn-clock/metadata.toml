@@ -1,0 +1,54 @@
+# Contract-bundle metadata for jinn:clock@0.1.0 (M2-K2)
+
+[contract]
+name    = "jinn:clock"
+version = "0.1.0"
+
+[scope]
+type   = "rate"
+# Decidable subset predicate the kernel evaluates for attenuation (01 §Grants):
+# a scope is a minimum-period floor in milliseconds; subset(a, b) := a >= b —
+# a child may only be granted a coarser-or-equal resolution. A grant with no
+# scope holds the kernel's default floor: 250ms (R9 — no free high-frequency
+# wake hazard; the kernel refuses a periodic alarm finer than the floor).
+# Profile syntax (04 §Format): `{ contract = "jinn:clock", scope = <ms> }`;
+# a bare `"jinn:clock"` entry holds the default floor. The kernel's absolute
+# floor is 1ms — a scope of 0 cannot nullify the floor into a busy-wake
+# hazard (R9).
+subset = "floor-coarser-or-equal"
+
+[operations.now]
+# A plain host-clock reading: milliseconds since the Unix epoch, no
+# civil-time (timezone/DST) semantics in v0.1. Ordering authority stays with
+# the ledger's sequence. No effect registration beyond the call ledger line.
+effect      = "read"
+sensitivity = "public"
+
+[operations.alarm-at]
+effect      = "revertible"
+sensitivity = "public"
+# Inverse obligation (03): cancel the alarm — after the inverse completes,
+# no wake of this alarm is delivered or ledgered again.
+inverse     = "cancel-alarm"
+
+[operations.alarm-every]
+effect      = "revertible"
+sensitivity = "public"
+inverse     = "cancel-alarm"
+
+[equality]
+# Observational equivalence: the set of live alarms held under the granted
+# scope — an alarm cancelled and never re-requested is indistinguishable
+# from one never requested. Wake history lives in the ledger, not in the
+# service state (02).
+relation = "live-alarm-set-under-scope"
+
+[notes]
+# Honest v0.1 bounds, stated in the contract (not defects):
+# - Alarms do NOT survive a kernel restart; a plugin re-requests its alarms
+#   in `activate`. Mode-1 hot-swap DOES carry live alarms through the seat's
+#   staged outcome (R8).
+# - Delivery: `lifecycle.handle-event(token, "jinn:clock/alarm", payload)`,
+#   payload = 8-byte little-endian wake instant (unix ms).
+# - Every wake is a ledger event with requesting-fiber attribution (Law 2).
+restart = "alarms-drop-on-restart-re-request-on-activate"

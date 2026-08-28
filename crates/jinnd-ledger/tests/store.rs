@@ -204,24 +204,24 @@ async fn the_unreceipted_lane_is_ordered_with_receipted_appends() {
 }
 
 #[tokio::test]
-async fn the_reserved_dispatch_trace_class_appends_and_replays() {
+async fn the_dispatch_trace_class_appends_and_replays_its_wired_schema() {
+    // M2-K2: the M1-P7 reserved class carries its trace schema now — one
+    // emit's topic, mode, counts, and emitter round-trip typed (R3).
     let ledger = open();
+    let trace = LedgerEventKind::DispatchTrace {
+        topic: "jinn.test/reserved".to_owned(),
+        mode: jinnd_api::DispatchMode::Serial,
+        listeners: 2,
+        failures: 1,
+        emitter: 7,
+    };
     ledger
-        .append(
-            LedgerEventKind::DispatchTrace {
-                event: "jinn.test/reserved".to_owned(),
-            },
-            None,
-            None,
-        )
+        .append(trace.clone(), None, None)
         .await
         .unwrap_or_else(|error| panic!("append: {error}"));
     let records = ledger
         .events(LedgerQuery::default())
         .await
         .unwrap_or_else(|error| panic!("events: {error}"));
-    assert!(matches!(
-        records[0].kind,
-        LedgerEventKind::DispatchTrace { .. }
-    ));
+    assert_eq!(records[0].kind, trace);
 }

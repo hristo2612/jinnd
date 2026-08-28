@@ -35,10 +35,10 @@ mod wiring;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{ContextId, EffectId, ErrorCode, FiberId, Kernel, KernelError};
+use jinnd_api::{ContextId, EffectId, ErrorCode, FiberId, Kernel, KernelError, LedgerEventKind};
 use jinnd_context::{Context, ContextTree};
 use jinnd_effects::EffectScope;
-use jinnd_events::{EventBus, Registration};
+use jinnd_events::{DispatchTraceRecord, EventBus, Registration, TraceSink};
 use jinnd_fiber::Fiber;
 use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::Loader;
@@ -46,6 +46,26 @@ use jinnd_registry::{Registry, Vitality};
 
 /// The pseudo-fiber facade-level provisions and effects are charged to.
 pub const KERNEL_SCOPE: FiberId = FiberId(0);
+
+/// The typed bus's trace tap glue (M2-K2): one `DispatchTrace` per
+/// dispatch, on the harness ledger's ordered record lane (Law 2, R6).
+struct BusTrace(Ledger);
+
+impl TraceSink for BusTrace {
+    fn trace(&self, record: DispatchTraceRecord) {
+        self.0.record(
+            LedgerEventKind::DispatchTrace {
+                topic: record.topic.to_owned(),
+                mode: record.mode,
+                listeners: u32::try_from(record.listeners).unwrap_or(u32::MAX),
+                failures: u32::try_from(record.failures).unwrap_or(u32::MAX),
+                emitter: record.emitter.0,
+            },
+            None,
+            None,
+        );
+    }
+}
 
 /// One spawned fiber and the body whose config the facade may re-state.
 pub(crate) struct FiberEntry {
@@ -121,7 +141,8 @@ pub fn kernel() -> impl Kernel + jinnd_api::WasmLane {
         fibers: Arc::new(Mutex::new(HashMap::new())),
         registry,
         loader,
-        events: EventBus::new(),
+        // Every typed dispatch lands one trace (M2-K2; Law 2).
+        events: EventBus::traced(Arc::new(BusTrace(ledger.clone()))),
         listeners: Mutex::new(HashMap::new()),
         kernel_scope: Arc::new(Mutex::new(EffectScope::new())),
         kernel_vitality,

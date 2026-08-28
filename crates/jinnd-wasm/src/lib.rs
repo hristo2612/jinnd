@@ -13,15 +13,18 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(feature = "loom", allow(dead_code))]
 
+mod alarms;
 mod artifact;
 mod bindings;
 mod broker;
 mod broker_state;
 #[cfg(all(test, not(feature = "loom")))]
 mod broker_tests;
+mod grants;
 mod handle;
 mod host;
 mod hostcaps;
+mod hostclock;
 mod hostfs;
 mod instance;
 mod lane;
@@ -35,13 +38,18 @@ mod swap;
 mod sync;
 mod topics;
 
+pub use alarms::{
+    AlarmSpec, Alarms, ArmRequest, CLOCK_CONTRACT, DEFAULT_MIN_PERIOD_MS, WAKE_TOPIC, now_unix_ms,
+};
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
-pub use handle::{ActivationOutcome, InstanceHandle, ListenRecord, Registration};
+pub use grants::ScopeValue;
+pub use handle::{ActivationOutcome, AlarmRecord, InstanceHandle, ListenRecord, Registration};
 pub use host::{LoadedComponent, WasmHost};
+pub use hostclock::HostClock;
 pub use hostfs::{FS_CONTRACT, HostFs, UndoAction};
 pub use instance::Seat;
-pub use lane::{LaneCore, SeatSpec, WasmBody, wasm_lane};
+pub use lane::{Grant, LaneCore, SeatSpec, WasmBody, wasm_lane};
 pub use lane_swap::swap_pinned;
 pub use peer::{HandleId, LedgerSink, Peer, PeerId};
 pub use selector::{NoRealms, RealmOracle, Selector};

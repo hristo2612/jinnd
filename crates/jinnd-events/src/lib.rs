@@ -48,4 +48,4 @@ mod contain;
 mod dispatch;
 
 #[cfg(not(feature = "loom"))]
-pub use bus::{EventBus, Registration};
+pub use bus::{DispatchTraceRecord, EventBus, Registration, TraceSink};

@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use jinnd_api::{EntryId, ErrorCode, FiberId, KernelFuture, LedgerEventKind, SwapPhaseKind};
 use jinnd_wasm::{
-    Broker, InstanceHandle, LedgerSink, LoadedComponent, LocalTopics, NoRealms, Peer, PeerId, Seat,
-    SwapSlots, WasmHost, swap_batch,
+    Alarms, Broker, DEFAULT_MIN_PERIOD_MS, InstanceHandle, LedgerSink, LoadedComponent,
+    LocalTopics, NoRealms, Peer, PeerId, Seat, SwapSlots, WasmHost, swap_batch,
 };
 
 struct Recording {
@@ -43,6 +43,7 @@ struct Rig {
     host: WasmHost,
     broker: Arc<Broker>,
     topics: Arc<LocalTopics>,
+    alarms: Arc<Alarms>,
     ledger: Arc<Recording>,
     component: LoadedComponent,
 }
@@ -57,10 +58,12 @@ fn rig() -> Rig {
     let component = host
         .load(bytes, &hash, ledger.as_ref())
         .unwrap_or_else(|error| panic!("fixture refused: {error:?}"));
+    let alarms = Arc::new(Alarms::new(ledger.clone() as Arc<dyn LedgerSink>));
     Rig {
         host,
         broker,
         topics: Arc::new(LocalTopics::default()),
+        alarms,
         ledger,
         component,
     }
@@ -68,17 +71,23 @@ fn rig() -> Rig {
 
 impl Rig {
     fn seat(&self, fiber: u64, deadline: Duration) -> (PeerId, Seat) {
+        self.seat_with_floor(fiber, deadline, DEFAULT_MIN_PERIOD_MS)
+    }
+
+    fn seat_with_floor(&self, fiber: u64, deadline: Duration, floor_ms: u64) -> (PeerId, Seat) {
         let peer = self.broker.register_peer(Some(FiberId(fiber)));
         (
             peer,
             Seat {
                 broker: Arc::clone(&self.broker),
                 topics: Arc::clone(&self.topics),
+                alarms: Arc::clone(&self.alarms),
                 oracle: Arc::new(NoRealms),
                 peer,
                 fiber: Some(FiberId(fiber)),
                 context: fiber,
                 deadline,
+                clock_floor_ms: floor_ms,
                 slot: None,
                 staging: false,
             },
@@ -87,6 +96,11 @@ impl Rig {
 
     fn spawn(&self, fiber: u64) -> (PeerId, InstanceHandle) {
         let (peer, seat) = self.seat(fiber, Duration::from_secs(5));
+        (peer, self.host.instantiate(&self.component, seat))
+    }
+
+    fn spawn_with_floor(&self, fiber: u64, floor_ms: u64) -> (PeerId, InstanceHandle) {
+        let (peer, seat) = self.seat_with_floor(fiber, Duration::from_secs(5), floor_ms);
         (peer, self.host.instantiate(&self.component, seat))
     }
 }
@@ -324,6 +338,7 @@ async fn listening_is_grant_gated_and_a_granted_listener_receives_deliveries() {
             DispatchMode::Serial,
             &Selector::All,
             b"ping".to_vec(),
+            None,
             &NoRealms,
         )
         .await;
@@ -495,6 +510,7 @@ async fn retire_replays_the_whole_contribution_in_reverse_registration_order() {
     seat.retire(
         &rig.broker,
         &rig.topics,
+        &rig.alarms,
         peer,
         Some((rig.ledger.as_ref() as &dyn LedgerSink, FiberId(1))),
     )
@@ -768,5 +784,218 @@ async fn mode1_swap_rolls_back_whole_batch_with_old_instances_warm() {
             SwapPhaseKind::InstanceHealthy,
             SwapPhaseKind::RolledBack
         ]
+    );
+}
+
+/// M2-K2 (Law 2, R6): the granted clock read crosses the SAME broker choke
+/// point as every capability — the call is ledgered, the answer is the
+/// 8-byte LE epoch-millisecond wire the contract declares.
+#[tokio::test]
+async fn clock_now_reads_through_the_broker_choke_point() {
+    let rig = rig();
+    jinnd_wasm::HostClock::register(&rig.broker)
+        .unwrap_or_else(|error| panic!("clock provider: {error:?}"));
+    let (peer, instance) = rig.spawn(1);
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    rig.broker.grant(peer, COUNTER);
+    let (outcome, _) = instance.activate(b"clock-now".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("clock-now activate: {error:?}"));
+
+    let native = rig.broker.register_peer(None);
+    rig.broker.grant(native, COUNTER);
+    // The stash holds the guest's clock reading — a plausible epoch instant.
+    let stashed = instance
+        .contract_call(native, COUNTER, "stash", Vec::new())
+        .await
+        .unwrap_or_else(|error| panic!("stash: {error:?}"));
+    assert_eq!(stashed.len(), 8, "8-byte LE instant per the contract wire");
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&stashed);
+    assert!(u64::from_le_bytes(bytes) > 1_577_836_800_000);
+
+    assert!(
+        rig.ledger.kinds().iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::ContractCall { contract, operation }
+                if contract == jinnd_wasm::CLOCK_CONTRACT && operation == "now"
+        )),
+        "the read's only obligation is the call ledger line — and it is there"
+    );
+}
+
+/// M2-K2 (Law 1, constitution 01): without the grant, both the read and the
+/// alarm surface refuse, and every refusal is a ledger event.
+#[tokio::test]
+async fn an_ungranted_clock_call_is_refused_and_recorded() {
+    let rig = rig();
+    jinnd_wasm::HostClock::register(&rig.broker)
+        .unwrap_or_else(|error| panic!("clock provider: {error:?}"));
+    let (_, instance) = rig.spawn(1);
+    let (outcome, _) = instance.activate(b"clock-denied".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("the guest observed no refusal: {error:?}"));
+    assert!(rig.kinds_contains_refusal(jinnd_wasm::CLOCK_CONTRACT));
+}
+
+/// M2-K2 (R9): a periodic alarm finer than the granted resolution floor is
+/// refused at the request — no free high-frequency wake hazard.
+#[tokio::test]
+async fn an_alarm_period_finer_than_the_floor_is_refused() {
+    let rig = rig();
+    let (peer, instance) = rig.spawn(1);
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    let (outcome, _) = instance.activate(b"clock-fast".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("the guest observed no refusal: {error:?}"));
+}
+
+/// M2-K2 (R9, card acceptance): grants scope alarm resolution PER ENTRY —
+/// a seat whose grant holds a coarser floor refuses a period the default
+/// floor would admit (the fixture's 250ms request against a 1000ms scope).
+#[tokio::test]
+async fn a_scoped_grant_caps_how_fine_a_timer_an_entry_may_hold() {
+    let rig = rig();
+    let (peer, instance) = rig.spawn_with_floor(1, 1000);
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    rig.broker.grant(peer, COUNTER);
+    let (outcome, _) = instance.activate(b"clock-alarm".to_vec()).await;
+    let refused = match outcome {
+        Err(refused) => refused,
+        Ok(()) => panic!("a 250ms request must refuse under a 1000ms granted floor (R9)"),
+    };
+    assert!(
+        refused.message.contains("1000ms"),
+        "the refusal names the entry's own granted floor: {}",
+        refused.message
+    );
+}
+
+/// M2-K2 acceptance: a fixture plugin requests a periodic alarm, receives
+/// typed wakes (right token, topic, and 8-byte payload — the fixture faults
+/// on anything else), every wake is a ledger event, and the seat's teardown
+/// — the effect's undo — cancels the alarm: no wake is ledgered after it.
+#[tokio::test]
+async fn a_periodic_alarm_wakes_the_guest_until_teardown_cancels_it() {
+    let rig = rig();
+    let (peer, instance) = rig.spawn(1);
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    rig.broker.grant(peer, COUNTER);
+    let (outcome, contributed) = instance.activate(b"clock-alarm".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("clock-alarm activate: {error:?}"));
+
+    let native = rig.broker.register_peer(None);
+    rig.broker.grant(native, COUNTER);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let count = instance
+            .contract_call(native, COUNTER, "get", Vec::new())
+            .await
+            .unwrap_or_else(|error| panic!("get: {error:?}"));
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&count);
+        if u64::from_le_bytes(bytes) >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "two typed wakes should arrive well within the deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let wakes = |kinds: &[LedgerEventKind]| {
+        kinds
+            .iter()
+            .filter(|kind| matches!(kind, LedgerEventKind::AlarmWake { .. }))
+            .count()
+    };
+    assert!(
+        wakes(&rig.ledger.kinds()) >= 2,
+        "every wake is a ledger event (Law 2)"
+    );
+
+    // Teardown IS the undo (R5): retire the seat, the alarm cancels.
+    let seat = jinnd_wasm::SeatState::live(instance, contributed);
+    seat.retire(
+        &rig.broker,
+        &rig.topics,
+        &rig.alarms,
+        peer,
+        Some((rig.ledger.as_ref() as &dyn LedgerSink, FiberId(1))),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("retire: {error:?}"));
+    assert!(
+        rig.ledger.kinds().iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::EffectWithdrawn { label, clean: true }
+                if label == "alarm every 250ms"
+        )),
+        "the cancellation is ledgered under the request's own label"
+    );
+    let after_retire = wakes(&rig.ledger.kinds());
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        wakes(&rig.ledger.kinds()),
+        after_retire,
+        "after the undo returned, no wake is ever appended again"
+    );
+}
+
+/// M2-K2 acceptance (R8): a Mode-1 commit carries live alarms through the
+/// seat's staged outcome — the staged request is recorded but not armed,
+/// the commit arms it against the NEW instance's own face and cancels the
+/// displaced seat's alarm, and the minted id lands back in the journal.
+#[tokio::test]
+async fn a_swap_commit_carries_live_alarms_through_the_staged_outcome() {
+    let rig = rig();
+    let slot = Arc::new(jinnd_wasm::SharedSlot::default());
+    let (peer, seat) = rig.seat(1, Duration::from_secs(5));
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    rig.broker.grant(peer, COUNTER);
+    let old = rig.host.instantiate(&rig.component, seat);
+    let (outcome, contributed) = old.activate(b"clock-alarm".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("old activate: {error:?}"));
+    slot.install(jinnd_wasm::SeatState::live(old, contributed));
+    let (_, _, old_alarms) = slot.registrations();
+    assert_eq!(old_alarms.len(), 1, "the live seat armed its alarm");
+
+    // Stage the successor: its alarm request is recorded, never armed.
+    let (_, mut staged_seat) = rig.seat(1, Duration::from_secs(5));
+    staged_seat.peer = peer;
+    staged_seat.staging = true;
+    let staged = rig.host.instantiate(&rig.component, staged_seat);
+    let (outcome, contributed) = staged.activate(b"clock-alarm".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("staged activate: {error:?}"));
+    let recorded: Vec<_> = contributed.alarms().collect();
+    assert_eq!(recorded.len(), 1);
+    assert!(
+        recorded[0].id.is_none(),
+        "a staged alarm is recorded, not armed (R8)"
+    );
+
+    let displaced = jinnd_wasm::commit_staged(
+        &slot,
+        staged,
+        contributed,
+        &rig.broker,
+        &rig.topics,
+        &rig.alarms,
+        peer,
+        Some(FiberId(1)),
+        1,
+        rig.ledger.as_ref(),
+    );
+    if let Some(seat) = displaced {
+        seat.instance.dispose().await;
+    }
+
+    let (_, _, new_alarms) = slot.registrations();
+    assert_eq!(new_alarms.len(), 1, "the committed seat's alarm is live");
+    assert_ne!(new_alarms[0], old_alarms[0], "ids are never reused");
+    assert!(
+        !rig.alarms.cancel(old_alarms[0]),
+        "the displaced seat's alarm was cancelled at commit"
+    );
+    assert!(
+        rig.alarms.cancel(new_alarms[0]),
+        "the successor's alarm survived the swap, live until ITS undo"
     );
 }
