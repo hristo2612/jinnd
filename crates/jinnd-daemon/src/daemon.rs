@@ -4,7 +4,6 @@
 //! and no harness lane anywhere in the build (Law 1).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{EntryId, ErrorCode, KernelError, LedgerEventKind, LedgerQuery, ReconcileReport};
@@ -14,32 +13,10 @@ use jinnd_loader::{Document, FileStore, Loader};
 use jinnd_registry::Registry;
 use jinnd_wasm::{HostClock, HostFs, LaneCore, LedgerSink};
 
+pub use crate::paths::DaemonPaths;
 use crate::support::{SharedFibers, Sink, error, lock};
 
 mod observe;
-
-/// The daemon's whole configuration (M1-P9 card: ledger path and profile
-/// path are the only required config; the rest defaults beside the profile).
-#[derive(Clone, Debug)]
-pub struct DaemonPaths {
-    /// The profile document of record (LAW §3).
-    pub profile: PathBuf,
-    /// The append-only ledger's SQLite file (R6).
-    pub ledger: PathBuf,
-    /// Where `<package-basename>.wasm` artifacts (and `.sha256` pin
-    /// sidecars) live.
-    pub artifacts: PathBuf,
-    /// The `jinn:fs` provider's containment root.
-    pub data: PathBuf,
-}
-
-impl DaemonPaths {
-    /// The `jinn:fs` inverse spill (M2-K3): beside the root, never inside.
-    #[must_use]
-    pub fn inverses(&self) -> PathBuf {
-        self.data.with_extension("inverses")
-    }
-}
 
 fn storage(refused: jinnd_ledger::LedgerError) -> KernelError {
     error(ErrorCode::EffectFailed, refused.to_string())
@@ -54,9 +31,6 @@ pub struct Daemon {
     pub(crate) lane: Arc<LaneCore>,
     hostfs: Arc<HostFs>,
     pub(crate) fibers: SharedFibers,
-    /// The last committed document text: the daemon's own write-back must
-    /// not re-trigger a reconcile through the file watcher.
-    committed_text: Mutex<Option<String>>,
     /// Per package, the pin last applied FROM THE PROFILE (see
     /// `packages.rs`).
     pub(crate) applied_pins: Mutex<HashMap<String, String>>,
@@ -104,7 +78,6 @@ impl Daemon {
             lane,
             hostfs,
             fibers: Arc::new(Mutex::new(HashMap::new())),
-            committed_text: Mutex::new(None),
             applied_pins: Mutex::new(HashMap::new()),
             _root: root,
         })
@@ -146,22 +119,44 @@ impl Daemon {
         }
     }
 
-    /// Re-reads the profile file and reconciles by id — the file watcher's
-    /// (and the runbook's) edit path. The daemon's own write-back text is
-    /// recognized and skipped.
+    /// Re-reads the profile file and reconciles by id — the runbook's
+    /// explicit edit path: always reconciles, the loader's diff answering
+    /// `unchanged` when nothing differs.
     ///
     /// # Errors
     ///
     /// As [`Daemon::boot`].
     pub async fn reload(&self) -> Result<ReconcileReport, KernelError> {
-        let text = tokio::fs::read_to_string(&self.paths.profile)
-            .await
-            .map_err(|refused| error(ErrorCode::InvalidProfile, refused.to_string()))?;
-        if lock(&self.committed_text).as_deref() == Some(text.as_str()) {
-            return Ok(ReconcileReport::default());
+        let document = Document::parse(&self.delivered().await?)?;
+        self.apply(document).await
+    }
+
+    /// The file watcher's delivery (M2-K5 #17): the daemon's own write-back
+    /// echo is recognized by the exact bytes the loader WROTE — remembered
+    /// at the save, never re-read from a file another writer may have
+    /// replaced meanwhile — and answers `None`; anything else reconciles,
+    /// an operator's identical rewrite included (Law 2: the log records
+    /// what happened, an edit is never lost under a success line).
+    /// Recognition is ONE-SHOT (round 2): the remembered bytes name exactly
+    /// one expected delivery and are consumed by it, so a later delivery of
+    /// the same bytes is the operator's and reconciles `unchanged`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Daemon::boot`].
+    pub async fn deliver(&self) -> Result<Option<ReconcileReport>, KernelError> {
+        let text = self.delivered().await?;
+        if self.loader.retire_echo(&text) {
+            return Ok(None);
         }
         let document = Document::parse(&text)?;
-        self.apply(document).await
+        self.apply(document).await.map(Some)
+    }
+
+    async fn delivered(&self) -> Result<String, KernelError> {
+        tokio::fs::read_to_string(&self.paths.profile)
+            .await
+            .map_err(|refused| error(ErrorCode::InvalidProfile, refused.to_string()))
     }
 
     async fn apply(&self, document: Document) -> Result<ReconcileReport, KernelError> {
@@ -177,11 +172,6 @@ impl Daemon {
                 Some(fault.entry.clone()),
                 None,
             );
-        }
-        // Remember the committed text as written back, so the watcher's echo
-        // of our own save is a no-op.
-        if let Ok(written) = std::fs::read_to_string(&self.paths.profile) {
-            *lock(&self.committed_text) = Some(written);
         }
         self.sync_transitions();
         Ok(report)

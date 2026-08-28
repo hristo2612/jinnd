@@ -138,15 +138,25 @@ async fn serve(
     let mut sealed = false;
     while let Some(command) = rx.recv().await {
         // A sealed instance runs no guest entry (M2-K4): the seat's journal
-        // is closed, so nothing may register into it or escape it.
+        // is closed, so nothing may register into it or escape it. A
+        // CLOSING seat refuses at the door too (M2-K5 #16): the entry that
+        // was already running drained under its deadline; the ones queued
+        // behind it never start.
+        let closing = store
+            .data()
+            .seat
+            .slot
+            .as_ref()
+            .is_some_and(|slot| slot.closing());
+        let shut = sealed || closing;
         match &command {
-            Command::Activate { reply, .. } if sealed => {
+            Command::Activate { reply, .. } if shut => {
                 if let Command::Activate { reply, .. } = command {
                     let _ = reply.send((Err(sealed_error()), ActivationOutcome::default()));
                 }
                 continue;
             }
-            Command::HandleCall { .. } | Command::Deliver { .. } if sealed => {
+            Command::HandleCall { .. } | Command::Deliver { .. } if shut => {
                 match command {
                     Command::HandleCall { reply, .. } | Command::Deliver { reply, .. } => {
                         let _ = reply.send(Err(sealed_error()));

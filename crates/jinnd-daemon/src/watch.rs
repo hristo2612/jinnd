@@ -124,8 +124,11 @@ impl Watch {
 /// Applies one settled batch of watched changes.
 async fn apply(daemon: &Daemon, changes: Vec<Change>) {
     if changes.contains(&Change::Profile) {
-        match daemon.reload().await {
-            Ok(report) => log_report(&report, daemon),
+        match daemon.deliver().await {
+            Ok(Some(report)) => log_report(&report, daemon),
+            // The daemon's own write-back (M2-K5 #17): no reconcile ran, so
+            // no `reconciled` line — the log never claims what did not happen.
+            Ok(None) => tracing::debug!("own write-back echo; nothing delivered"),
             Err(refused) => tracing::error!(?refused, "reconcile refused"),
         }
     }

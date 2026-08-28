@@ -244,6 +244,14 @@ mod tests {
         let Some(saved) = saved else {
             panic!("the retry saved no document");
         };
+        // M2-K5 #17: the loader remembers the exact text of what it wrote —
+        // and retires that echo exactly once (round 2: one-shot).
+        assert!(!loader.retire_echo("not what was written"));
+        assert!(loader.retire_echo(&saved.render()), "the saved bytes echo");
+        assert!(
+            !loader.retire_echo(&saved.render()),
+            "a consumed echo never matches again"
+        );
         let Some(persisted) = saved.entries.iter().find(|entry| entry.id == "one") else {
             panic!("the entry did not persist");
         };

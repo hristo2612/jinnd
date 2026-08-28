@@ -455,14 +455,15 @@ async fn a_journal_of_an_entry_removed_while_down_withdraws_at_boot() {
     );
 }
 
-/// FINDINGS #15 repro, then the seal: the wake handler appends, dawdles,
-/// and appends again; a dispose that lands mid-tick seals the journal, so
-/// the second append is REFUSED on the record (never a mutation without a
-/// journal entry), and the trail withdraws whole — the first append undone,
-/// no orphaned inverse.
+/// FINDINGS #15 shape, ruled by #16 (M2-K5): the wake handler appends,
+/// dawdles, and appends again; a dispose landing mid-tick DRAINS the
+/// in-flight handler under the guest deadline before sealing, so BOTH
+/// appends land in the journal (never a torn prefix, never a refusal on the
+/// record for a sub-deadline handler), and then the whole trail withdraws
+/// LIFO — both appends undone, no orphaned inverse (I1, R5).
 #[tokio::test]
-async fn a_dispose_during_a_mid_tick_handler_seals_the_journal() {
-    let home = home("seal");
+async fn a_dispose_during_a_mid_tick_handler_drains_then_seals() {
+    let home = home("drain-dispose");
     let (paths, _) = paths(
         &home,
         serde_json::json!(["jinn:fs", "jinn:clock"]),
@@ -472,11 +473,7 @@ async fn a_dispose_during_a_mid_tick_handler_seals_the_journal() {
     let fiber = daemon
         .entry_fiber("scribe")
         .unwrap_or_else(|| panic!("the entry has a fiber"));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while std::fs::read(paths.data.join("wakes.log")).ok().as_deref() != Some(b"tick\n") {
-        assert!(Instant::now() < deadline, "the first append lands");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    await_first_append(&paths).await;
 
     write_profile(&home, serde_json::json!([]));
     let report = daemon
@@ -493,13 +490,77 @@ async fn a_dispose_during_a_mid_tick_handler_seals_the_journal() {
     assert_eq!(inverse_files(&paths), 0, "no orphaned inverse");
     let records = events(&daemon).await;
     assert!(
-        records.iter().any(|record| matches!(
+        !records.iter().any(|record| matches!(
             &record.kind,
             LedgerEventKind::ErrorRecorded { error } if error.message.contains("sealed")
         ) && record.fiber == Some(fiber)),
-        "the late registration refused on the record: {records:?}"
+        "a drained handler is never refused: {records:?}"
     );
-    let appends = records
+    assert_eq!(appends(&records), 2, "both appends landed before the seal");
+    assert_eq!(
+        fs_withdrawals(&records, fiber),
+        vec!["fs append wakes.log", "fs append wakes.log"],
+        "both withdrew, LIFO"
+    );
+}
+
+/// FINDINGS #16 (M2-K5), the planned-stop shape: a clean shutdown landing
+/// mid-tick suspends AFTER the in-flight handler finishes — every related
+/// effect the handler makes lands on disk and in the journal, the
+/// suspension retains them all, and nothing is refused on the record.
+#[tokio::test]
+async fn a_suspend_during_a_mid_tick_handler_lands_every_effect() {
+    let home = home("drain-suspend");
+    let (paths, _) = paths(
+        &home,
+        serde_json::json!(["jinn:fs", "jinn:clock"]),
+        "fs-on-wake-busy",
+    );
+    let daemon = booted(paths.clone()).await;
+    let fiber = daemon
+        .entry_fiber("scribe")
+        .unwrap_or_else(|| panic!("the entry has a fiber"));
+    await_first_append(&paths).await;
+
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+
+    assert_eq!(
+        std::fs::read(paths.data.join("wakes.log")).ok().as_deref(),
+        Some(b"tick\ntock\n".as_slice()),
+        "the whole tick landed, never a prefix"
+    );
+    assert_eq!(inverse_files(&paths), 2, "both inverses retained");
+    let records = events(&daemon).await;
+    assert!(
+        !records.iter().any(|record| matches!(
+            &record.kind,
+            LedgerEventKind::ErrorRecorded { error } if error.message.contains("sealed")
+        )),
+        "nothing refused on a planned stop: {records:?}"
+    );
+    assert_eq!(appends(&records), 2);
+    assert!(
+        records.iter().any(|record| matches!(
+            &record.kind,
+            LedgerEventKind::FiberSuspended { retained: 2 }
+        ) && record.fiber == Some(fiber)),
+        "the suspension retained both: {records:?}"
+    );
+}
+
+async fn await_first_append(paths: &DaemonPaths) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read(paths.data.join("wakes.log")).ok().as_deref() != Some(b"tick\n") {
+        assert!(Instant::now() < deadline, "the first append lands");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn appends(records: &[LedgerRecord]) -> usize {
+    records
         .iter()
         .filter(|record| {
             matches!(
@@ -507,6 +568,5 @@ async fn a_dispose_during_a_mid_tick_handler_seals_the_journal() {
                 LedgerEventKind::EffectRegistered { label } if label.starts_with("fs append")
             )
         })
-        .count();
-    assert_eq!(appends, 1, "the sealed append never registered");
+        .count()
 }
