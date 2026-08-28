@@ -376,6 +376,25 @@ Ordering rule: never touch a layer until the layer above it is already useful.
      cannot cross the component boundary; realm queries evaluated kernel-side);
      Mode-1 swap batches all entries sharing an artifact hash.
 
+- **2026-08-28** — **M1 ACCEPTED AND CLOSED.** All 9 packets + 3 patch packets
+  landed (final main cb9b3c9, 183 commits). Acceptance demonstrated per the
+  operator-delegated protocol: a fresh operator-role session drove
+  docs/demo/M1-DEMO.md end-to-end against the real `jinnd` binary — three wasm
+  plugins Active, config edit restarting exactly the edited fiber, Mode-1
+  hot-swap healthy + broken-artifact rollback, strict-LIFO ledger-visible
+  dispose, keyed exactly-once revert (duplicate replayed safely, distinct key
+  refused), clean SIGINT quiescence — SHIP, zero findings. Suite final:
+  95/130 expected-green, 35 V02_DEFERRED each citing its v0.1 constitution
+  bound, FACADE_GAP and NO_KERNEL extinct. Known-gap note: the PTY transport
+  does not expose the daemon's shell exit code separately (observed at
+  acceptance; harmless, logged shutdown is authoritative). M2-entry debt
+  register (carried on the program, not lost): daemon lane/slot lift into
+  jinnd-wasm; hot-config acceptance decision (C5); intercept plumbing (C6);
+  refusal→defer-to-latest-desired amendment migration; Thm 66 bound proptest
+  + remaining paper-audit test opportunities. Next per the operator-locked
+  plan: **jinn-harness** — ground-up reconstruction of the production gateway
+  on this kernel, two-way iteration, kernel changes packet-gated as ever.
+
 - **2026-08-27** — **M1-P7 escalation adjudicated (plain-effect atomicity).** The
   implementer proved joint unsatisfiability between "the kernel erases a failing
   plain closure's partial mutations" and the pinned no-inverse-on-Err semantics;
