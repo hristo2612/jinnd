@@ -32,16 +32,21 @@ pub(super) async fn reap_on_record<F>(
 where
     F: Future<Output = i32> + Send + 'static,
 {
-    // Round-1 shape, kept red: the reap is delegated and nothing is recorded.
-    let _ = (
-        sink,
-        handle,
-        fiber,
-        bound,
-        LedgerEventKind::ProcessReapPending { handle },
-    );
-    drop(tokio::spawn(reap));
-    None
+    let mut reap = Box::pin(reap);
+    match tokio::time::timeout(bound, &mut reap).await {
+        Ok(code) => {
+            sink.append(LedgerEventKind::ProcessExited { handle, code }, fiber);
+            Some(code)
+        }
+        Err(_) => {
+            sink.append(LedgerEventKind::ProcessReapPending { handle }, fiber);
+            drop(tokio::spawn(async move {
+                let code = reap.await;
+                sink.append(LedgerEventKind::ProcessExited { handle, code }, fiber);
+            }));
+            None
+        }
+    }
 }
 
 #[cfg(all(test, not(feature = "loom")))]

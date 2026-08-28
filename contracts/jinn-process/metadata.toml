@@ -23,7 +23,9 @@ subset = "exec-prefix-containment-and-env-allowlist-subset"
 [operations.run]
 effect      = "kernel-registration"
 sensitivity = "personal"
-# Released by the child's completion; bounded, killed at the bound.
+# Released by the child's completion; bounded: killed at the bound AND
+# reaped on the record (ProcessKilled then ProcessExited, or a typed
+# ProcessReapPending until the host task lands the exit).
 inverse     = "kill-and-reap"
 
 [operations.spawn]

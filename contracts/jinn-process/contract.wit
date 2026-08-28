@@ -22,7 +22,8 @@ interface process {
   enum signal { interrupt, terminate, kill }
 
   // effect = kernel registration released by completion. Bounded: the
-  // child is killed at the bound (the guest deadline's order).
+  // child is killed at the bound (the guest deadline's order) and reaped
+  // on the record — its exit is ledgered, never delegated silently.
   run: func(command: string, args: list<string>) -> result<list<u8>, process-error>;
 
   // effect = kernel registration: inverse obligation = kill-and-reap.

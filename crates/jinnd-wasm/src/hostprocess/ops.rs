@@ -3,23 +3,28 @@
 //! `interface process`). Split from `hostprocess.rs` by responsibility
 //! (R10 file hygiene).
 
+use std::sync::Arc;
+
 use jinnd_api::{ErrorCode, KernelError, LedgerEventKind};
+use tokio::io::AsyncReadExt;
 
 use super::HostProcess;
 use super::child::{self, RUN_CAP, Signal, exit_code};
+use super::reap::{RUN_REAP_CAP, reap_on_record};
 use super::ring::STREAM_CAP;
 use crate::broker_state::refusal;
 use crate::hostwire::{Reader, TAG_DATA, TAG_WOULD_BLOCK, decode_run, encode_read};
 use crate::peer::PeerId;
 
 impl HostProcess {
-    /// The one-shot: spawn, collect stdout, bounded; the child is killed at
-    /// the bound (on the record) and the call refuses.
+    /// The one-shot: spawn, collect stdout, bounded; at the bound the child
+    /// is killed AND reaped on the record (Law 2: a kill is never half a
+    /// story) and the call refuses.
     pub(super) async fn run(&self, caller: PeerId, payload: &[u8]) -> Result<Vec<u8>, KernelError> {
         let (command, args) = decode_run(payload)?;
         let (program, scope) = self.authorize(caller, &command).await?;
         let fiber = self.core.attribution(caller);
-        let child = child::command(&program, &args, None, &[], &scope)
+        let mut child = child::command(&program, &args, None, &[], &scope)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -39,20 +44,30 @@ impl HostProcess {
             },
             fiber,
         );
-        match tokio::time::timeout(RUN_CAP, child.wait_with_output()).await {
-            Ok(Ok(output)) => {
-                let code = exit_code(output.status);
+        let collector = child.stdout.take().map(|mut pipe| {
+            tokio::spawn(async move {
+                let mut stdout = Vec::new();
+                let _ = pipe.read_to_end(&mut stdout).await;
+                stdout
+            })
+        });
+        match tokio::time::timeout(RUN_CAP, child.wait()).await {
+            Ok(Ok(status)) => {
+                let code = exit_code(status);
                 self.core
                     .sink
                     .append(LedgerEventKind::ProcessExited { handle, code }, fiber);
-                Ok(output.stdout)
+                Ok(match collector {
+                    Some(task) => task.await.unwrap_or_default(),
+                    None => Vec::new(),
+                })
             }
             Ok(Err(error)) => Err(refusal(
                 ErrorCode::PluginFailed,
                 format!("process run {command:?}: {error}"),
             )),
-            // The dropped child is killed (kill_on_drop) and reaped by the
-            // runtime's orphan reaper; the kill is on the record.
+            // Killed at the bound, then reaped on the record — within the
+            // guest deadline, or pending there and finished by the host task.
             Err(_) => {
                 self.core.sink.append(
                     LedgerEventKind::ProcessKilled {
@@ -61,6 +76,16 @@ impl HostProcess {
                     },
                     fiber,
                 );
+                let _ = child.start_kill();
+                let reap = async move { child.wait().await.map_or(-1, exit_code) };
+                reap_on_record(
+                    Arc::clone(&self.core.sink),
+                    handle,
+                    fiber,
+                    reap,
+                    RUN_REAP_CAP,
+                )
+                .await;
                 Err(refusal(
                     ErrorCode::PluginFailed,
                     format!("process run {command:?} exceeded its bound and was killed"),
