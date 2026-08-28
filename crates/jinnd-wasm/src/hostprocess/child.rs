@@ -20,8 +20,9 @@ use crate::peer::PeerId;
 
 /// The `wait` cap (R1: no host call blocks across the guest deadline).
 pub(super) const WAIT_CAP: Duration = Duration::from_millis(1000);
-/// The one-shot `run` bound; the child is killed at the bound.
-pub(super) const RUN_CAP: Duration = Duration::from_secs(4);
+/// The one-shot `run` bound; the child is killed at the bound (a short
+/// test-build bound keeps the runaway pin on real time).
+pub(super) const RUN_CAP: Duration = Duration::from_millis(if cfg!(test) { 250 } else { 4000 });
 /// How long a release waits for the SIGKILLed child to be reaped.
 const REAP_CAP: Duration = Duration::from_secs(3);
 

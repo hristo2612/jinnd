@@ -90,6 +90,10 @@ pub enum LedgerEventKind {
     /// One signal delivered to a `jinn:process` child — by the guest, or
     /// by the kernel releasing the registration (M2-K6).
     ProcessKilled { handle: u64, signal: String },
+    /// The kernel killed a `jinn:process` child and its reap did not land
+    /// within the bound (M2-K6 round 2; Law 2): never silent — the host
+    /// task finishes the reap and `ProcessExited` follows when it lands.
+    ProcessReapPending { handle: u64 },
     /// One `jinn:net` loopback listener bound (M2-K6): a kernel
     /// registration, attributed like a spawn.
     NetListening { handle: u64, port: u16 },

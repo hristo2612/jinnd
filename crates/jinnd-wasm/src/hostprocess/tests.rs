@@ -315,9 +315,11 @@ async fn an_env_allowlist_passes_exactly_the_named_variables() {
 }
 
 /// The one-shot `run` answers stdout under the same admission; a run past
-/// its bound is killed on the record and refused.
+/// its bound is killed on the record and refused — and the kill is never
+/// half a story: the exit follows it on the ledger (M2-K6 round 2; Law 2),
+/// attributed to the same handle.
 #[tokio::test]
-async fn run_answers_stdout_and_a_runaway_is_killed_at_the_bound() {
+async fn run_answers_stdout_and_a_runaway_is_killed_and_reaped_on_the_record() {
     let rig = rig();
     let mut wire = Vec::new();
     put_segment(&mut wire, b"/bin/echo");
@@ -326,15 +328,36 @@ async fn run_answers_stdout_and_a_runaway_is_killed_at_the_bound() {
     let mut wire = Vec::new();
     put_segment(&mut wire, b"/bin/sleep");
     put_segment(&mut wire, b"30");
-    tokio::time::pause();
-    let outcome = rig.call(rig.guest, "run", wire);
-    tokio::pin!(outcome);
-    tokio::time::advance(super::child::RUN_CAP + Duration::from_millis(1)).await;
-    assert_eq!(outcome.await, Err(ErrorCode::PluginFailed));
-    assert!(rig.ledger.kinds().iter().any(|(kind, _)| matches!(
-        kind,
-        LedgerEventKind::ProcessKilled { signal, .. } if signal == "kill"
-    )));
+    assert_eq!(
+        rig.call(rig.guest, "run", wire).await,
+        Err(ErrorCode::PluginFailed)
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let kinds = rig.ledger.kinds();
+        let killed = kinds.iter().position(|(kind, _)| {
+            matches!(kind, LedgerEventKind::ProcessKilled { signal, .. } if signal == "kill")
+        });
+        let Some(killed) = killed else {
+            panic!("the runaway was not killed on the record: {kinds:?}")
+        };
+        let LedgerEventKind::ProcessKilled { handle, .. } = &kinds[killed].0 else {
+            unreachable!()
+        };
+        let exited = kinds.iter().position(|(kind, _)| {
+            matches!(kind, LedgerEventKind::ProcessExited { handle: exited, code }
+                if exited == handle && *code < 0)
+        });
+        if let Some(exited) = exited {
+            assert!(killed < exited, "kill precedes exit: {kinds:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the killed runaway's exit never landed on the ledger: {kinds:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Typed signals: `terminate` delivers SIGTERM, the exit reports the
