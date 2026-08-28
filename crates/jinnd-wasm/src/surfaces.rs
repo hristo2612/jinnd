@@ -88,6 +88,7 @@ impl bindings::events::Host for HostState {
                 bindings::api_mode(mode),
                 &bindings::api_selector(target),
                 payload,
+                self.seat.fiber,
                 self.seat.oracle.as_ref(),
             )
             .await;

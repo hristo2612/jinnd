@@ -83,7 +83,9 @@ impl LaneCore {
     pub fn new(sink: Arc<dyn LedgerSink>) -> Result<Self, KernelError> {
         Ok(Self {
             broker: Arc::new(Broker::new(Arc::clone(&sink))),
-            topics: Arc::new(LocalTopics::default()),
+            // The byte-lane tap (M2-K2; Law 2): every emit through this
+            // assembly's port lands one DispatchTrace on the same sink.
+            topics: Arc::new(LocalTopics::traced(Arc::clone(&sink))),
             host: WasmHost::new()?,
             sink,
             packages: Mutex::new(HashMap::new()),
