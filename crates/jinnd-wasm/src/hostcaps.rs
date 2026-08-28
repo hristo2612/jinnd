@@ -105,11 +105,9 @@ fn alarm(
         .broker
         .check_grant(state.seat.peer, CLOCK_CONTRACT)
         .map_err(bindings::wire_error)?;
-    state
-        .seat
-        .alarms
-        .validate(&spec)
-        .map_err(bindings::wire_error)?;
+    // The floor is THIS entry's own grant scope (M2-K2, R9): grants cap
+    // how fine a timer an entry may hold, never assembly-wide.
+    crate::alarms::validate(&spec, state.seat.clock_floor_ms).map_err(bindings::wire_error)?;
     let label = spec.label();
     if state.seat.staging {
         state

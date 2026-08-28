@@ -7,7 +7,11 @@ use jinnd_api::{FiberId, KernelError, KernelFuture, LedgerEventKind};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-use super::{AlarmSpec, Alarms, ArmRequest, WAKE_TOPIC, now_unix_ms};
+use super::{
+    AlarmSpec, Alarms, ArmRequest, DEFAULT_MIN_PERIOD_MS, WAKE_TOPIC, clock_floor, now_unix_ms,
+    validate,
+};
+use crate::lane::Grant;
 use crate::peer::LedgerSink;
 use crate::topics::EventTarget;
 
@@ -48,7 +52,7 @@ type Wakes = mpsc::UnboundedReceiver<(u64, String, Vec<u8>)>;
 
 fn fixture() -> (Arc<Alarms>, Arc<RecordingSink>, Arc<ChannelTarget>, Wakes) {
     let sink = Arc::new(RecordingSink::default());
-    let alarms = Arc::new(Alarms::new(Arc::clone(&sink) as Arc<dyn LedgerSink>, 250));
+    let alarms = Arc::new(Alarms::new(Arc::clone(&sink) as Arc<dyn LedgerSink>));
     let (tx, rx) = mpsc::unbounded_channel();
     (alarms, sink, Arc::new(ChannelTarget(tx)), rx)
 }
@@ -148,26 +152,60 @@ async fn rebind_cancels_the_displaced_alarms_and_arms_the_staged_ones() {
 }
 
 #[test]
-fn a_period_finer_than_the_floor_is_refused() {
-    let sink = Arc::new(RecordingSink::default());
-    let alarms = Alarms::new(Arc::clone(&sink) as Arc<dyn LedgerSink>, 250);
-    let refused: KernelError = match alarms.validate(&AlarmSpec::Every(10)) {
+fn a_period_finer_than_the_granted_floor_is_refused() {
+    let refused: KernelError = match validate(&AlarmSpec::Every(10), 250) {
         Err(refused) => refused,
         Ok(()) => panic!("a period finer than the floor must refuse (R9)"),
     };
     assert!(refused.message.contains("250ms"), "{}", refused.message);
-    alarms
-        .validate(&AlarmSpec::Every(250))
+    validate(&AlarmSpec::Every(250), 250)
         .unwrap_or_else(|error| panic!("the floor itself is grantable: {error:?}"));
-    alarms
-        .validate(&AlarmSpec::At(0))
+    validate(&AlarmSpec::At(0), 250)
         .unwrap_or_else(|error| panic!("a one-shot has no period to floor: {error:?}"));
+
+    // The floor is the ENTRY's own grant scope (M2-K2): a coarser scoped
+    // floor refuses a period the default floor would admit.
+    let scoped: KernelError = match validate(&AlarmSpec::Every(250), 1000) {
+        Err(refused) => refused,
+        Ok(()) => panic!("a coarser scoped floor must bind its entry (R9)"),
+    };
+    assert!(scoped.message.contains("1000ms"), "{}", scoped.message);
+    validate(&AlarmSpec::Every(1000), 1000)
+        .unwrap_or_else(|error| panic!("the scoped floor itself is grantable: {error:?}"));
+}
+
+/// M2-K2: the effective floor comes from the entry's `jinn:clock` grant
+/// scope — default when unscoped or ungranted, clamped so a zero scope
+/// cannot nullify the floor into a busy-wake hazard (R9).
+#[test]
+fn the_effective_floor_comes_from_the_clock_grants_scope() {
+    let scoped = |scope| Grant {
+        contract: "jinn:clock".to_owned(),
+        scope,
+    };
+    assert_eq!(clock_floor(&[scoped(None)]), DEFAULT_MIN_PERIOD_MS);
+    assert_eq!(clock_floor(&[scoped(Some(1000))]), 1000);
+    assert_eq!(clock_floor(&[scoped(Some(50))]), 50);
+    assert_eq!(
+        clock_floor(&[scoped(Some(0))]),
+        1,
+        "the absolute floor is 1ms"
+    );
+    assert_eq!(
+        clock_floor(&[Grant {
+            contract: "jinn:fs".to_owned(),
+            scope: Some(9),
+        }]),
+        DEFAULT_MIN_PERIOD_MS,
+        "another contract's scope never floors the clock"
+    );
+    assert_eq!(clock_floor(&[]), DEFAULT_MIN_PERIOD_MS);
 }
 
 #[test]
 fn arming_without_a_timer_runtime_is_a_recorded_failure_never_a_dead_alarm() {
     let sink = Arc::new(RecordingSink::default());
-    let alarms = Arc::new(Alarms::new(Arc::clone(&sink) as Arc<dyn LedgerSink>, 250));
+    let alarms = Arc::new(Alarms::new(Arc::clone(&sink) as Arc<dyn LedgerSink>));
     let (tx, _rx) = mpsc::unbounded_channel();
     let target = Arc::new(ChannelTarget(tx));
 

@@ -11,6 +11,10 @@ type   = "rate"
 # a child may only be granted a coarser-or-equal resolution. A grant with no
 # scope holds the kernel's default floor: 250ms (R9 — no free high-frequency
 # wake hazard; the kernel refuses a periodic alarm finer than the floor).
+# Profile syntax (04 §Format): `{ contract = "jinn:clock", scope = <ms> }`;
+# a bare `"jinn:clock"` entry holds the default floor. The kernel's absolute
+# floor is 1ms — a scope of 0 cannot nullify the floor into a busy-wake
+# hazard (R9).
 subset = "floor-coarser-or-equal"
 
 [operations.now]

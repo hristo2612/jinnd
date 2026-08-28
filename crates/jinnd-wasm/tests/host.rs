@@ -58,10 +58,7 @@ fn rig() -> Rig {
     let component = host
         .load(bytes, &hash, ledger.as_ref())
         .unwrap_or_else(|error| panic!("fixture refused: {error:?}"));
-    let alarms = Arc::new(Alarms::new(
-        ledger.clone() as Arc<dyn LedgerSink>,
-        DEFAULT_MIN_PERIOD_MS,
-    ));
+    let alarms = Arc::new(Alarms::new(ledger.clone() as Arc<dyn LedgerSink>));
     Rig {
         host,
         broker,
@@ -74,6 +71,10 @@ fn rig() -> Rig {
 
 impl Rig {
     fn seat(&self, fiber: u64, deadline: Duration) -> (PeerId, Seat) {
+        self.seat_with_floor(fiber, deadline, DEFAULT_MIN_PERIOD_MS)
+    }
+
+    fn seat_with_floor(&self, fiber: u64, deadline: Duration, floor_ms: u64) -> (PeerId, Seat) {
         let peer = self.broker.register_peer(Some(FiberId(fiber)));
         (
             peer,
@@ -86,6 +87,7 @@ impl Rig {
                 fiber: Some(FiberId(fiber)),
                 context: fiber,
                 deadline,
+                clock_floor_ms: floor_ms,
                 slot: None,
                 staging: false,
             },
@@ -94,6 +96,11 @@ impl Rig {
 
     fn spawn(&self, fiber: u64) -> (PeerId, InstanceHandle) {
         let (peer, seat) = self.seat(fiber, Duration::from_secs(5));
+        (peer, self.host.instantiate(&self.component, seat))
+    }
+
+    fn spawn_with_floor(&self, fiber: u64, floor_ms: u64) -> (PeerId, InstanceHandle) {
+        let (peer, seat) = self.seat_with_floor(fiber, Duration::from_secs(5), floor_ms);
         (peer, self.host.instantiate(&self.component, seat))
     }
 }
@@ -838,6 +845,27 @@ async fn an_alarm_period_finer_than_the_floor_is_refused() {
     rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
     let (outcome, _) = instance.activate(b"clock-fast".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("the guest observed no refusal: {error:?}"));
+}
+
+/// M2-K2 (R9, card acceptance): grants scope alarm resolution PER ENTRY —
+/// a seat whose grant holds a coarser floor refuses a period the default
+/// floor would admit (the fixture's 250ms request against a 1000ms scope).
+#[tokio::test]
+async fn a_scoped_grant_caps_how_fine_a_timer_an_entry_may_hold() {
+    let rig = rig();
+    let (peer, instance) = rig.spawn_with_floor(1, 1000);
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    rig.broker.grant(peer, COUNTER);
+    let (outcome, _) = instance.activate(b"clock-alarm".to_vec()).await;
+    let refused = match outcome {
+        Err(refused) => refused,
+        Ok(()) => panic!("a 250ms request must refuse under a 1000ms granted floor (R9)"),
+    };
+    assert!(
+        refused.message.contains("1000ms"),
+        "the refusal names the entry's own granted floor: {}",
+        refused.message
+    );
 }
 
 /// M2-K2 acceptance: a fixture plugin requests a periodic alarm, receives

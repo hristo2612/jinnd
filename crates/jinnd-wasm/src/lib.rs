@@ -47,7 +47,7 @@ pub use host::{LoadedComponent, WasmHost};
 pub use hostclock::HostClock;
 pub use hostfs::{FS_CONTRACT, HostFs, UndoAction};
 pub use instance::Seat;
-pub use lane::{LaneCore, SeatSpec, WasmBody, wasm_lane};
+pub use lane::{Grant, LaneCore, SeatSpec, WasmBody, wasm_lane};
 pub use lane_swap::swap_pinned;
 pub use peer::{HandleId, LedgerSink, Peer, PeerId};
 pub use selector::{NoRealms, RealmOracle, Selector};

@@ -1,11 +1,12 @@
 //! Host-owned alarm machinery for `jinn:clock` (M2-K2): tokio timers in the
 //! production host (R1 — no lock is ever held across guest delivery), every
 //! wake a ledger event with requesting-fiber attribution (Law 2), and a
-//! resolution floor so no entry holds a free high-frequency wake hazard
-//! (R9). An alarm request is an effect (R5): its undo — the seat's retire,
-//! a swap's rebind, a staged unwind — cancels here. Alarms do not survive
-//! a kernel restart; plugins re-request on activate (the contract bundle
-//! says so, honestly).
+//! per-entry resolution floor scoped by the entry's grant so no entry holds
+//! a free high-frequency wake hazard (R9; contracts/jinn-clock scope type
+//! `rate`). An alarm request is an effect (R5): its undo — the seat's
+//! retire, a swap's rebind, a staged unwind — cancels here. Alarms do not
+//! survive a kernel restart; plugins re-request on activate (the contract
+//! bundle says so, honestly).
 
 use std::sync::Arc;
 
@@ -33,8 +34,42 @@ pub const CLOCK_CONTRACT: &str = "jinn:clock";
 pub const WAKE_TOPIC: &str = "jinn:clock/alarm";
 
 /// The default resolution floor for periodic alarms, in milliseconds (R9;
-/// documented in `contracts/jinn-clock`): a finer period is refused.
+/// documented in `contracts/jinn-clock`): a finer period is refused. An
+/// entry's grant may scope its own floor ([`clock_floor`]); this value
+/// holds for a `jinn:clock` grant carrying no scope.
 pub const DEFAULT_MIN_PERIOD_MS: u64 = 250;
+
+/// The effective `jinn:clock` resolution floor an entry's grants hold
+/// (contracts/jinn-clock `[scope]`, type `rate`): the grant's scoped
+/// minimum period, or [`DEFAULT_MIN_PERIOD_MS`] for an unscoped grant.
+/// A scope of 0 would nullify the floor into a busy-wake hazard (R9), so
+/// the kernel's absolute floor is 1ms.
+#[must_use]
+pub fn clock_floor(grants: &[crate::lane::Grant]) -> u64 {
+    grants
+        .iter()
+        .find(|grant| grant.contract == CLOCK_CONTRACT)
+        .and_then(|grant| grant.scope)
+        .map_or(DEFAULT_MIN_PERIOD_MS, |floor| floor.max(1))
+}
+
+/// The resolution-floor check (R9), run where failing is still allowed: at
+/// the live request, and at staging so a swap's commit cannot refuse. The
+/// floor is the requesting entry's own ([`clock_floor`]) — grants scope
+/// alarm resolution per entry, never assembly-wide.
+///
+/// # Errors
+///
+/// A typed refusal for a period finer than the granted floor.
+pub fn validate(spec: &AlarmSpec, floor_ms: u64) -> Result<(), KernelError> {
+    match spec {
+        AlarmSpec::Every(period) if *period < floor_ms => Err(refusal(
+            ErrorCode::EffectFailed,
+            format!("alarm period {period}ms is finer than the granted floor {floor_ms}ms"),
+        )),
+        _ => Ok(()),
+    }
+}
 
 /// One alarm request, as the contract declares it: a single wake at an
 /// instant (unix milliseconds, the `now` domain) or a wake every period.
@@ -75,40 +110,20 @@ pub fn now_unix_ms() -> u64 {
 }
 
 /// The host's alarm registry: one per lane assembly, shared by every seat.
+/// Resolution floors are per-entry, carried by each seat's grant scope
+/// ([`clock_floor`]) and checked by [`validate`] before an arm.
 pub struct Alarms {
     table: AlarmTable<AbortHandle>,
     sink: Arc<dyn LedgerSink>,
-    floor_ms: u64,
 }
 
 impl Alarms {
-    /// A registry appending its Law-2 wake events to `sink`, refusing
-    /// periodic alarms finer than `floor_ms`.
+    /// A registry appending its Law-2 wake events to `sink`.
     #[must_use]
-    pub fn new(sink: Arc<dyn LedgerSink>, floor_ms: u64) -> Self {
+    pub fn new(sink: Arc<dyn LedgerSink>) -> Self {
         Self {
             table: AlarmTable::default(),
             sink,
-            floor_ms,
-        }
-    }
-
-    /// The resolution-floor check (R9), run where failing is still allowed:
-    /// at the live request, and at staging so a swap's commit cannot refuse.
-    ///
-    /// # Errors
-    ///
-    /// A typed refusal for a period finer than the granted floor.
-    pub fn validate(&self, spec: &AlarmSpec) -> Result<(), KernelError> {
-        match spec {
-            AlarmSpec::Every(period) if *period < self.floor_ms => Err(refusal(
-                ErrorCode::EffectFailed,
-                format!(
-                    "alarm period {period}ms is finer than the granted floor {}ms",
-                    self.floor_ms
-                ),
-            )),
-            _ => Ok(()),
         }
     }
 

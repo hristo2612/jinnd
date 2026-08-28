@@ -41,6 +41,9 @@ pub struct Seat {
     /// The guest-call horizon: a guest that neither returns nor traps by
     /// this deadline is killed, deactivating only its own fiber (R11).
     pub deadline: Duration,
+    /// The `jinn:clock` resolution floor this entry's grants scope (M2-K2,
+    /// R9): a periodic alarm finer than this is refused at request time.
+    pub clock_floor_ms: u64,
     /// The provider face the broker routes contract calls to; `None` routes
     /// straight to this instance. A lane passes its per-fiber
     /// [`crate::SharedSlot`] so a Mode-1 swap redirects call routing

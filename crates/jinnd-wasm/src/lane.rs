@@ -22,7 +22,7 @@ use jinnd_fiber::{Fiber, FiberBody, Setup, WatchReadiness};
 use jinnd_loader::host::{LaneHandle, Rebind, config_of};
 use jinnd_loader::{PackageLane, SpawnRequest};
 
-use crate::alarms::{Alarms, DEFAULT_MIN_PERIOD_MS};
+use crate::alarms::{Alarms, clock_floor};
 use crate::broker::Broker;
 use crate::handle::Registration;
 use crate::host::{LoadedComponent, WasmHost};
@@ -40,12 +40,24 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// One entry's seat configuration: `grants` are the contract names the
-/// profile side grants the instance (constitution 01: requests are not
-/// grants), `payload` is the opaque payload handed to the guest's `activate`
-/// (R9: data, never behavior).
+/// One granted contract with its optional scope (constitution 01 §Grants: a
+/// grant is (identity, contract, version range, optional scope); 04 §Format:
+/// a profile grant entry is a bare contract name or `{ contract, scope }`).
+/// v0.1 enforces the `rate` scope type — for `jinn:clock`, the minimum
+/// period in milliseconds the entry may hold; `None` holds the contract's
+/// default floor (contracts/jinn-clock `[scope]`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Grant {
+    pub contract: String,
+    pub scope: Option<u64>,
+}
+
+/// One entry's seat configuration: `grants` are the contracts the profile
+/// side grants the instance, each with its optional scope (constitution 01:
+/// requests are not grants), `payload` is the opaque payload handed to the
+/// guest's `activate` (R9: data, never behavior).
 pub struct SeatSpec {
-    pub grants: Vec<String>,
+    pub grants: Vec<Grant>,
     pub payload: Vec<u8>,
 }
 
@@ -57,6 +69,9 @@ pub(crate) struct Roster {
     pub(crate) peer: PeerId,
     pub(crate) fiber: FiberId,
     pub(crate) context: u64,
+    /// The entry's granted `jinn:clock` floor — a staging seat revalidates
+    /// against the SAME grant scope its live seat holds (M2-K2, R9).
+    pub(crate) clock_floor_ms: u64,
     pub(crate) config: Vec<u8>,
     pub(crate) component: Arc<Mutex<LoadedComponent>>,
 }
@@ -90,7 +105,7 @@ impl LaneCore {
             // The byte-lane tap (M2-K2; Law 2): every emit through this
             // assembly's port lands one DispatchTrace on the same sink.
             topics: Arc::new(LocalTopics::traced(Arc::clone(&sink))),
-            alarms: Arc::new(Alarms::new(Arc::clone(&sink), DEFAULT_MIN_PERIOD_MS)),
+            alarms: Arc::new(Alarms::new(Arc::clone(&sink))),
             host: WasmHost::new()?,
             sink,
             packages: Mutex::new(HashMap::new()),
@@ -142,9 +157,12 @@ impl FiberBody for WasmBody {
             let fiber = setup.fiber();
             let core = Arc::clone(&self.core);
             let peer = core.broker.register_peer(Some(fiber));
-            for contract in &grants {
-                core.broker.grant(peer, contract);
+            for grant in &grants {
+                core.broker.grant(peer, &grant.contract);
             }
+            // The entry's granted `jinn:clock` resolution floor (M2-K2,
+            // R9): grants scope alarm resolution per entry.
+            let clock_floor_ms = clock_floor(&grants);
             let slot_id = core.next_slot.fetch_add(1, Ordering::SeqCst) + 1;
             let component = lock(&self.component).clone();
             let handle = core.host.instantiate(
@@ -158,6 +176,7 @@ impl FiberBody for WasmBody {
                     fiber: Some(fiber),
                     context: at.id().0,
                     deadline: DEADLINE,
+                    clock_floor_ms,
                     slot: Some(Arc::clone(&self.slot)),
                     staging: false,
                 },
@@ -170,6 +189,7 @@ impl FiberBody for WasmBody {
                     peer,
                     fiber,
                     context: at.id().0,
+                    clock_floor_ms,
                     config: config.clone(),
                     component: Arc::clone(&self.component),
                 },

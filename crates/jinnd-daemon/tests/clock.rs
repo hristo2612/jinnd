@@ -10,7 +10,7 @@ mod support;
 
 use std::path::PathBuf;
 
-use jinnd_api::{DispatchMode, LedgerEventKind, LedgerRecord};
+use jinnd_api::{DispatchMode, FiberState, LedgerEventKind, LedgerRecord};
 use jinnd_daemon::{Daemon, DaemonPaths};
 
 /// A scratch home for one test daemon; removed on drop.
@@ -30,8 +30,9 @@ fn home(name: &str) -> Home {
 }
 
 /// Boots a daemon over one profile entry running the counter fixture in
-/// `mode`, with the given grants.
-fn paths(home: &Home, grants: &[&str], mode: &str) -> DaemonPaths {
+/// `mode`, with the given grants (a JSON array: bare contract names or
+/// `{ contract, scope }` entries, constitution 04 §Format).
+fn paths(home: &Home, grants: serde_json::Value, mode: &str) -> DaemonPaths {
     let (bytes, hash) = support::pinned_fixture();
     std::fs::write(home.0.join("artifacts/counter-plugin.wasm"), &bytes)
         .unwrap_or_else(|error| panic!("{error}"));
@@ -77,7 +78,7 @@ async fn a_profile_entry_holds_a_periodic_alarm_ledgered_wake_by_wake() {
     let home = home("alarm");
     let daemon = Daemon::open(paths(
         &home,
-        &["jinn:clock", "jinn:test/counter"],
+        serde_json::json!(["jinn:clock", "jinn:test/counter"]),
         "clock-alarm",
     ))
     .unwrap_or_else(|error| panic!("open: {error:?}"));
@@ -142,10 +143,57 @@ async fn a_profile_entry_holds_a_periodic_alarm_ledgered_wake_by_wake() {
     );
 }
 
+/// M2-K2 acceptance (R9): grants cap resolution through the real daemon —
+/// a profile grant scoping `jinn:clock` to a 1000ms floor refuses the
+/// fixture's 250ms request. The refusal fails the entry's activation (its
+/// fiber lands Failed, a ledgered transition — R11 contained) and no wake
+/// is ever ledgered. The refusal naming the entry's own floor is pinned at
+/// the host level (`a_scoped_grant_caps_how_fine_a_timer_an_entry_may_hold`).
+#[tokio::test]
+async fn a_scoped_profile_grant_caps_how_fine_a_timer_an_entry_may_hold() {
+    let home = home("scoped");
+    let daemon = Daemon::open(paths(
+        &home,
+        serde_json::json!([
+            { "contract": "jinn:clock", "scope": 1000 },
+            "jinn:test/counter",
+        ]),
+        "clock-alarm",
+    ))
+    .unwrap_or_else(|error| panic!("open: {error:?}"));
+    daemon
+        .boot()
+        .await
+        .unwrap_or_else(|error| panic!("boot: {error:?}"));
+    let fiber = daemon
+        .entry_fiber("waker")
+        .unwrap_or_else(|| panic!("the entry has a fiber"));
+
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let records = events(&daemon).await;
+    assert!(
+        records.iter().any(|record| matches!(
+            &record.kind,
+            LedgerEventKind::FiberTransition(transition)
+                if transition.fiber == fiber && transition.to == FiberState::Failed
+        )),
+        "the refused request fails exactly this entry's activation: {records:?}"
+    );
+    assert_eq!(
+        wake_count(&records),
+        0,
+        "no wake is ever ledgered under a refused request"
+    );
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
 #[tokio::test]
 async fn a_bus_emit_through_the_daemon_path_lands_exactly_one_dispatch_trace() {
     let home = home("trace");
-    let daemon = Daemon::open(paths(&home, &[], "emitter"))
+    let daemon = Daemon::open(paths(&home, serde_json::json!([]), "emitter"))
         .unwrap_or_else(|error| panic!("open: {error:?}"));
     let report = daemon
         .boot()
