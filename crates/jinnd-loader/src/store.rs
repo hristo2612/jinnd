@@ -61,9 +61,11 @@ pub(crate) struct Persistence {
     encode_profile: EncodeProfile,
     encode_config: EncodeConfig,
     baseline: std::sync::Mutex<Document>,
-    /// The exact text of the last save this persistence made (M2-K5 #17):
-    /// what the loader WROTE, remembered at the save — never re-read from a
-    /// file another writer may have replaced since.
+    /// The pending write-back echo (M2-K5 #17): the exact text of the last
+    /// save this persistence made — what the loader WROTE, remembered at the
+    /// save, never re-read from a file another writer may have replaced
+    /// since. ONE-SHOT (round 2): consumed by the one delivery that matches
+    /// it, superseded by the next save.
     written: std::sync::Mutex<Option<String>>,
 }
 
@@ -163,14 +165,25 @@ impl Loader {
         }));
     }
 
-    /// The exact text of the attached store's last write-back, `None`
-    /// before the first save or without a store (M2-K5 #17): a daemon
-    /// recognizes its own echo by these bytes — what it wrote, never what a
-    /// re-read of the file happens to hold now.
+    /// Retires the pending write-back echo (M2-K5 #17, round 2): `true`
+    /// exactly once, for the delivery whose text is the bytes the attached
+    /// store last WROTE — the signature is consumed on the match. Any later
+    /// delivery of the same bytes is an operator rewrite: `false`, and the
+    /// caller reconciles it (the diff answers `unchanged`). A newer save
+    /// supersedes an unretired signature — the bytes it named left the
+    /// disk — so no signature lies in wait for a later identical rewrite.
+    /// `false` without a store or before the first save.
     #[must_use]
-    pub fn last_written(&self) -> Option<String> {
-        self.persistence()
-            .and_then(|persistence| lock(&persistence.written).clone())
+    pub fn retire_echo(&self, delivered: &str) -> bool {
+        let Some(persistence) = self.persistence() else {
+            return false;
+        };
+        let mut written = lock(&persistence.written);
+        if written.as_deref() == Some(delivered) {
+            *written = None;
+            return true;
+        }
+        false
     }
 
     /// The attached persistence, if any: one coherent snapshot per operation.

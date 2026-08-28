@@ -183,6 +183,108 @@ async fn own_write_back_is_an_echo_but_an_identical_operator_rewrite_reconciles(
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }
 
+/// Round-2 blocker (the verifier's probe): own-write recognition is
+/// ONE-SHOT. The remembered bytes identify exactly one delivery — the
+/// watcher's echo of the daemon's own save — and are consumed on that
+/// match; an operator's atomic rewrite of the BYTE-IDENTICAL text read
+/// back from the daemon is a later delivery of the same bytes, and it
+/// reconciles `unchanged` — never skipped as an echo.
+#[tokio::test]
+async fn a_byte_identical_operator_rewrite_reconciles_unchanged() {
+    let home = home("byte-identical");
+    let (paths, hash) = paths(&home);
+    write_profile(&home, serde_json::json!([entry("scribe", &hash, "noop")]));
+    let daemon = Daemon::open(paths.clone()).unwrap_or_else(|error| panic!("{error:?}"));
+    daemon
+        .boot()
+        .await
+        .unwrap_or_else(|error| panic!("boot: {error:?}"));
+    let echo = daemon
+        .deliver()
+        .await
+        .unwrap_or_else(|error| panic!("deliver: {error:?}"));
+    assert!(echo.is_none(), "first delivery is the echo: {echo:?}");
+
+    // The operator rewrites EXACTLY the bytes the daemon wrote back.
+    let read_back = std::fs::read(&paths.profile).unwrap_or_else(|error| panic!("{error}"));
+    let temp = home.0.join("profile.json.tmp");
+    std::fs::write(&temp, &read_back).unwrap_or_else(|error| panic!("{error}"));
+    std::fs::rename(&temp, &paths.profile).unwrap_or_else(|error| panic!("{error}"));
+    let rewrite = daemon
+        .deliver()
+        .await
+        .unwrap_or_else(|error| panic!("deliver: {error:?}"))
+        .unwrap_or_else(|| panic!("identical_operator_rewrite_reconciled=false"));
+    assert_eq!(rewrite.unchanged, vec![EntryId("scribe".to_owned())]);
+    assert!(rewrite.created.is_empty() && rewrite.restarted.is_empty());
+    assert!(rewrite.disposed.is_empty() && rewrite.errors.is_empty());
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
+/// The two-echo hazard: two consecutive daemon write-backs each consume
+/// their own echo, and an operator edit landing between a write-back and
+/// its echo delivery is applied — the stale signature is superseded by the
+/// save that edit causes, never left lying in wait for a later identical
+/// rewrite.
+#[tokio::test]
+async fn consecutive_write_backs_each_consume_their_own_echo() {
+    let home = home("two-echo");
+    let (paths, hash) = paths(&home);
+    write_profile(&home, serde_json::json!([entry("scribe", &hash, "noop")]));
+    let daemon = Daemon::open(paths.clone()).unwrap_or_else(|error| panic!("{error:?}"));
+    daemon
+        .boot()
+        .await
+        .unwrap_or_else(|error| panic!("boot: {error:?}"));
+    // Write-back 1 is pending; the operator edits BEFORE its echo delivers.
+    write_profile(
+        &home,
+        serde_json::json!([
+            entry("scribe", &hash, "noop"),
+            entry("second", &hash, "noop")
+        ]),
+    );
+    let applied = daemon
+        .deliver()
+        .await
+        .unwrap_or_else(|error| panic!("deliver: {error:?}"))
+        .unwrap_or_else(|| panic!("the operator edit was swallowed as write-back 1's echo"));
+    assert_eq!(applied.created, vec![EntryId("second".to_owned())]);
+    // Write-back 2 (of that reconcile) echoes: consumed, no reconcile.
+    let echo = daemon
+        .deliver()
+        .await
+        .unwrap_or_else(|error| panic!("deliver: {error:?}"));
+    assert!(echo.is_none(), "write-back 2's echo: {echo:?}");
+    // An explicit reload is write-back 3; its echo is consumed exactly once.
+    daemon
+        .reload()
+        .await
+        .unwrap_or_else(|error| panic!("reload: {error:?}"));
+    let echo = daemon
+        .deliver()
+        .await
+        .unwrap_or_else(|error| panic!("deliver: {error:?}"));
+    assert!(echo.is_none(), "write-back 3's echo: {echo:?}");
+    let read_back = std::fs::read(&paths.profile).unwrap_or_else(|error| panic!("{error}"));
+    let temp = home.0.join("profile.json.tmp");
+    std::fs::write(&temp, &read_back).unwrap_or_else(|error| panic!("{error}"));
+    std::fs::rename(&temp, &paths.profile).unwrap_or_else(|error| panic!("{error}"));
+    let rewrite = daemon
+        .deliver()
+        .await
+        .unwrap_or_else(|error| panic!("deliver: {error:?}"))
+        .unwrap_or_else(|| panic!("a consumed echo signature cannot swallow a rewrite"));
+    assert_eq!(rewrite.unchanged.len(), 2, "{rewrite:?}");
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
 /// The real `jinnd` binary, run from `cwd` with `args`; its stderr is
 /// drained on a thread for the whole run (a full pipe must never stall the
 /// daemon), so every line is available after the fact.

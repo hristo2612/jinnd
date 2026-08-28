@@ -237,10 +237,6 @@ mod tests {
                 .await,
         );
         assert_eq!(saves.load(Ordering::SeqCst), 3, "retried exactly once");
-        // M2-K5 #17: the loader remembers the exact text of what it wrote.
-        let written = loader
-            .last_written()
-            .unwrap_or_else(|| panic!("a save landed"));
         let saved = last
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -248,10 +244,13 @@ mod tests {
         let Some(saved) = saved else {
             panic!("the retry saved no document");
         };
-        assert_eq!(
-            written,
-            saved.render(),
-            "the remembered bytes are the saved ones"
+        // M2-K5 #17: the loader remembers the exact text of what it wrote —
+        // and retires that echo exactly once (round 2: one-shot).
+        assert!(!loader.retire_echo("not what was written"));
+        assert!(loader.retire_echo(&saved.render()), "the saved bytes echo");
+        assert!(
+            !loader.retire_echo(&saved.render()),
+            "a consumed echo never matches again"
         );
         let Some(persisted) = saved.entries.iter().find(|entry| entry.id == "one") else {
             panic!("the entry did not persist");

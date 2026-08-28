@@ -137,13 +137,16 @@ impl Daemon {
     /// replaced meanwhile — and answers `None`; anything else reconciles,
     /// an operator's identical rewrite included (Law 2: the log records
     /// what happened, an edit is never lost under a success line).
+    /// Recognition is ONE-SHOT (round 2): the remembered bytes name exactly
+    /// one expected delivery and are consumed by it, so a later delivery of
+    /// the same bytes is the operator's and reconciles `unchanged`.
     ///
     /// # Errors
     ///
     /// As [`Daemon::boot`].
     pub async fn deliver(&self) -> Result<Option<ReconcileReport>, KernelError> {
         let text = self.delivered().await?;
-        if self.loader.last_written().as_deref() == Some(text.as_str()) {
+        if self.loader.retire_echo(&text) {
             return Ok(None);
         }
         let document = Document::parse(&text)?;
