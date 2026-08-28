@@ -1002,7 +1002,9 @@ async fn a_swap_commit_carries_live_alarms_through_the_staged_outcome() {
 
 /// M2-K4: a sealed seat refuses registrations on the record, and a sealed
 /// instance runs no further guest entry — inverses still run, so the
-/// journal that teardown replays is exactly the contribution (I1).
+/// journal that teardown replays is exactly the contribution (I1). The
+/// journal seal alone is the BACKSTOP (M2-K5 #16: production closes door →
+/// drain → seal, so only a handler past its deadline ever meets it).
 #[tokio::test]
 async fn a_sealed_seat_refuses_registrations_and_the_instance_no_entries() {
     let rig = rig();

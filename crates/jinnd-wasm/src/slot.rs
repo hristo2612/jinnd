@@ -9,10 +9,9 @@
 //! staged activation's outcome is committed, exactly as an initial
 //! activation's is; nothing is ever retargeted through a mutable cell.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
+use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
 
 use crate::alarms::{Alarms, ArmRequest};
 use crate::broker::Broker;
@@ -20,7 +19,13 @@ use crate::handle::{ActivationOutcome, InstanceHandle, Registration, peer_face};
 use crate::peer::{LedgerSink, Peer, PeerId};
 use crate::topics::{EventTarget, LocalTopics, Rebind};
 
+mod gate;
+mod peer_face;
+#[cfg(all(test, feature = "loom"))]
+mod seal_model;
 mod teardown;
+
+pub(crate) use gate::SealGate;
 
 /// One instance's committed contribution: the instance PAIRED with its
 /// registration journal — ONE list, in registration order (R5: teardown has
@@ -77,9 +82,8 @@ impl SeatState {
 #[derive(Default)]
 pub struct SharedSlot {
     current: Mutex<Option<SeatState>>,
-    /// Raised once the seat's journal closes for withdrawal or suspension
-    /// (M2-K4): every later registration attempt refuses on the record.
-    sealed: AtomicBool,
+    /// The closing gate (M2-K4/K5): door, then drain, then journal.
+    gate: SealGate,
 }
 
 fn empty() -> KernelError {
@@ -108,24 +112,38 @@ impl SharedSlot {
         self.lock().take()
     }
 
-    /// Closes the journal (M2-K4, FINDINGS #15): stored `SeqCst` BEFORE the
-    /// instance is asked to seal, so any guest entry still in flight sees
-    /// its next registration refused, and the entries that follow never
-    /// run.
+    /// Closes the seat in law order (M2-K5, FINDINGS #16): shuts the door
+    /// to guest entries not yet dequeued, awaits `drain` — the in-flight
+    /// entry returning under its deadline — and only THEN seals the journal.
+    /// A drained handler lands every registration; the seal refusal is the
+    /// backstop for a handler that outlived its deadline (I1, R5, R11).
+    pub async fn close(&self, drain: impl Future<Output = ()>) {
+        self.gate.close(drain).await;
+    }
+
+    /// Seals the journal ALONE — the backstop step `close` raises last:
+    /// every registration refuses on the record from here on, whatever
+    /// still runs (a handler past its deadline).
     pub fn seal(&self) {
-        self.sealed.store(true, Ordering::SeqCst);
+        self.gate.seal();
     }
 
-    /// True once the journal closed.
+    /// True once the door shut: the supervisor refuses guest entries it
+    /// dequeues from here on (the one already running finishes).
+    pub fn closing(&self) -> bool {
+        self.gate.closing()
+    }
+
+    /// True once the journal closed: every registration refuses.
     pub fn sealed(&self) -> bool {
-        self.sealed.load(Ordering::SeqCst)
+        self.gate.sealed()
     }
 
-    /// Opens the journal for a fresh incarnation (M2-K4): a restart reuses
+    /// Opens the seat for a fresh incarnation (M2-K4): a restart reuses
     /// the fiber's slot, and its closing sequence has already landed on the
     /// fiber's own task before the next activation begins (single-flight).
     pub fn unseal(&self) {
-        self.sealed.store(false, Ordering::SeqCst);
+        self.gate.reopen();
     }
 
     /// Appends registrations made AFTER activation (a wake or call
@@ -251,37 +269,4 @@ pub fn commit_staged(
         }
     }
     displaced
-}
-
-impl Peer for Arc<SharedSlot> {
-    fn call(
-        &self,
-        caller: PeerId,
-        contract: &str,
-        operation: &str,
-        payload: Vec<u8>,
-    ) -> KernelFuture<'static, Vec<u8>> {
-        let current = self.current();
-        let (contract, operation) = (contract.to_owned(), operation.to_owned());
-        Box::pin(async move {
-            match current {
-                Some(instance) => {
-                    instance
-                        .contract_call(caller, &contract, &operation, payload)
-                        .await
-                }
-                None => Err(empty()),
-            }
-        })
-    }
-
-    fn check(&self, consumer: PeerId) -> KernelFuture<'static, bool> {
-        let current = self.current();
-        Box::pin(async move {
-            match current {
-                Some(instance) => instance.check(consumer).await,
-                None => Ok(false),
-            }
-        })
-    }
 }

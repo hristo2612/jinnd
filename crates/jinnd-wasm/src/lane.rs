@@ -162,10 +162,10 @@ impl FiberBody for WasmBody {
             );
             // ONE effect owns the whole guest contribution: tombstone the
             // swap slot FIRST (loom-modeled arbitration — a racing claim
-            // refuses and discards), SEAL the journal (M2-K4, FINDINGS
-            // #15: the slot flag, then the instance — a guest entry still
-            // in flight sees its next registration refused and finishes
-            // before the seat is taken), then retire the live seat exactly
+            // refuses and discards), CLOSE the seat (M2-K5 #16: door shut,
+            // the in-flight guest entry drained under its deadline, then
+            // the journal sealed — every effect of a sub-deadline handler
+            // lands, never a prefix), then retire the live seat exactly
             // (I1, R5) — or, on suspension, release its kernel
             // registrations and hand its world effects to the entry's
             // journal (decision log 2026-08-28).
@@ -259,15 +259,20 @@ struct SeatClosing {
 }
 
 impl SeatClosing {
-    /// Tombstones the swap slot, seals the journal, drains the instance's
-    /// in-flight guest entry, and takes the seat — or `None` when no seat
-    /// was ever installed.
+    /// Tombstones the swap slot, then closes the seat in law order (M2-K5
+    /// #16): door shut, the instance's in-flight guest entry DRAINED under
+    /// its deadline, journal sealed — and takes the seat, or `None` when no
+    /// seat was ever installed.
     async fn close(&self) -> Option<SeatState> {
         self.owner.swap.dispose(self.slot_id);
-        self.slot.seal();
-        if let Some(instance) = self.slot.current() {
-            instance.seal().await;
-        }
+        let instance = self.slot.current();
+        self.slot
+            .close(async move {
+                if let Some(instance) = instance {
+                    instance.seal().await;
+                }
+            })
+            .await;
         self.slot.take()
     }
 
