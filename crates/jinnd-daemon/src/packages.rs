@@ -6,10 +6,36 @@
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{EntryFault, ErrorCode, GROUP_PACKAGE, KernelError, Profile};
-use jinnd_wasm::LoadedComponent;
+use jinnd_fiber::Fiber;
+use jinnd_loader::PackageLane;
+use jinnd_wasm::{LaneCore, LoadedComponent, WasmBody, wasm_lane};
 
 use crate::daemon::Daemon;
-use crate::support::{error, lock};
+use crate::seat::seat_config;
+use crate::support::{SharedFibers, Tracked, error, lock};
+
+/// The daemon's lane over one wasm package (the lifted generic lane, M2-K1):
+/// seats decode from the profile's JSON config, the guest's registrations
+/// land the daemon's Law-2 ledger trail, and every spawned fiber is tracked
+/// for the transition-ledger bridge (R6).
+fn lane(
+    core: Arc<LaneCore>,
+    fibers: SharedFibers,
+    component: Arc<Mutex<LoadedComponent>>,
+) -> PackageLane {
+    let track = move |body: Arc<WasmBody>, signal| {
+        let fiber = Arc::new(Fiber::spawn(body, signal));
+        lock(&fibers).insert(
+            fiber.id(),
+            Tracked {
+                fiber: Arc::clone(&fiber),
+                recorded: 0,
+            },
+        );
+        fiber
+    };
+    wasm_lane::<serde_json::Value, _>(core, component, true, seat_config, track)
+}
 
 /// The last path segment of a package name keys its artifact file.
 pub(crate) fn basename(package: &str) -> &str {
@@ -65,7 +91,7 @@ impl Daemon {
                 }),
                 None => self.admit(package, pin).and_then(|component| {
                     let cell = Arc::new(Mutex::new(component));
-                    let lane = crate::lane::lane(
+                    let lane = lane(
                         Arc::clone(&self.lane),
                         Arc::clone(&self.fibers),
                         Arc::clone(&cell),

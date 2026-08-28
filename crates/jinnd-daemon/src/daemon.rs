@@ -9,16 +9,15 @@ use std::sync::{Arc, Mutex};
 
 use jinnd_api::{
     EffectId, EntryId, ErrorCode, FiberId, FiberState, KernelError, LedgerEventKind, LedgerQuery,
-    LedgerRecord, ReconcileReport, RevertKey, RevertResolution, Witness,
+    LedgerRecord, ReconcileReport, RevertKey, RevertResolution,
 };
 use jinnd_context::ContextTree;
-use jinnd_ledger::{Inverse, Ledger, RevertLane};
+use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::{Document, FileStore, Loader};
 use jinnd_registry::Registry;
+use jinnd_wasm::{HostFs, LaneCore, LedgerSink};
 
-use crate::hostfs::HostFs;
-use crate::lane::LaneState;
-use crate::support::{SharedFibers, error, lock};
+use crate::support::{SharedFibers, Sink, error, lock};
 
 /// The daemon's whole configuration (M1-P9 card: ledger path and profile
 /// path are the only required config; the rest defaults beside the profile).
@@ -45,7 +44,7 @@ pub struct Daemon {
     ledger: Ledger,
     revert: RevertLane,
     pub(crate) loader: Arc<Loader>,
-    pub(crate) lane: Arc<LaneState>,
+    pub(crate) lane: Arc<LaneCore>,
     hostfs: Arc<HostFs>,
     pub(crate) fibers: SharedFibers,
     /// The last committed document text: the daemon's own write-back must
@@ -69,8 +68,11 @@ impl Daemon {
         std::fs::create_dir_all(&paths.data)
             .map_err(|refused| error(ErrorCode::InvalidProfile, refused.to_string()))?;
         let ledger = Ledger::open(&paths.ledger).map_err(storage)?;
-        let lane = Arc::new(LaneState::new(ledger.clone())?);
-        let hostfs = Arc::new(HostFs::new(paths.data.clone(), ledger.clone()));
+        // ONE sink: every broker crossing and provider event lands on the
+        // same ordered ledger record lane (R6).
+        let sink: Arc<dyn LedgerSink> = Arc::new(Sink(ledger.clone()));
+        let lane = Arc::new(LaneCore::new(Arc::clone(&sink))?);
+        let hostfs = Arc::new(HostFs::new(paths.data.clone(), sink));
         hostfs.register(&lane.broker)?;
         let tree = ContextTree::new();
         let root = tree.root();
@@ -160,34 +162,15 @@ impl Daemon {
         effect: EffectId,
         key: &str,
     ) -> Result<RevertResolution, KernelError> {
-        let record = self.hostfs.undo_record(effect).ok_or_else(|| {
+        // The provider that captured the write's inverse builds the action
+        // (Law 3, M2-K1 seam); this daemon feeds it to the ledger's keyed
+        // exactly-once protocol.
+        let (witness, inverse) = self.hostfs.undo_action(effect).ok_or_else(|| {
             error(
                 ErrorCode::EffectFailed,
                 format!("no revertible effect {}", effect.0),
             )
         })?;
-        let (path, prior) = (record.path, record.prior);
-        let (witness_path, witness_prior) = (path.clone(), prior.clone());
-        let witness: Witness = Arc::new(move || match &witness_prior {
-            Some(bytes) => std::fs::read(&witness_path)
-                .map(|current| current == *bytes)
-                .unwrap_or(false),
-            None => !witness_path.exists(),
-        });
-        let inverse: Inverse = Box::new(move || {
-            Box::pin(async move {
-                match prior {
-                    Some(bytes) => tokio::fs::write(&path, bytes)
-                        .await
-                        .map_err(|refused| error(ErrorCode::EffectFailed, refused.to_string())),
-                    None => match tokio::fs::remove_file(&path).await {
-                        Ok(()) => Ok(()),
-                        Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                        Err(refused) => Err(error(ErrorCode::EffectFailed, refused.to_string())),
-                    },
-                }
-            })
-        });
         self.revert
             .revert(
                 effect,

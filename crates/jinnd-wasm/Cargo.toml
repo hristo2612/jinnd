@@ -17,8 +17,18 @@ loom = ["dep:loom"]
 # Types-only contract crate, WITHOUT the harness lane: the production plugin
 # path is WIT/broker only (test-harness ruling 2026-08-25; M1-P8 acceptance).
 jinnd-api = { path = "../jinnd-api", default-features = false }
+# The lifted production lane machinery (M2-K1; PLA-283 ruling) backs the
+# loader's package-lane seam with fiber bodies and registers its teardown
+# through the effect primitive — these are the deps the moved code already
+# carried in the daemon (R10: a move, not a feature).
+jinnd-context = { path = "../jinnd-context" }
+jinnd-effects = { path = "../jinnd-effects" }
+jinnd-fiber = { path = "../jinnd-fiber" }
+jinnd-loader = { path = "../jinnd-loader" }
 loom = { version = "0.7.2", optional = true }
-tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1.47.1", features = ["fs", "macros", "rt", "sync", "time"] }
+# The moved jinn:fs provider's operator log line (AGENTS.md preferred set).
+tracing = "0.1"
 wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "async"] }
 
 [dev-dependencies]

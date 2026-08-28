@@ -1,27 +1,29 @@
-//! The Mode-1 swap view over the adapter's live wasm roster (R8), split by
-//! responsibility (R10). Every phase runs through the shared loom-modeled
-//! [`jinnd_wasm::SwapCore`]: the commit bookkeeping runs INSIDE the batch
-//! claim's critical section — the same lock the disposer's tombstone takes —
-//! so a disposal lands entirely before the claim (whole-batch rollback) or
-//! entirely after commit, where it retires the committed seat itself
-//! (round-3 ruling; round-2 blocker-3).
+//! The Mode-1 swap view over a lane's live roster (R8; M2-K1, lifted from
+//! the daemon and de-duplicated against the harness adapter's copy). Every
+//! phase runs through the shared loom-modeled [`SwapCore`]: the commit
+//! bookkeeping runs INSIDE the batch claim's critical section — the same
+//! lock the disposer's tombstone takes — so a disposal lands entirely
+//! before the claim (whole-batch rollback) or entirely after commit, where
+//! it retires the committed seat itself (round-3 ruling; round-2 blocker-3).
 
 use std::sync::Arc;
 
-use jinnd_api::{EntryId, ErrorCode, FiberId, KernelFuture, LedgerEventKind};
-use jinnd_wasm::{
-    ActivationOutcome, InstanceHandle, LedgerSink, LoadedComponent, NoRealms, PeerId, Seat,
-    SeatState, SharedSlot, SwapSlots, commit_staged,
-};
+use jinnd_api::{EntryId, ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
-use super::{DEADLINE, WasmState};
-use crate::{error, lock};
+use crate::broker_state::refusal;
+use crate::handle::{ActivationOutcome, InstanceHandle};
+use crate::instance::Seat;
+use crate::lane::{DEADLINE, LaneCore, lock};
+use crate::peer::{LedgerSink, PeerId};
+use crate::selector::NoRealms;
+use crate::slot::{SeatState, SharedSlot, commit_staged};
+use crate::swap::{SwapOutcome, SwapSlots, swap_batch};
 
 /// One health-gated staged instance WITH the outcome its activation
 /// registered and the roster row it was prepared against — everything the
 /// infallible commit needs, captured while failing was still allowed
 /// (round-3 ruling: commit performs no lookup that could miss).
-pub(super) struct Staged {
+pub(crate) struct Staged {
     instance: InstanceHandle,
     outcome: ActivationOutcome,
     slot: Arc<SharedSlot>,
@@ -55,27 +57,9 @@ async fn unwind(
 /// (staging seat — nothing routes to it) and holds every fallible step;
 /// commit is the infallible bookkeeping inside the claim; discard unwinds a
 /// staged instance; the old instance stays warm throughout.
-pub(super) struct LaneSlots {
-    pub(super) state: Arc<WasmState>,
-    pub(super) fresh: LoadedComponent,
-}
-
-/// One roster row's view: (slot, peer, fiber, context, config).
-type Live = (Arc<SharedSlot>, PeerId, FiberId, u64, Vec<u8>);
-
-impl LaneSlots {
-    fn live(&self, entry: &EntryId) -> Option<Live> {
-        let roster = lock(&self.state.roster);
-        roster.get(entry).map(|live| {
-            (
-                Arc::clone(&live.slot),
-                live.peer,
-                live.fiber,
-                live.context,
-                live.config.clone(),
-            )
-        })
-    }
+struct LaneSlots {
+    core: Arc<LaneCore>,
+    fresh: crate::host::LoadedComponent,
 }
 
 impl SwapSlots for LaneSlots {
@@ -83,7 +67,7 @@ impl SwapSlots for LaneSlots {
     type Displaced = SeatState;
 
     fn entries_pinned_to(&self, hash: &str) -> Vec<(EntryId, u64)> {
-        let roster = lock(&self.state.roster);
+        let roster = lock(&self.core.roster);
         let mut entries: Vec<(EntryId, u64)> = roster
             .iter()
             .filter(|(_, live)| lock(&live.component).hash() == hash)
@@ -96,18 +80,31 @@ impl SwapSlots for LaneSlots {
     fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, Staged> {
         let entry = entry.clone();
         Box::pin(async move {
-            let (slot, peer, fiber, context, config) = self
-                .live(&entry)
-                .ok_or_else(|| error(ErrorCode::InvalidProfile, "entry left the roster"))?;
-            let old = slot
-                .current()
-                .ok_or_else(|| error(ErrorCode::PluginFailed, "no live instance to hand off"))?;
+            let (slot, peer, fiber, context, config) = {
+                let roster = lock(&self.core.roster);
+                let live = roster.get(&entry).ok_or_else(|| {
+                    refusal(ErrorCode::InvalidProfile, "entry left the roster".into())
+                })?;
+                (
+                    Arc::clone(&live.slot),
+                    live.peer,
+                    live.fiber,
+                    live.context,
+                    live.config.clone(),
+                )
+            };
+            let old = slot.current().ok_or_else(|| {
+                refusal(
+                    ErrorCode::PluginFailed,
+                    "no live instance to hand off".into(),
+                )
+            })?;
             let handoff = old.snapshot().await?;
-            let staged = self.state.host.instantiate(
+            let staged = self.core.host.instantiate(
                 &self.fresh,
                 Seat {
-                    broker: Arc::clone(&self.state.broker),
-                    topics: Arc::clone(&self.state.topics),
+                    broker: Arc::clone(&self.core.broker),
+                    topics: Arc::clone(&self.core.topics),
                     oracle: Arc::new(NoRealms),
                     peer,
                     fiber: Some(fiber),
@@ -123,7 +120,7 @@ impl SwapSlots for LaneSlots {
                 Err(refused) => Err(refused),
             };
             if let Err(refused) = healthy {
-                unwind(staged, contributed, fiber, self.state.sink.as_ref()).await;
+                unwind(staged, contributed, fiber, self.core.sink.as_ref()).await;
                 return Err(refused);
             }
             Ok(Staged {
@@ -146,12 +143,12 @@ impl SwapSlots for LaneSlots {
             &staged.slot,
             staged.instance,
             staged.outcome,
-            &self.state.broker,
-            &self.state.topics,
+            &self.core.broker,
+            &self.core.topics,
             staged.peer,
             Some(staged.fiber),
             staged.context,
-            self.state.sink.as_ref(),
+            self.core.sink.as_ref(),
         )
     }
 
@@ -171,10 +168,50 @@ impl SwapSlots for LaneSlots {
                 staged.instance,
                 staged.outcome,
                 staged.fiber,
-                self.state.sink.as_ref(),
+                self.core.sink.as_ref(),
             )
             .await;
             Ok(())
         })
     }
+}
+
+/// Swaps every live entry pinned to `old_hash` onto the loaded `fresh`
+/// artifact through the batch machine. A committed batch retargets every
+/// package cell sharing the old artifact, so future activations use the new
+/// one too (batch-by-hash, R8). A failed health gate is NOT an error: the
+/// batch rolls back and the outcome says so.
+///
+/// # Errors
+///
+/// Batch-machine refusals surfaced by [`swap_batch`].
+pub async fn swap_pinned(
+    core: &Arc<LaneCore>,
+    old_hash: &str,
+    fresh: crate::host::LoadedComponent,
+) -> Result<SwapOutcome, KernelError> {
+    let slots = LaneSlots {
+        core: Arc::clone(core),
+        fresh: fresh.clone(),
+    };
+    let outcome = swap_batch(
+        &slots,
+        &core.swap,
+        old_hash,
+        fresh.hash(),
+        core.sink.as_ref(),
+    )
+    .await?;
+    if !outcome.rolled_back {
+        // Retarget every package pinned to the old artifact: live roster
+        // slots share these cells, and future activations of the package
+        // use the new artifact too.
+        for shared in lock(&core.packages).values() {
+            let mut pinned = lock(shared);
+            if pinned.hash() == old_hash {
+                *pinned = fresh.clone();
+            }
+        }
+    }
+    Ok(outcome)
 }

@@ -12,8 +12,6 @@
 #![forbid(unsafe_code)]
 
 mod daemon;
-mod hostfs;
-mod lane;
 mod packages;
 mod seat;
 mod support;

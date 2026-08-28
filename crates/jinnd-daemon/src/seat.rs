@@ -1,16 +1,14 @@
 //! One wasm entry's seat configuration, decoded from its profile config
 //! document (split from the lane per the under-300 source-file rule, R10).
+//! The decoded [`SeatSpec`] is the lifted lane's seat seam (M2-K1).
 
-/// One entry's seat configuration: `grants` are the contract names the
+use jinnd_wasm::SeatSpec;
+
+/// Decodes one entry's config document: `grants` are the contract names the
 /// profile side grants the instance (constitution 01: requests are not
 /// grants), `data` is the opaque payload handed to the guest's `activate`
 /// (R9: data, never behavior).
-pub(crate) struct SeatConfig {
-    pub(crate) grants: Vec<String>,
-    pub(crate) payload: Vec<u8>,
-}
-
-pub(crate) fn seat_config(value: &serde_json::Value) -> SeatConfig {
+pub(crate) fn seat_config(value: &serde_json::Value) -> SeatSpec {
     let grants = value
         .get("grants")
         .and_then(|grants| grants.as_array())
@@ -26,7 +24,7 @@ pub(crate) fn seat_config(value: &serde_json::Value) -> SeatConfig {
         Some(serde_json::Value::String(text)) => text.clone().into_bytes(),
         Some(other) => other.to_string().into_bytes(),
     };
-    SeatConfig { grants, payload }
+    SeatSpec { grants, payload }
 }
 
 #[cfg(test)]

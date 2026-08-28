@@ -1,34 +1,21 @@
 //! The wasm-backed package lane and the [`WasmLane`] facade impl (authorized
-//! M1-P8 adapter delta): a profile entry naming a wasm package instantiates
-//! the pinned artifact behind the SAME broker the harness lane calls — one
-//! choke point, two transports (decision log 2026-08-25; R6, R7).
+//! M1-P8 adapter delta; de-duplicated against the lifted production lane at
+//! M2-K1): a profile entry naming a wasm package instantiates the pinned
+//! artifact behind the SAME broker the harness lane calls — one choke point,
+//! two transports (decision log 2026-08-25; R6, R7). The generic machinery
+//! lives in `jinnd_wasm` (`LaneCore`, `WasmBody`, `wasm_lane`,
+//! `swap_pinned`); what stays here is harness policy — the facade's
+//! String-config seat decode, the harness peer, and the shared fiber map.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use jinnd_api::{
-    EffectId, EntryId, FiberId, KernelError, KernelFuture, LedgerEventKind, SwapReport,
-    WasmArtifact, WasmLane,
+    EffectId, FiberId, KernelError, KernelFuture, LedgerEventKind, SwapReport, WasmArtifact,
+    WasmLane,
 };
-use jinnd_context::Context;
-use jinnd_effects::Disposer;
-use jinnd_fiber::{FiberBody, Setup};
-use jinnd_loader::PackageLane;
-use jinnd_loader::host::{Rebind, config_of};
-use jinnd_wasm::{
-    Broker, LedgerSink, LoadedComponent, LocalTopics, NoRealms, PeerId, Seat, SeatState,
-    SharedSlot, SwapCore, WasmHost, swap_batch,
-};
+use jinnd_wasm::{LaneCore, LedgerSink, PeerId, SeatSpec, WasmBody, swap_pinned, wasm_lane};
 
 use crate::{Adapter, KERNEL_SCOPE, lock};
-
-mod wasm_swap;
-use wasm_swap::LaneSlots;
-
-/// The harness lane's guest-call deadline (R11 containment horizon).
-const DEADLINE: Duration = Duration::from_secs(5);
 
 /// Broker crossings land on the kernel ledger's ordered record lane (R6).
 struct Sink(jinnd_ledger::Ledger);
@@ -39,144 +26,26 @@ impl LedgerSink for Sink {
     }
 }
 
-/// One live wasm entry, addressable by the swap machine.
-struct Roster {
-    slot: Arc<SharedSlot>,
-    /// This activation's [`SwapCore`] key — never reused.
-    slot_id: u64,
-    peer: PeerId,
-    fiber: FiberId,
-    context: u64,
-    config: Vec<u8>,
-    component: Arc<Mutex<LoadedComponent>>,
-}
-
-/// Adapter-held wasm-lane state: ONE broker, one topic registry, one host,
-/// and one swap phase machine — the loom-modeled [`SwapCore`] IS the
-/// production path (round-2 blocker-3).
+/// Adapter-held wasm-lane state: the lifted [`LaneCore`] (ONE broker, one
+/// topic registry, one host, one loom-modeled swap phase machine — the
+/// [`jinnd_wasm::SwapCore`] IS the production path, round-2 blocker-3) plus
+/// the harness's own broker peer.
 pub(crate) struct WasmState {
-    broker: Arc<Broker>,
-    topics: Arc<LocalTopics>,
-    host: WasmHost,
-    sink: Arc<Sink>,
-    packages: Mutex<HashMap<String, Arc<Mutex<LoadedComponent>>>>,
-    roster: Mutex<HashMap<EntryId, Roster>>,
+    core: Arc<LaneCore>,
     harness: Mutex<Option<PeerId>>,
-    swap: SwapCore,
-    next_slot: AtomicU64,
 }
 
 impl WasmState {
     pub(crate) fn new(ledger: jinnd_ledger::Ledger) -> Result<Self, KernelError> {
-        let sink = Arc::new(Sink(ledger));
         Ok(Self {
-            broker: Arc::new(Broker::new(Arc::clone(&sink) as Arc<dyn LedgerSink>)),
-            topics: Arc::new(LocalTopics::default()),
-            host: WasmHost::new()?,
-            sink,
-            packages: Mutex::new(HashMap::new()),
-            roster: Mutex::new(HashMap::new()),
+            core: Arc::new(LaneCore::new(Arc::new(Sink(ledger)))?),
             harness: Mutex::new(None),
-            swap: SwapCore::default(),
-            next_slot: AtomicU64::new(0),
         })
     }
 
     fn harness_peer(&self) -> PeerId {
-        *lock(&self.harness).get_or_insert_with(|| self.broker.register_peer(Some(KERNEL_SCOPE)))
-    }
-}
-
-/// One wasm entry behind the fiber engine's body seam. Its instance lives
-/// in a [`SharedSlot`] seat — instance PAIRED with its own registrations —
-/// so Mode-1 swap replaces it whole without touching the fiber, and
-/// teardown withdraws exactly the current instance's contribution with the
-/// tokens that instance minted (I1, R5; round-2 blocker-4).
-struct WasmBody {
-    state: Arc<WasmState>,
-    entry: EntryId,
-    component: Arc<Mutex<LoadedComponent>>,
-    grants: Arc<Vec<String>>,
-    at: Mutex<Context<()>>,
-    config: Mutex<String>,
-    slot: Arc<SharedSlot>,
-}
-
-impl Rebind for WasmBody {
-    fn rebind(&self, at: Context<()>) {
-        *lock(&self.at) = at;
-    }
-}
-
-impl FiberBody for WasmBody {
-    fn activate<'a>(&'a self, mut setup: Setup<'a>) -> KernelFuture<'a, ()> {
-        Box::pin(async move {
-            let config = lock(&self.config).clone().into_bytes();
-            let at = lock(&self.at).clone();
-            let fiber = setup.fiber();
-            let state = Arc::clone(&self.state);
-            let peer = state.broker.register_peer(Some(fiber));
-            for contract in self.grants.iter() {
-                state.broker.grant(peer, contract);
-            }
-            let slot_id = state.next_slot.fetch_add(1, Ordering::SeqCst) + 1;
-            let component = lock(&self.component).clone();
-            let handle = state.host.instantiate(
-                &component,
-                Seat {
-                    broker: Arc::clone(&state.broker),
-                    topics: Arc::clone(&state.topics),
-                    oracle: Arc::new(NoRealms),
-                    peer,
-                    fiber: Some(fiber),
-                    context: at.id().0,
-                    deadline: DEADLINE,
-                    slot: Some(Arc::clone(&self.slot)),
-                    staging: false,
-                },
-            );
-            lock(&state.roster).insert(
-                self.entry.clone(),
-                Roster {
-                    slot: Arc::clone(&self.slot),
-                    slot_id,
-                    peer,
-                    fiber,
-                    context: at.id().0,
-                    config: config.clone(),
-                    component: Arc::clone(&self.component),
-                },
-            );
-            // ONE effect owns the whole guest contribution: tombstone the
-            // swap slot FIRST (loom-modeled arbitration — a racing claim
-            // refuses and discards), then retire the live seat exactly.
-            let (slot, entry, owner) = (
-                Arc::clone(&self.slot),
-                self.entry.clone(),
-                Arc::clone(&state),
-            );
-            setup.effect(
-                "wasm guest seat",
-                Disposer::future(move || async move {
-                    owner.swap.dispose(slot_id);
-                    let retired = match slot.take() {
-                        Some(seat) => seat.retire(&owner.broker, &owner.topics, peer, None).await,
-                        None => Ok(()),
-                    };
-                    owner.broker.remove_peer(peer);
-                    lock(&owner.roster).remove(&entry);
-                    retired
-                }),
-            )?;
-            // The body runs once per fiber; its contribution commits into
-            // the seat, success or failure alike — a failing activation
-            // still owes its inverses (I1).
-            let (outcome, contributed) = handle.activate(config).await;
-            if let Some(previous) = self.slot.install(SeatState::live(handle, contributed)) {
-                previous.instance.dispose().await;
-            }
-            outcome
-        })
+        *lock(&self.harness)
+            .get_or_insert_with(|| self.core.broker.register_peer(Some(KERNEL_SCOPE)))
     }
 }
 
@@ -188,47 +57,50 @@ impl WasmLane for Adapter {
         grants: Vec<String>,
     ) -> Result<EffectId, KernelError> {
         let state = Arc::clone(&self.wasm);
-        let component =
-            state
-                .host
-                .load(artifact.bytes, &artifact.expected_hash, state.sink.as_ref())?;
+        let component = state.core.host.load(
+            artifact.bytes,
+            &artifact.expected_hash,
+            state.core.sink.as_ref(),
+        )?;
         let shared = Arc::new(Mutex::new(component));
         let grants = Arc::new(grants);
         let fibers = Arc::clone(&self.fibers);
-        let (lane_state, lane_shared, lane_grants) =
-            (Arc::clone(&state), Arc::clone(&shared), Arc::clone(&grants));
-        let lane = PackageLane {
-            injects: Vec::new(),
-            provides: None,
-            spawn: Box::new(move |request| {
-                let config = config_of::<String>(request.config)?;
-                let body = Arc::new(WasmBody {
-                    state: Arc::clone(&lane_state),
-                    entry: request.entry.clone(),
-                    component: Arc::clone(&lane_shared),
-                    grants: Arc::clone(&lane_grants),
-                    at: Mutex::new(request.at.clone()),
-                    config: Mutex::new(config),
-                    slot: Arc::new(SharedSlot::default()),
-                });
-                let restate = |body: &WasmBody, config: String| {
-                    *lock(&body.config) = config;
-                    Ok(())
-                };
-                Ok(crate::wiring::spawned(&fibers, body, request, restate))
-            }),
+        // Registration-time grants restate unchanged on every config edit
+        // (the facade fixes them per package); the payload is the entry's
+        // String config, verbatim.
+        let decode = move |config: &String| SeatSpec {
+            grants: (*grants).clone(),
+            payload: config.clone().into_bytes(),
         };
+        let track = move |body: Arc<WasmBody>, signal| {
+            Arc::clone(&crate::wiring::track(&fibers, body, signal).fiber)
+        };
+        // No Law-2 guest trail: the harness lane keeps its own pinned
+        // observables (the daemon's ledger obligation is the daemon's).
+        let lane = wasm_lane::<String, _>(
+            Arc::clone(&state.core),
+            Arc::clone(&shared),
+            false,
+            decode,
+            track,
+        );
         let effect = self.register_lane_effect::<String>(package, lane)?;
-        lock(&state.packages).insert(package.to_owned(), shared);
+        lock(&state.core.packages).insert(package.to_owned(), shared);
         Ok(effect)
     }
 
     fn broker_grant(&self, contract: &str) {
-        self.wasm.broker.grant(self.wasm.harness_peer(), contract);
+        self.wasm
+            .core
+            .broker
+            .grant(self.wasm.harness_peer(), contract);
     }
 
     fn broker_resolve(&self, contract: &str) -> Result<u64, KernelError> {
-        self.wasm.broker.resolve(self.wasm.harness_peer(), contract)
+        self.wasm
+            .core
+            .broker
+            .resolve(self.wasm.harness_peer(), contract)
     }
 
     fn broker_call(
@@ -238,6 +110,7 @@ impl WasmLane for Adapter {
         payload: Vec<u8>,
     ) -> KernelFuture<'_, Vec<u8>> {
         self.wasm
+            .core
             .broker
             .call(self.wasm.harness_peer(), handle, operation, payload)
     }
@@ -250,33 +123,12 @@ impl WasmLane for Adapter {
         let state = Arc::clone(&self.wasm);
         let old_hash = old_hash.to_owned();
         Box::pin(async move {
-            let fresh =
-                state
-                    .host
-                    .load(artifact.bytes, &artifact.expected_hash, state.sink.as_ref())?;
-            let slots = LaneSlots {
-                state: Arc::clone(&state),
-                fresh: fresh.clone(),
-            };
-            let outcome = swap_batch(
-                &slots,
-                &state.swap,
-                &old_hash,
-                fresh.hash(),
-                state.sink.as_ref(),
-            )
-            .await?;
-            if !outcome.rolled_back {
-                // Retarget every package pinned to the old artifact: live
-                // roster slots share these cells, and future activations of
-                // the package use the new artifact too.
-                for shared in lock(&state.packages).values() {
-                    let mut pinned = lock(shared);
-                    if pinned.hash() == old_hash {
-                        *pinned = fresh.clone();
-                    }
-                }
-            }
+            let fresh = state.core.host.load(
+                artifact.bytes,
+                &artifact.expected_hash,
+                state.core.sink.as_ref(),
+            )?;
+            let outcome = swap_pinned(&state.core, &old_hash, fresh).await?;
             Ok(SwapReport {
                 swapped: outcome.swapped,
                 rolled_back: outcome.rolled_back,
