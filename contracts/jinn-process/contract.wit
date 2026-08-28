@@ -12,9 +12,11 @@
 package jinn:process@0.1.0;
 
 interface process {
-  // `output-truncated`: `run` produced more than the metadata's
-  // `output-cap-bytes` (R9) — cut, killed, reaped; never a silent prefix.
-  variant process-error { denied(string), failed(string), invalid(string), output-truncated }
+  // `not-found`: an unknown or foreign handle. `output-truncated`: `run`
+  // produced more than the metadata's `output-cap-bytes` (R9) — cut,
+  // killed, reaped; never a silent prefix. Callers classify by case: the
+  // plugin world's `process` import answers this variant verbatim.
+  variant process-error { not-found, denied(string), failed(string), invalid(string), output-truncated }
 
   type process-handle = u64;
   enum child-stream { stdout, stderr }

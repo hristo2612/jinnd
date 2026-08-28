@@ -11,7 +11,9 @@
 package jinn:net@0.1.0;
 
 interface net {
-  variant net-error { denied(string), failed(string), invalid(string) }
+  // `not-found`: an unknown or foreign handle. Callers classify by case:
+  // the plugin world's `net` import answers this variant verbatim.
+  variant net-error { not-found, denied(string), failed(string), invalid(string) }
 
   type net-handle = u64;
   variant accept-result { connection(net-handle), would-block }

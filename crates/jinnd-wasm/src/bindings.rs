@@ -47,6 +47,39 @@ pub fn fs_error(error: jinnd_api::KernelError) -> fs::FsError {
     }
 }
 
+/// Maps a facade error onto the `jinn:process` bundle's own error (M2-K6
+/// round 4, R3/R12): typed absence, a grant denial, a malformed request,
+/// or the contained failure; `?` converts at the import boundary.
+/// `output-truncated` never arrives here — it is a tagged answer on the
+/// broker wire (`hostwire::TAG_TRUNCATED`).
+impl From<jinnd_api::KernelError> for process::ProcessError {
+    fn from(error: jinnd_api::KernelError) -> Self {
+        match error.code {
+            ErrorCode::NotFound => Self::NotFound,
+            ErrorCode::EffectFailed => Self::Denied(error.message),
+            ErrorCode::DependencyCycle
+            | ErrorCode::InvalidProfile
+            | ErrorCode::DuplicateProvision => Self::Invalid(error.message),
+            _ => Self::Failed(error.message),
+        }
+    }
+}
+
+/// Maps a facade error onto the `jinn:net` bundle's own error (the same
+/// classes as the process mapping; a malformed address is `invalid`).
+impl From<jinnd_api::KernelError> for net::NetError {
+    fn from(error: jinnd_api::KernelError) -> Self {
+        match error.code {
+            ErrorCode::NotFound => Self::NotFound,
+            ErrorCode::EffectFailed => Self::Denied(error.message),
+            ErrorCode::DependencyCycle
+            | ErrorCode::InvalidProfile
+            | ErrorCode::DuplicateProvision => Self::Invalid(error.message),
+            _ => Self::Failed(error.message),
+        }
+    }
+}
+
 /// The wire selector, evaluated kernel-side only (C4).
 pub fn api_selector(selector: types::Selector) -> crate::selector::Selector {
     match selector {

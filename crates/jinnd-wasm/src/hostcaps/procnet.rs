@@ -4,13 +4,15 @@
 //! declares. A spawn, a listen, and an accept mint KERNEL REGISTRATIONS:
 //! the answered handle joins THIS instance's journal so suspend and
 //! dispose release it through the provider, LIFO with the rest (R5;
-//! M2-K4 lifecycle class). Split from `hostcaps.rs` by responsibility
-//! (R10 file hygiene).
+//! M2-K4 lifecycle class). Every answer crosses as the bundle's own
+//! error variant (round 4, R3): a guest matches, never parses. Split
+//! from `hostcaps.rs` by responsibility (R10 file hygiene).
 
-use crate::bindings::{self, net, process, types::KernelError};
+use crate::bindings::{net, process};
 use crate::handle::{HostRecord, Registration};
 use crate::hostwire::{self, Reader, decode_handle, encode_spawn, put_segment};
 use crate::instance::HostState;
+use jinnd_api::KernelError;
 
 /// The process provider's contract name.
 pub const PROCESS_CONTRACT: &str = "jinn:process";
@@ -24,6 +26,8 @@ pub fn registration_label(contract: &str, what: &str, handle: u64) -> String {
     format!("{contract} {what} [handle {handle}]")
 }
 
+/// One crossing, facade-typed: each import converts at its boundary into
+/// its bundle's error (`From` in `bindings`), so the guest sees the variant.
 async fn crossing(
     state: &HostState,
     contract: &str,
@@ -35,7 +39,6 @@ async fn crossing(
         .broker
         .dispatch(state.seat.peer, contract, operation, payload)
         .await
-        .map_err(bindings::wire_error)
 }
 
 /// One registering crossing: admitted into the journal first (a sealed
@@ -48,11 +51,9 @@ async fn registering(
     what: &str,
     payload: Vec<u8>,
 ) -> Result<u64, KernelError> {
-    state
-        .admit(&format!("{contract} {operation}"))
-        .map_err(bindings::wire_error)?;
+    state.admit(&format!("{contract} {operation}"))?;
     let answer = crossing(state, contract, operation, payload).await?;
-    let handle = decode_handle(&answer).map_err(bindings::wire_error)?;
+    let handle = decode_handle(&answer)?;
     state
         .outcome
         .registrations
@@ -72,24 +73,33 @@ fn handle_payload(handle: u64, tail: &[u8]) -> Vec<u8> {
 
 fn read_answer(answer: &[u8]) -> Result<(u8, Vec<u8>), KernelError> {
     let mut reader = Reader::new(answer, "read answer");
-    let tag = reader.u8().map_err(bindings::wire_error)?;
+    let tag = reader.u8()?;
     Ok((tag, reader.rest().to_vec()))
 }
 
 fn count_answer(answer: &[u8]) -> Result<u32, KernelError> {
-    Reader::new(answer, "count answer")
-        .u32()
-        .map_err(bindings::wire_error)
+    Reader::new(answer, "count answer").u32()
 }
 
 impl process::Host for HostState {
-    async fn run(&mut self, command: String, args: Vec<String>) -> Result<Vec<u8>, KernelError> {
+    async fn run(
+        &mut self,
+        command: String,
+        args: Vec<String>,
+    ) -> Result<Vec<u8>, process::ProcessError> {
         let mut wire = Vec::new();
         put_segment(&mut wire, command.as_bytes());
         for arg in &args {
             put_segment(&mut wire, arg.as_bytes());
         }
-        crossing(self, PROCESS_CONTRACT, "run", wire).await
+        let answer = crossing(self, PROCESS_CONTRACT, "run", wire).await?;
+        match read_answer(&answer)? {
+            (hostwire::TAG_DATA, data) => Ok(data),
+            (hostwire::TAG_TRUNCATED, _) => Err(process::ProcessError::OutputTruncated),
+            _ => Err(process::ProcessError::Failed(
+                "malformed run answer".to_owned(),
+            )),
+        }
     }
 
     async fn spawn(
@@ -98,12 +108,16 @@ impl process::Host for HostState {
         args: Vec<String>,
         cwd: Option<String>,
         env: Vec<(String, String)>,
-    ) -> Result<u64, KernelError> {
+    ) -> Result<u64, process::ProcessError> {
         let payload = encode_spawn(&command, &args, cwd.as_deref(), &env);
-        registering(self, PROCESS_CONTRACT, "spawn", "spawn", payload).await
+        Ok(registering(self, PROCESS_CONTRACT, "spawn", "spawn", payload).await?)
     }
 
-    async fn write_stdin(&mut self, handle: u64, bytes: Vec<u8>) -> Result<u32, KernelError> {
+    async fn write_stdin(
+        &mut self,
+        handle: u64,
+        bytes: Vec<u8>,
+    ) -> Result<u32, process::ProcessError> {
         let answer = crossing(
             self,
             PROCESS_CONTRACT,
@@ -111,18 +125,18 @@ impl process::Host for HostState {
             handle_payload(handle, &bytes),
         )
         .await?;
-        count_answer(&answer)
+        Ok(count_answer(&answer)?)
     }
 
-    async fn close_stdin(&mut self, handle: u64) -> Result<(), KernelError> {
+    async fn close_stdin(&mut self, handle: u64) -> Result<(), process::ProcessError> {
         crossing(
             self,
             PROCESS_CONTRACT,
             "close-stdin",
             handle_payload(handle, &[]),
         )
-        .await
-        .map(|_| ())
+        .await?;
+        Ok(())
     }
 
     async fn read(
@@ -130,7 +144,7 @@ impl process::Host for HostState {
         handle: u64,
         which: process::ChildStream,
         max: u32,
-    ) -> Result<process::ReadResult, KernelError> {
+    ) -> Result<process::ReadResult, process::ProcessError> {
         let mut tail = vec![match which {
             process::ChildStream::Stdout => 0,
             process::ChildStream::Stderr => 1,
@@ -154,7 +168,7 @@ impl process::Host for HostState {
         &mut self,
         handle: u64,
         timeout_ms: u64,
-    ) -> Result<process::WaitResult, KernelError> {
+    ) -> Result<process::WaitResult, process::ProcessError> {
         let answer = crossing(
             self,
             PROCESS_CONTRACT,
@@ -163,15 +177,19 @@ impl process::Host for HostState {
         )
         .await?;
         let mut reader = Reader::new(&answer, "wait answer");
-        let tag = reader.u8().map_err(bindings::wire_error)?;
+        let tag = reader.u8()?;
         Ok(if tag == hostwire::TAG_DATA {
-            process::WaitResult::Exited(reader.i32().map_err(bindings::wire_error)?)
+            process::WaitResult::Exited(reader.i32()?)
         } else {
             process::WaitResult::Running
         })
     }
 
-    async fn kill(&mut self, handle: u64, signal: process::Signal) -> Result<(), KernelError> {
+    async fn kill(
+        &mut self,
+        handle: u64,
+        signal: process::Signal,
+    ) -> Result<(), process::ProcessError> {
         let byte = match signal {
             process::Signal::Interrupt => 0,
             process::Signal::Terminate => 1,
@@ -183,8 +201,8 @@ impl process::Host for HostState {
             "kill",
             handle_payload(handle, &[byte]),
         )
-        .await
-        .map(|_| ())
+        .await?;
+        Ok(())
     }
 }
 
@@ -194,27 +212,26 @@ impl net::Host for HostState {
         method: String,
         url: String,
         body: Vec<u8>,
-    ) -> Result<Vec<u8>, KernelError> {
+    ) -> Result<Vec<u8>, net::NetError> {
         let mut wire = Vec::new();
         put_segment(&mut wire, method.as_bytes());
         put_segment(&mut wire, url.as_bytes());
         wire.extend(body);
-        crossing(self, NET_CONTRACT, "request", wire).await
+        Ok(crossing(self, NET_CONTRACT, "request", wire).await?)
     }
 
-    async fn listen(&mut self, addr: String) -> Result<u64, KernelError> {
-        registering(self, NET_CONTRACT, "listen", "listen", addr.into_bytes()).await
+    async fn listen(&mut self, addr: String) -> Result<u64, net::NetError> {
+        Ok(registering(self, NET_CONTRACT, "listen", "listen", addr.into_bytes()).await?)
     }
 
-    async fn accept(&mut self, listener: u64) -> Result<net::AcceptResult, KernelError> {
-        self.admit("jinn:net accept")
-            .map_err(bindings::wire_error)?;
+    async fn accept(&mut self, listener: u64) -> Result<net::AcceptResult, net::NetError> {
+        self.admit("jinn:net accept")?;
         let answer = crossing(self, NET_CONTRACT, "accept", handle_payload(listener, &[])).await?;
         let mut reader = Reader::new(&answer, "accept answer");
-        if reader.u8().map_err(bindings::wire_error)? != hostwire::TAG_DATA {
+        if reader.u8()? != hostwire::TAG_DATA {
             return Ok(net::AcceptResult::WouldBlock);
         }
-        let handle = reader.u64().map_err(bindings::wire_error)?;
+        let handle = reader.u64()?;
         self.outcome
             .registrations
             .push(Registration::Kernel(HostRecord {
@@ -225,7 +242,7 @@ impl net::Host for HostState {
         Ok(net::AcceptResult::Connection(handle))
     }
 
-    async fn read(&mut self, connection: u64, max: u32) -> Result<net::ReadResult, KernelError> {
+    async fn read(&mut self, connection: u64, max: u32) -> Result<net::ReadResult, net::NetError> {
         let answer = crossing(
             self,
             NET_CONTRACT,
@@ -240,7 +257,7 @@ impl net::Host for HostState {
         })
     }
 
-    async fn write(&mut self, connection: u64, bytes: Vec<u8>) -> Result<u32, KernelError> {
+    async fn write(&mut self, connection: u64, bytes: Vec<u8>) -> Result<u32, net::NetError> {
         let answer = crossing(
             self,
             NET_CONTRACT,
@@ -248,12 +265,11 @@ impl net::Host for HostState {
             handle_payload(connection, &bytes),
         )
         .await?;
-        count_answer(&answer)
+        Ok(count_answer(&answer)?)
     }
 
-    async fn close(&mut self, handle: u64) -> Result<(), KernelError> {
-        crossing(self, NET_CONTRACT, "close", handle_payload(handle, &[]))
-            .await
-            .map(|_| ())
+    async fn close(&mut self, handle: u64) -> Result<(), net::NetError> {
+        crossing(self, NET_CONTRACT, "close", handle_payload(handle, &[])).await?;
+        Ok(())
     }
 }

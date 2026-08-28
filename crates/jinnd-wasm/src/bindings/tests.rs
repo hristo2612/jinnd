@@ -36,7 +36,10 @@ fn process_and_net_imports_return_their_bundles_errors() {
             .unwrap_or_else(|| panic!("{error} declared in the bundle"))
             .trim();
         assert!(declared.contains("not-found"), "{declared}");
-        assert!(WORLD.contains(declared), "the world carries {declared} verbatim");
+        assert!(
+            WORLD.contains(declared),
+            "the world carries {declared} verbatim"
+        );
         assert!(WORLD.contains(&format!("result<list<u8>, {error}>")));
     }
     assert!(WORLD.contains("output-truncated }"));

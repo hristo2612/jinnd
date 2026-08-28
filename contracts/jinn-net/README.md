@@ -27,7 +27,7 @@ handler.
 ## Not provided in v0.1
 
 `request` (outbound HTTP): the kernel carries no HTTP client (R10). The
-provider answers a typed `provider-failed`; the outbound host allowlist is
+provider answers a typed `failed`; the outbound host allowlist is
 admitted and carried in the grant for the edition that consumes it. TLS,
 non-loopback listening, and UDP are out of scope.
 

@@ -15,7 +15,7 @@ use super::collector::{Collector, Overflow, RUN_OUTPUT_CAP};
 use super::reap::{RUN_REAP_CAP, reap_on_record};
 use super::ring::STREAM_CAP;
 use crate::broker_state::refusal;
-use crate::hostwire::{Reader, TAG_DATA, TAG_WOULD_BLOCK, decode_run, encode_read};
+use crate::hostwire::{Reader, TAG_DATA, TAG_TRUNCATED, TAG_WOULD_BLOCK, decode_run, encode_read};
 use crate::peer::PeerId;
 
 /// Why the bounded `run` loop stopped.
@@ -35,7 +35,8 @@ impl HostProcess {
     /// collector (R9), all inside the bound. Past the cap or the bound the
     /// read end is cut (EPIPE for any descendant holding the pipe) and a
     /// live child is killed AND reaped on the record (Law 2); a torn pipe
-    /// or dead collector is a typed error — never defaulted success.
+    /// or dead collector is a typed error — never defaulted success. The
+    /// answer is tagged: data then the bytes, or the truncation alone.
     pub(super) async fn run(&self, caller: PeerId, payload: &[u8]) -> Result<Vec<u8>, KernelError> {
         let (command, args) = decode_run(payload)?;
         let (program, scope) = self.authorize(caller, &command).await?;
@@ -94,7 +95,9 @@ impl HostProcess {
             }
         };
         if matches!(stop, Stop::Done) {
-            return collector.finish().await;
+            let mut wire = vec![TAG_DATA];
+            wire.extend(collector.finish().await?);
+            return Ok(wire);
         }
         collector.cut().await;
         let live = exit.is_none();
@@ -112,12 +115,7 @@ impl HostProcess {
                 if live {
                     self.kill_and_reap(child, handle, fiber).await;
                 }
-                Err(refusal(
-                    ErrorCode::PluginFailed,
-                    format!(
-                        "output-truncated: process run {command:?} exceeded the {RUN_OUTPUT_CAP}-byte output cap"
-                    ),
-                ))
+                Ok(vec![TAG_TRUNCATED])
             }
             Stop::Bound if live => {
                 self.kill_and_reap(child, handle, fiber).await;

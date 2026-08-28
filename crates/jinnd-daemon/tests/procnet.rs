@@ -373,7 +373,8 @@ async fn run_past_the_output_cap_is_the_typed_truncation_on_the_guest_wire() {
     };
     let truncated = position(|kind| matches!(kind, LedgerEventKind::ProcessOutputTruncated { .. }));
     let killed = position(|kind| matches!(kind, LedgerEventKind::ProcessKilled { .. }));
-    let exited = position(|kind| matches!(kind, LedgerEventKind::ProcessExited { code, .. } if *code < 0));
+    let exited =
+        position(|kind| matches!(kind, LedgerEventKind::ProcessExited { code, .. } if *code < 0));
     assert!(truncated < killed && killed < exited, "{records:?}");
     daemon
         .shutdown()

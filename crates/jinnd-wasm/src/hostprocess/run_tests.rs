@@ -146,7 +146,11 @@ async fn a_writing_descendant_is_cut_off_at_the_bound_and_dies_of_epipe() {
     // truncation tag) or the time cap (the typed failure) — it is never
     // a prefix passed off as the output.
     match &answer {
-        Ok(wire) => assert_eq!(wire, &vec![TAG_TRUNCATED], "a held-open, written pipe never answers success"),
+        Ok(wire) => assert_eq!(
+            wire,
+            &vec![TAG_TRUNCATED],
+            "a held-open, written pipe never answers success"
+        ),
         Err(error) => assert_eq!(error.code, ErrorCode::PluginFailed),
     }
     let pid = pid_in(&pid_file);

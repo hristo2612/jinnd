@@ -14,6 +14,9 @@ pub(crate) const TAG_DATA: u8 = 0;
 pub(crate) const TAG_WOULD_BLOCK: u8 = 1;
 /// Answer tag: the stream ended (`eof`).
 pub(crate) const TAG_EOF: u8 = 2;
+/// `run` answer tag: output past the cap (`output-truncated`, R9) — typed
+/// on the broker wire so the guest matches it as the bundle's variant.
+pub(crate) const TAG_TRUNCATED: u8 = 3;
 
 /// Appends one u32-LE length-prefixed segment.
 pub fn put_segment(wire: &mut Vec<u8>, segment: &[u8]) {
