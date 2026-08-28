@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EffectId, EntryId, FiberId, KernelError, Transition};
+use crate::{DispatchMode, EffectId, EntryId, FiberId, KernelError, Transition};
 
 /// Proof that one appended event is durable: the receipt resolves only after
 /// the event's commit returned, never before (constitution 02).
@@ -56,9 +56,25 @@ pub enum LedgerEventKind {
         effect: EffectId,
         resolution: RevertResolution,
     },
-    /// RESERVED (M1-P7): the event-bus dispatch trace class. The variant and
-    /// schema exist now; emission is wired when the bus gains its ledger tap.
-    DispatchTrace { event: String },
+    /// One event-bus emit crossed the kernel (Law 2; the M1-P7 reserved
+    /// class, wired at M2-K2 with its trace schema): the topic (a typed
+    /// event's type name, or a byte-lane topic string), the declared
+    /// dispatch mode, how many listeners the payload selected, and how many
+    /// contained listener failures the walk recorded (R9 — failures are
+    /// observed, never aborted on). `emitter` is the emitting context;
+    /// entry/fiber attribution rides the record's own columns. Exactly one
+    /// trace per emit; the append never alters dispatch outcomes (R11).
+    DispatchTrace {
+        topic: String,
+        mode: DispatchMode,
+        listeners: u32,
+        failures: u32,
+        emitter: u64,
+    },
+    /// One `jinn:clock` alarm wake delivered to its requesting plugin
+    /// (M2-K2; Law 2): every wake is a ledger event, attributed to the
+    /// requesting fiber via the record's columns.
+    AlarmWake { alarm: u64 },
     /// A capability grant was exercised: the broker resolved a granted
     /// contract to a caller-scoped handle (constitution 01 §Grants;
     /// authorized M1-P8 additive delta).

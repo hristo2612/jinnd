@@ -3,10 +3,33 @@
 use std::any::TypeId;
 use std::sync::Arc;
 
-use jinnd_api::{ContextId, DispatchReport, Event, EventListener};
+use jinnd_api::{ContextId, DispatchMode, DispatchReport, Event, EventListener};
 
 use crate::dispatch;
 use crate::table::{ListenerId, ListenerTable};
+
+/// One emit's dispatch trace (M2-K2; Law 2): what the ledger's
+/// `DispatchTrace` event records — topic, declared mode, how many listeners
+/// the payload selected, how many contained failures the walk observed (R9),
+/// and the emitting context.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DispatchTraceRecord {
+    /// The typed event's type name — the typed lane's topic.
+    pub topic: &'static str,
+    pub mode: DispatchMode,
+    pub listeners: usize,
+    pub failures: usize,
+    pub emitter: ContextId,
+}
+
+/// Where dispatch traces land (M2-K2). The bus stays a pure bus (R10): the
+/// sink is the seam the assembly glues to its ledger. An implementation must
+/// be fire-and-forget — it is called after the walk settled, never holds up
+/// or alters dispatch outcomes, and swallows its own storage refusals via
+/// the ledger's honesty path (R11).
+pub trait TraceSink: Send + Sync + 'static {
+    fn trace(&self, record: DispatchTraceRecord);
+}
 
 /// One event bus.
 ///
@@ -15,6 +38,7 @@ use crate::table::{ListenerId, ListenerTable};
 #[derive(Clone)]
 pub struct EventBus {
     table: Arc<ListenerTable>,
+    trace: Option<Arc<dyn TraceSink>>,
 }
 
 impl EventBus {
@@ -23,6 +47,17 @@ impl EventBus {
     pub fn new() -> Self {
         Self {
             table: Arc::new(ListenerTable::new()),
+            trace: None,
+        }
+    }
+
+    /// An empty bus whose every dispatch lands one trace on `sink` (M2-K2;
+    /// Law 2: bus emits are kernel-boundary events).
+    #[must_use]
+    pub fn traced(sink: Arc<dyn TraceSink>) -> Self {
+        Self {
+            table: Arc::new(ListenerTable::new()),
+            trace: Some(sink),
         }
     }
 
@@ -50,9 +85,22 @@ impl EventBus {
     }
 
     /// Dispatches one payload per its type-declared mode and reports every
-    /// listener outcome (R9: failures are observed, never aborted on).
+    /// listener outcome (R9: failures are observed, never aborted on). With
+    /// a trace sink, exactly one trace lands after the walk settled — the
+    /// append is fire-and-forget relative to the walk and never changes the
+    /// report (M2-K2; R11).
     pub async fn dispatch<E: Event>(&self, caller: ContextId, event: E) -> DispatchReport<E> {
-        dispatch::walk(&self.table, caller, event).await
+        let (report, listeners) = dispatch::walk(&self.table, caller, event).await;
+        if let Some(sink) = &self.trace {
+            sink.trace(DispatchTraceRecord {
+                topic: std::any::type_name::<E>(),
+                mode: E::MODE,
+                listeners,
+                failures: report.failures.len(),
+                emitter: caller,
+            });
+        }
+        report
     }
 }
 

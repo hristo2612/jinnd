@@ -25,14 +25,19 @@ struct Selection<E: Event> {
 /// listener call, every payload-owned routine (`selects`, `decisive`,
 /// `absorb`, `clone`), and every possibly-final handle release runs contained
 /// (R11); failures are recorded and never abort a collecting walk (R9).
+/// Answers the settled report and how many listeners the payload selected —
+/// the trace tap's listener count (M2-K2), observed at the one place the
+/// selection exists whatever the mode does with it (bail and waterfall may
+/// stop before reaching every selected listener).
 pub(crate) async fn walk<E: Event>(
     table: &ListenerTable,
     caller: ContextId,
     mut event: E,
-) -> DispatchReport<E> {
+) -> (DispatchReport<E>, usize) {
     let mut outputs = Vec::new();
     let mut failures = Vec::new();
     let selected = select::<E>(table, &event, &mut failures);
+    let chosen = selected.len();
 
     match E::MODE {
         DispatchMode::Emit => {
@@ -114,11 +119,14 @@ pub(crate) async fn walk<E: Event>(
         }
     }
 
-    DispatchReport {
-        event,
-        outputs,
-        failures,
-    }
+    (
+        DispatchReport {
+            event,
+            outputs,
+            failures,
+        },
+        chosen,
+    )
 }
 
 /// Interrogates each snapshotted listener's registration context with the
