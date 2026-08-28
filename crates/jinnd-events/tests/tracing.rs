@@ -2,6 +2,8 @@
 //! emit, carrying topic, mode, selected-listener count, contained-failure
 //! count, and the emitting context — and never altering dispatch outcomes.
 
+#![cfg(not(feature = "loom"))]
+
 mod support;
 
 use std::sync::{Arc, Mutex};
