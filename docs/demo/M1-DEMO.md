@@ -118,26 +118,14 @@ stopped serving.
 > to make it durable across a restart, update the entry's `hash` to the new
 > artifact's (that document-led pin change is a cold Replace, by design).
 
-## 4. Dispose one plugin → the ledger shows exactly what was undone
+## 4. Revert a recorded effect by key
 
-Remove the `scribe` entry from `profile.json` (same editing pattern as
-step 2, deleting the object), then observe: `reconciled` with
-`disposed=["scribe"]`, and the ledger's withdrawal trail — the guest's
-inverses replayed LIFO, each one recorded:
-
-```sh
-sqlite3 "$DEMO/ledger.sqlite" \
-  "SELECT seq, kind FROM events WHERE kind LIKE '%EffectWithdrawn%' OR kind LIKE '%ServiceWithdrawn%' ORDER BY seq"
-# … {"EffectWithdrawn":{"label":"scribe on duty","clean":true}} …
-```
-
-## 5. Revert a recorded effect by key
-
-Every journal write was a **revertible effect**: the fs provider registered
-the inverse (the file's prior content) at the point of action (Law 3), and
-logged `fs write effect registered` with the effect id (also visible in the
-ledger's `EffectRegistered` events). Revert the last one **by typing into
-the daemon's stdin** (first terminal):
+Every journal append was a **revertible effect**: the fs provider registered
+the inverse (the file's prior length) at the point of action (Law 3), made
+it durable before the append committed (M2-K3), and logged `fs effect
+registered` with the effect id (also visible in the ledger's
+`EffectRegistered` events). Revert the last one **by typing into the
+daemon's stdin** (first terminal):
 
 ```
 revert <effect-id> demo-revert
@@ -155,6 +143,24 @@ sqlite3 "$DEMO/ledger.sqlite" \
 
 Typing the same command again answers `Reverted` from the record — the
 inverse does not run twice. A different key for the same effect is refused.
+
+## 5. Dispose one plugin → the ledger shows exactly what was undone
+
+Remove the `scribe` entry from `profile.json` (same editing pattern as
+step 2, deleting the object), then observe: `reconciled` with
+`disposed=["scribe"]`, and the ledger's withdrawal trail — the fiber's
+WHOLE journal replayed LIFO, each inverse recorded: the scribe's guest
+effect, its listener, and every `jinn:fs` append it made (M2-K3: a host
+effect is the fiber's contribution like any other, R5), so the journal
+file itself is back to its prior absence:
+
+```sh
+sqlite3 "$DEMO/ledger.sqlite" \
+  "SELECT seq, kind FROM events WHERE kind LIKE '%EffectWithdrawn%' OR kind LIKE '%ServiceWithdrawn%' ORDER BY seq"
+# … {"EffectWithdrawn":{"label":"fs append journal.txt [effect …]","clean":true}} …
+# … {"EffectWithdrawn":{"label":"scribe on duty","clean":true}} …
+ls "$DEMO/data"            # journal.txt is gone — exactly its contribution (I1)
+```
 
 ## 6. Shutdown
 
