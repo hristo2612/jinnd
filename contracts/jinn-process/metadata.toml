@@ -27,6 +27,13 @@ sensitivity = "personal"
 # reaped on the record (ProcessKilled then ProcessExited, or a typed
 # ProcessReapPending until the host task lands the exit).
 inverse     = "kill-and-reap"
+# The HARD total-output cap (R9): stdout is collected through the same
+# bounded ring as the long-lived edition into a total of at most this many
+# bytes; past it the answer is the typed `output-truncated` (ledger
+# `ProcessOutputTruncated`), the host's read end is cut, the child killed
+# and reaped. The collector is owned by the call: never a task, never a
+# pipe, outlives the answer — a descendant holding the pipe gets EPIPE.
+output-cap-bytes = 1048576
 
 [operations.spawn]
 effect      = "kernel-registration"

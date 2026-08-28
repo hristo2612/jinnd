@@ -30,7 +30,11 @@ impl AsyncRead for Torn {
 async fn a_torn_pipe_is_a_typed_error_never_empty_success() {
     let mut collector = Collector::start(Torn);
     assert!(collector.drain().await.is_ok(), "the stream ends");
-    let error = collector.finish().await.expect_err("honest failure");
+    let error = collector
+        .finish()
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("honest failure"));
     assert_eq!(error.code, ErrorCode::PluginFailed);
     assert!(error.message.contains("pipe torn"), "{}", error.message);
 }
@@ -42,9 +46,17 @@ async fn a_dead_pump_task_is_a_typed_error_never_empty_success() {
     let pump = tokio::spawn(std::future::pending());
     pump.abort();
     let collector = Collector::from_parts(stream, pump);
-    let error = collector.finish().await.expect_err("honest failure");
+    let error = collector
+        .finish()
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("honest failure"));
     assert_eq!(error.code, ErrorCode::PluginFailed);
-    assert!(error.message.contains("collector task"), "{}", error.message);
+    assert!(
+        error.message.contains("collector task"),
+        "{}",
+        error.message
+    );
 }
 
 /// Past the cap the collector answers overflow with at most the cap plus
@@ -65,7 +77,9 @@ async fn output_past_the_cap_is_overflow_and_the_cut_fails_the_writer() {
     assert!(collector.drain().await.is_err(), "overflow past the cap");
     assert!(collector.buffered() <= RUN_OUTPUT_CAP + 8192);
     collector.cut().await;
-    let kind = writer.await.unwrap_or_else(|error| panic!("writer: {error}"));
+    let kind = writer
+        .await
+        .unwrap_or_else(|error| panic!("writer: {error}"));
     assert_eq!(kind, io::ErrorKind::BrokenPipe);
 }
 

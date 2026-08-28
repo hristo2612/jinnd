@@ -37,5 +37,10 @@ future edition, added when a consumer needs it.
 handle, signal }` — with the calling entry's attribution. A kernel kill is
 never half a story: `run` past its bound shows `ProcessKilled` then
 `ProcessExited`; a child not reaped inside the guest deadline is
-`ProcessReapPending { handle }` until the host task lands its exit. Stream
-bytes are data plane and are not ledgered.
+`ProcessReapPending { handle }` until the host task lands its exit. `run`
+is bounded in output too: stdout flows through the same bounded ring as
+the long-lived edition into a total capped by the metadata's
+`output-cap-bytes`; past it `ProcessOutputTruncated { handle, cap }` is
+recorded and the call answers `output-truncated` — the read end is cut
+(EPIPE for a descendant holding the pipe), the child killed and reaped.
+Stream bytes are data plane and are not ledgered.

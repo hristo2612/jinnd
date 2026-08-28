@@ -12,7 +12,9 @@
 package jinn:process@0.1.0;
 
 interface process {
-  variant process-error { denied(string), failed(string), invalid(string) }
+  // `output-truncated`: `run` produced more than the metadata's
+  // `output-cap-bytes` (R9) — cut, killed, reaped; never a silent prefix.
+  variant process-error { denied(string), failed(string), invalid(string), output-truncated }
 
   type process-handle = u64;
   enum child-stream { stdout, stderr }
@@ -21,9 +23,10 @@ interface process {
   variant wait-result { exited(s32), running }
   enum signal { interrupt, terminate, kill }
 
-  // effect = kernel registration released by completion. Bounded: the
-  // child is killed at the bound (the guest deadline's order) and reaped
-  // on the record — its exit is ledgered, never delegated silently.
+  // effect = kernel registration released by completion. Bounded in time
+  // AND output: killed at the bound (the guest deadline's order) and
+  // reaped on the record; stdout capped at `output-cap-bytes`. A torn
+  // pipe is `failed`, never an empty success.
   run: func(command: string, args: list<string>) -> result<list<u8>, process-error>;
 
   // effect = kernel registration: inverse obligation = kill-and-reap.

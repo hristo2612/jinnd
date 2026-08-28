@@ -236,7 +236,9 @@ interface process {
 
   /// Runs one command to completion (bounded at the guest deadline's
   /// order; the child is killed at the bound and reaped on the record),
-  /// answering its stdout bytes.
+  /// answering its stdout bytes — collected through a bounded buffer
+  /// under the bundle's `output-cap-bytes`; past it the call fails typed
+  /// `output-truncated` (R9), never a silent prefix.
   /// Effect class: kernel registration, released by completion.
   /// Broker wire: operation `run`, payload = for the command and then each
   /// argument, a u32-LE byte length followed by the UTF-8 bytes.

@@ -2,8 +2,10 @@
 //! (M2-K6; R1, R9): a bounded ring plus the signal that resumes the task
 //! waiting on it. Output: a pump task fills the ring, a take wakes it
 //! when stalled. Stdin: an offer fills the ring, a feeder task drains it
-//! into the pipe. No guest call ever touches a pipe.
+//! into the pipe. No guest call ever touches a pipe. `readable` is the
+//! host-side wake a collector waits on (the guest polls instead).
 
+use std::io;
 use std::sync::Arc;
 
 use jinnd_api::{ErrorCode, KernelError};
@@ -18,6 +20,7 @@ use crate::broker_state::refusal;
 pub(super) struct Stream {
     ring: Arc<Ring>,
     space: Arc<Notify>,
+    ready: Arc<Notify>,
 }
 
 impl Stream {
@@ -25,7 +28,14 @@ impl Stream {
         Self {
             ring: Arc::new(Ring::new(STREAM_CAP)),
             space: Arc::new(Notify::new()),
+            ready: Arc::new(Notify::new()),
         }
+    }
+
+    /// Resolves once the pump offered bytes or ended the stream since the
+    /// last wait (a permit is kept, so nothing is lost between takes).
+    pub(super) async fn readable(&self) {
+        self.ready.notified().await;
     }
 
     /// One non-blocking read: `(bytes, eof)`; a take that made room wakes
@@ -58,13 +68,14 @@ impl Stream {
 
     /// Ends the stream and frees a stalled pump or feeder.
     pub(super) fn release(&self) {
-        self.ring.close();
+        self.close();
         self.space.notify_one();
     }
 
-    /// Ends a stream that never had a pipe.
+    /// Ends a stream that never had a pipe, or whose pipe is gone.
     pub(super) fn close(&self) {
         self.ring.close();
+        self.ready.notify_one();
     }
 
     #[cfg(test)]
@@ -74,26 +85,30 @@ impl Stream {
 }
 
 /// Moves one pipe into its ring; stalls on a full ring until a take makes
-/// room (backpressure, R9); closes the ring at the pipe's end.
-pub(super) async fn pump(mut pipe: impl AsyncRead + Unpin, stream: Stream) {
+/// room (backpressure, R9); closes the ring at the pipe's end. The pipe's
+/// own failure is the verdict (honest failure): the ring still closes.
+pub(super) async fn pump(mut pipe: impl AsyncRead + Unpin, stream: Stream) -> io::Result<()> {
     let mut chunk = vec![0u8; 8192];
-    loop {
+    let verdict = loop {
         let read = match pipe.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break Ok(()),
+            Err(error) => break Err(error),
             Ok(read) => read,
         };
         let mut offset = 0;
         while offset < read {
             offset += stream.ring.offer(&chunk[offset..read]);
+            stream.ready.notify_one();
             if offset < read {
                 if stream.ring.is_closed() {
-                    return;
+                    return Ok(());
                 }
                 stream.space.notified().await;
             }
         }
-    }
-    stream.ring.close();
+    };
+    stream.close();
+    verdict
 }
 
 /// Drains the stdin ring into the pipe; idles until an offer; the ring's

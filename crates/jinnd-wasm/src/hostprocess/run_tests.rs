@@ -32,7 +32,10 @@ async fn run(rig: &Rig, command: &str, args: &[&str]) -> Result<Vec<u8>, KernelE
 /// The bound every `run` answers within: the cap, the reap bound, slack.
 const ANSWER_WITHIN: Duration = Duration::from_secs(3);
 
-fn position(kinds: &[(LedgerEventKind, Option<jinnd_api::FiberId>)], probe: impl Fn(&LedgerEventKind) -> bool) -> Option<usize> {
+fn position(
+    kinds: &[(LedgerEventKind, Option<jinnd_api::FiberId>)],
+    probe: impl Fn(&LedgerEventKind) -> bool,
+) -> Option<usize> {
     kinds.iter().position(|(kind, _)| probe(kind))
 }
 
@@ -47,7 +50,10 @@ async fn wait_for_exit(rig: &Rig, handle: u64) {
         {
             return;
         }
-        assert!(Instant::now() < deadline, "the exit never landed: {kinds:?}");
+        assert!(
+            Instant::now() < deadline,
+            "the exit never landed: {kinds:?}"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -73,7 +79,10 @@ fn pid_in(path: &std::path::Path) -> i32 {
             let _ = std::fs::remove_file(path);
             return pid;
         }
-        assert!(Instant::now() < deadline, "the descendant's pid never landed");
+        assert!(
+            Instant::now() < deadline,
+            "the descendant's pid never landed"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -87,7 +96,8 @@ async fn output_past_the_cap_is_a_typed_truncation_cut_killed_and_reaped() {
     let started = Instant::now();
     let error = run(&rig, "/usr/bin/yes", &[])
         .await
-        .expect_err("a runaway writer never answers success");
+        .err()
+        .unwrap_or_else(|| panic!("a runaway writer never answers success"));
     assert!(started.elapsed() < ANSWER_WITHIN, "{:?}", started.elapsed());
     assert_eq!(error.code, ErrorCode::PluginFailed);
     assert!(
@@ -134,7 +144,8 @@ async fn a_writing_descendant_is_cut_off_at_the_bound_and_dies_of_epipe() {
     let started = Instant::now();
     let error = run(&rig, "/bin/sh", &["-c", &script])
         .await
-        .expect_err("a held-open, written pipe never answers success");
+        .err()
+        .unwrap_or_else(|| panic!("a held-open, written pipe never answers success"));
     assert!(
         started.elapsed() < RUN_CAP + Duration::from_secs(2),
         "{:?}",
@@ -165,7 +176,8 @@ async fn an_exited_child_whose_descendant_holds_stdout_refuses_without_a_kill() 
     let script = format!("sleep 30 & echo $! > {}", pid_file.display());
     let error = run(&rig, "/bin/sh", &["-c", &script])
         .await
-        .expect_err("a held-open pipe never answers success");
+        .err()
+        .unwrap_or_else(|| panic!("a held-open pipe never answers success"));
     let pid = pid_in(&pid_file);
     let _ = nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(pid),

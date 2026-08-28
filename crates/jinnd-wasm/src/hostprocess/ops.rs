@@ -1,39 +1,57 @@
 //! The `jinn:process` operations behind the provider's broker face: the
-//! bounded one-shot `run` and the handle operations (wit/plugin.wit
+//! bounded one-shot `run` (collector.rs owns its stdout) and the handle
+//! operations (wit/plugin.wit
 //! `interface process`). Split from `hostprocess.rs` by responsibility
 //! (R10 file hygiene).
 
 use std::sync::Arc;
 
-use jinnd_api::{ErrorCode, KernelError, LedgerEventKind};
-use tokio::io::AsyncReadExt;
+use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
+use tokio::process::Child;
 
 use super::HostProcess;
 use super::child::{self, RUN_CAP, Signal, exit_code};
+use super::collector::{Collector, Overflow, RUN_OUTPUT_CAP};
 use super::reap::{RUN_REAP_CAP, reap_on_record};
 use super::ring::STREAM_CAP;
 use crate::broker_state::refusal;
 use crate::hostwire::{Reader, TAG_DATA, TAG_WOULD_BLOCK, decode_run, encode_read};
 use crate::peer::PeerId;
 
+/// Why the bounded `run` loop stopped.
+enum Stop {
+    /// The child exited and its stdout reached EOF.
+    Done,
+    /// The child's `wait` itself failed.
+    Failed,
+    /// The collected total passed the cap.
+    Overflow,
+    /// The bound elapsed first.
+    Bound,
+}
+
 impl HostProcess {
-    /// The one-shot: spawn, collect stdout, bounded; at the bound the child
-    /// is killed AND reaped on the record (Law 2) and the call refuses.
+    /// The one-shot: spawn, collect stdout through an OWNED bounded
+    /// collector (R9), all inside the bound. Past the cap or the bound the
+    /// read end is cut (EPIPE for any descendant holding the pipe) and a
+    /// live child is killed AND reaped on the record (Law 2); a torn pipe
+    /// or dead collector is a typed error — never defaulted success.
     pub(super) async fn run(&self, caller: PeerId, payload: &[u8]) -> Result<Vec<u8>, KernelError> {
         let (command, args) = decode_run(payload)?;
         let (program, scope) = self.authorize(caller, &command).await?;
         let fiber = self.core.attribution(caller);
+        let failed = |what: String| {
+            refusal(
+                ErrorCode::PluginFailed,
+                format!("process run {command:?}: {what}"),
+            )
+        };
         let mut child = child::command(&program, &args, None, &[], &scope)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|error| {
-                refusal(
-                    ErrorCode::PluginFailed,
-                    format!("process run {command:?}: {error}"),
-                )
-            })?;
+            .map_err(|error| failed(error.to_string()))?;
         let handle = self.core.mint();
         self.core.sink.append(
             LedgerEventKind::ProcessSpawned {
@@ -43,53 +61,95 @@ impl HostProcess {
             },
             fiber,
         );
-        let collector = child.stdout.take().map(|mut pipe| {
-            tokio::spawn(async move {
-                let mut stdout = Vec::new();
-                let _ = pipe.read_to_end(&mut stdout).await;
-                stdout
-            })
-        });
-        match tokio::time::timeout(RUN_CAP, child.wait()).await {
-            Ok(Ok(status)) => {
-                let code = exit_code(status);
-                self.core
-                    .sink
-                    .append(LedgerEventKind::ProcessExited { handle, code }, fiber);
-                Ok(match collector {
-                    Some(task) => task.await.unwrap_or_default(),
-                    None => Vec::new(),
-                })
+        let pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| failed("no stdout pipe".to_owned()))?;
+        let mut collector = Collector::start(pipe);
+        let mut exit: Option<std::io::Result<std::process::ExitStatus>> = None;
+        let stop = {
+            let mut drain = std::pin::pin!(collector.drain());
+            let mut deadline = std::pin::pin!(tokio::time::sleep(RUN_CAP));
+            let mut output = None;
+            loop {
+                tokio::select! {
+                    status = child.wait(), if exit.is_none() => {
+                        if let Ok(status) = &status {
+                            let code = exit_code(*status);
+                            self.core
+                                .sink
+                                .append(LedgerEventKind::ProcessExited { handle, code }, fiber);
+                        }
+                        exit = Some(status);
+                    }
+                    result = &mut drain, if output.is_none() => output = Some(result),
+                    () = &mut deadline => break Stop::Bound,
+                }
+                match (&exit, &output) {
+                    (Some(Err(_)), _) => break Stop::Failed,
+                    (_, Some(Err(Overflow))) => break Stop::Overflow,
+                    (Some(Ok(_)), Some(Ok(()))) => break Stop::Done,
+                    _ => {}
+                }
             }
-            Ok(Err(error)) => Err(refusal(
-                ErrorCode::PluginFailed,
-                format!("process run {command:?}: {error}"),
-            )),
-            // Killed at the bound, then reaped on the record (reap.rs).
-            Err(_) => {
+        };
+        if matches!(stop, Stop::Done) {
+            return collector.finish().await;
+        }
+        collector.cut().await;
+        let live = exit.is_none();
+        match stop {
+            Stop::Done => unreachable!("answered above"),
+            Stop::Failed => Err(failed("the wait failed".to_owned())),
+            Stop::Overflow => {
                 self.core.sink.append(
-                    LedgerEventKind::ProcessKilled {
+                    LedgerEventKind::ProcessOutputTruncated {
                         handle,
-                        signal: "kill".to_owned(),
+                        cap: RUN_OUTPUT_CAP as u64,
                     },
                     fiber,
                 );
-                let _ = child.start_kill();
-                let reap = async move { child.wait().await.map_or(-1, exit_code) };
-                reap_on_record(
-                    Arc::clone(&self.core.sink),
-                    handle,
-                    fiber,
-                    reap,
-                    RUN_REAP_CAP,
-                )
-                .await;
+                if live {
+                    self.kill_and_reap(child, handle, fiber).await;
+                }
                 Err(refusal(
                     ErrorCode::PluginFailed,
-                    format!("process run {command:?} exceeded its bound and was killed"),
+                    format!(
+                        "output-truncated: process run {command:?} exceeded the {RUN_OUTPUT_CAP}-byte output cap"
+                    ),
                 ))
             }
+            Stop::Bound if live => {
+                self.kill_and_reap(child, handle, fiber).await;
+                Err(failed("exceeded its bound and was killed".to_owned()))
+            }
+            Stop::Bound => Err(failed(
+                "stdout held open past the bound after the exit (a descendant inherited the pipe; use spawn for long-lived children)"
+                    .to_owned(),
+            )),
         }
+    }
+
+    /// Kills a live child at the bound and reaps it on the record
+    /// (reap.rs): `ProcessKilled` now, `ProcessExited` when it lands.
+    async fn kill_and_reap(&self, mut child: Child, handle: u64, fiber: Option<FiberId>) {
+        self.core.sink.append(
+            LedgerEventKind::ProcessKilled {
+                handle,
+                signal: "kill".to_owned(),
+            },
+            fiber,
+        );
+        let _ = child.start_kill();
+        let reap = async move { child.wait().await.map_or(-1, exit_code) };
+        reap_on_record(
+            Arc::clone(&self.core.sink),
+            handle,
+            fiber,
+            reap,
+            RUN_REAP_CAP,
+        )
+        .await;
     }
 
     /// One operation on a caller-owned handle: 8-byte LE handle first,
