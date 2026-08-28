@@ -1,9 +1,13 @@
 //! The `jinn:fs` effect-retention store (M2-K3, harness finding 8): every
 //! revertible fs effect's inverse is spilled to a durable file keyed by
 //! effect id BEFORE the mutation commits, so provider memory holds an index
-//! (id → label), never prior contents. Undo reads the inverse back from the
-//! spill; reclaim removes it. No compaction daemon: retention is
+//! (id → header), never prior contents. Undo reads the inverse back from
+//! the spill; reclaim removes it. No compaction daemon: retention is
 //! event-driven — persist on register, reclaim on consumption (R10).
+//!
+//! Durable means durable: the staged file is fsynced, renamed into place,
+//! and the PARENT DIRECTORY is fsynced — without the directory sync the
+//! rename itself is not on disk (round-2 blocker 4).
 //!
 //! Ids never repeat across restarts: the store carries a boot epoch, and an
 //! effect id is `(epoch + 1) << 32 | ordinal` — a reopened ledger's revert
@@ -27,10 +31,20 @@ pub(crate) enum Prior {
     Length(u64),
 }
 
-/// One spilled inverse: the scoped path label and what to restore.
+/// The part of a record the in-memory index keeps: the scoped path label,
+/// the caller's idempotency key (03 §Act; empty = none), and the owning
+/// fiber (0 = unattributed).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Header {
+    pub(crate) label: String,
+    pub(crate) key: String,
+    pub(crate) owner: u64,
+}
+
+/// One spilled inverse: its header and what to restore.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Record {
-    pub(crate) label: String,
+    pub(crate) header: Header,
     pub(crate) prior: Prior,
 }
 
@@ -45,22 +59,61 @@ fn corrupt(id: u64, detail: &str) -> KernelError {
     )
 }
 
+fn push_prefixed(bytes: &mut Vec<u8>, segment: &[u8]) {
+    bytes.extend(
+        u32::try_from(segment.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    bytes.extend(segment);
+}
+
+fn take_prefixed(bytes: &[u8]) -> Option<(String, &[u8])> {
+    let (length, rest) = bytes.split_at_checked(4)?;
+    let mut prefix = [0u8; 4];
+    prefix.copy_from_slice(length);
+    let (segment, rest) = rest.split_at_checked(u32::from_le_bytes(prefix) as usize)?;
+    Some((String::from_utf8(segment.to_vec()).ok()?, rest))
+}
+
+impl Header {
+    /// Wire: one tag byte, then u32-LE-prefixed label and key, then the
+    /// u64-LE owner. The tag names the body that follows.
+    fn encode(&self, tag: u8) -> Vec<u8> {
+        let mut bytes = vec![tag];
+        push_prefixed(&mut bytes, self.label.as_bytes());
+        push_prefixed(&mut bytes, self.key.as_bytes());
+        bytes.extend(self.owner.to_le_bytes());
+        bytes
+    }
+
+    fn decode(id: u64, bytes: &[u8]) -> Result<(u8, Self, &[u8]), KernelError> {
+        let (&tag, rest) = bytes.split_first().ok_or_else(|| corrupt(id, "empty"))?;
+        let (label, rest) = take_prefixed(rest).ok_or_else(|| corrupt(id, "label"))?;
+        let (key, rest) = take_prefixed(rest).ok_or_else(|| corrupt(id, "key"))?;
+        let (owner, body) = rest
+            .split_at_checked(8)
+            .ok_or_else(|| corrupt(id, "owner"))?;
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(owner);
+        let header = Self {
+            label,
+            key,
+            owner: u64::from_le_bytes(bytes),
+        };
+        Ok((tag, header, body))
+    }
+}
+
 impl Record {
-    /// Wire: one tag byte, u32-LE label length, label bytes, then the body
-    /// (nothing / the content / an 8-byte LE length).
+    /// Wire: the header, then the body (nothing / the content / an 8-byte
+    /// LE length).
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.push(match self.prior {
+        let mut bytes = self.header.encode(match self.prior {
             Prior::Absent => TAG_ABSENT,
             Prior::Content(_) => TAG_CONTENT,
             Prior::Length(_) => TAG_LENGTH,
         });
-        bytes.extend(
-            u32::try_from(self.label.len())
-                .unwrap_or(u32::MAX)
-                .to_le_bytes(),
-        );
-        bytes.extend(self.label.as_bytes());
         match &self.prior {
             Prior::Absent => {}
             Prior::Content(content) => bytes.extend(content),
@@ -70,8 +123,7 @@ impl Record {
     }
 
     pub(crate) fn decode(id: u64, bytes: &[u8]) -> Result<Self, KernelError> {
-        let (&tag, rest) = bytes.split_first().ok_or_else(|| corrupt(id, "empty"))?;
-        let (label, body) = split_label(rest).ok_or_else(|| corrupt(id, "label"))?;
+        let (tag, header, body) = Header::decode(id, bytes)?;
         let prior = match tag {
             TAG_ABSENT => Prior::Absent,
             TAG_CONTENT => Prior::Content(body.to_vec()),
@@ -83,21 +135,13 @@ impl Record {
             }
             _ => return Err(corrupt(id, "tag")),
         };
-        Ok(Self { label, prior })
+        Ok(Self { header, prior })
     }
 }
 
-fn split_label(bytes: &[u8]) -> Option<(String, &[u8])> {
-    let (length, rest) = bytes.split_at_checked(4)?;
-    let mut prefix = [0u8; 4];
-    prefix.copy_from_slice(length);
-    let (label, body) = rest.split_at_checked(u32::from_le_bytes(prefix) as usize)?;
-    Some((String::from_utf8(label.to_vec()).ok()?, body))
-}
-
 /// What opening a store yields: the store, its boot epoch, and the index
-/// of every inverse still spilled as `(id, label)`.
-pub(crate) type Opened = (Retention, u64, Vec<(u64, String)>);
+/// of every inverse still spilled as `(id, header)`.
+pub(crate) type Opened = (Retention, u64, Vec<(u64, Header)>);
 
 /// The spill directory and its boot epoch.
 #[derive(Clone)]
@@ -115,18 +159,20 @@ fn io(detail: &str, refused: &std::io::Error) -> KernelError {
     )
 }
 
-/// Writes `bytes` durably at `target`: staged beside it, fsynced, renamed.
-fn commit_sync(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes `bytes` durably at `target`: staged beside it, fsynced, renamed,
+/// and the parent directory fsynced so the rename is on disk too.
+fn commit_sync(dir: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let staged = target.with_extension("tmp");
     let mut file = std::fs::File::create(&staged)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    std::fs::rename(&staged, target)
+    std::fs::rename(&staged, target)?;
+    std::fs::File::open(dir)?.sync_all()
 }
 
 impl Retention {
     /// Opens (creating) the store, bumps the boot epoch durably, and
-    /// rehydrates the index of every inverse still spilled: `(id, label)`.
+    /// rehydrates the index of every inverse still spilled: `(id, header)`.
     /// Blocking — construction only, never an async path.
     ///
     /// # Errors
@@ -141,7 +187,7 @@ impl Retention {
             .ok()
             .and_then(|text| text.trim().parse::<u64>().ok())
             .map_or(0, |prior| prior + 1);
-        commit_sync(&epoch_path, epoch.to_string().as_bytes())
+        commit_sync(&dir, &epoch_path, epoch.to_string().as_bytes())
             .map_err(|refused| io("epoch", &refused))?;
         let mut index = Vec::new();
         for entry in std::fs::read_dir(&dir).map_err(|refused| io("scan", &refused))? {
@@ -154,9 +200,9 @@ impl Retention {
             else {
                 continue;
             };
-            index.push((id, read_label(id, &entry.path())?));
+            index.push((id, read_header(id, &entry.path())?));
         }
-        index.sort_unstable();
+        index.sort_unstable_by_key(|(id, _)| *id);
         Ok((Self { dir }, epoch, index))
     }
 
@@ -165,7 +211,7 @@ impl Retention {
     }
 
     /// Makes `record` durable under `id` BEFORE the caller mutates: staged,
-    /// fsynced, renamed into place.
+    /// fsynced, renamed into place, parent directory fsynced.
     ///
     /// # Errors
     ///
@@ -177,7 +223,8 @@ impl Retention {
             let mut file = tokio::fs::File::create(&staged).await?;
             file.write_all(&record.encode()).await?;
             file.sync_all().await?;
-            tokio::fs::rename(&staged, &target).await
+            tokio::fs::rename(&staged, &target).await?;
+            tokio::fs::File::open(&self.dir).await?.sync_all().await
         };
         write.await.map_err(|refused| io("persist", &refused))
     }
@@ -224,15 +271,12 @@ impl Retention {
 }
 
 /// Reads only a record's header — rehydration never loads prior contents.
-fn read_label(id: u64, path: &Path) -> Result<String, KernelError> {
+fn read_header(id: u64, path: &Path) -> Result<Header, KernelError> {
     let mut file = std::fs::File::open(path).map_err(|refused| io("scan", &refused))?;
-    let mut header = [0u8; 5];
-    file.read_exact(&mut header)
-        .map_err(|_| corrupt(id, "header"))?;
-    let mut prefix = [0u8; 4];
-    prefix.copy_from_slice(&header[1..]);
-    let mut label = vec![0u8; u32::from_le_bytes(prefix) as usize];
-    file.read_exact(&mut label)
-        .map_err(|_| corrupt(id, "label"))?;
-    String::from_utf8(label).map_err(|_| corrupt(id, "label"))
+    // Tag + two prefixed strings + owner: read generously, decode the
+    // header alone (the body may be megabytes; it stays on disk).
+    let mut head = vec![0u8; 4096];
+    let read = file.read(&mut head).map_err(|_| corrupt(id, "header"))?;
+    let (_, header, _) = Header::decode(id, head.get(..read).unwrap_or(&[]))?;
+    Ok(header)
 }

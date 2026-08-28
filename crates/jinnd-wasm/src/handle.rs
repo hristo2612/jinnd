@@ -36,6 +36,20 @@ pub enum Registration {
     /// A `jinn:clock` alarm request — an effect whose undo cancels the
     /// host-side alarm (M2-K2; R5).
     Alarm(AlarmRecord),
+    /// A host-provider effect registered on this instance's behalf (M2-K3:
+    /// a `jinn:fs` write/append/remove) — withdrawn through the broker's
+    /// current provider of the contract, LIFO with the rest (R5).
+    Host(HostRecord),
+}
+
+/// One host-provider effect in the journal: the contract that owns the
+/// inverse, the Law-2 label shared with the provider's ledger line, and
+/// the provider's effect id.
+#[derive(Clone, Debug)]
+pub struct HostRecord {
+    pub contract: String,
+    pub label: String,
+    pub effect: u64,
 }
 
 impl ActivationOutcome {

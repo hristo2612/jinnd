@@ -31,6 +31,7 @@ mod lane;
 mod lane_swap;
 mod peer;
 mod selector;
+mod settle;
 mod sha256;
 mod slot;
 mod surfaces;
@@ -44,11 +45,13 @@ pub use alarms::{
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
 pub use grants::ScopeValue;
-pub use handle::{ActivationOutcome, AlarmRecord, InstanceHandle, ListenRecord, Registration};
+pub use handle::{
+    ActivationOutcome, AlarmRecord, HostRecord, InstanceHandle, ListenRecord, Registration,
+};
 pub use host::{LoadedComponent, WasmHost};
 pub use hostclock::HostClock;
 pub use hostfs::wire::FileMeta;
-pub use hostfs::{FS_CONTRACT, HostFs, UndoAction};
+pub use hostfs::{FS_CONTRACT, HostFs, UndoAction, effect_label};
 pub use instance::Seat;
 pub use lane::{Grant, LaneCore, SeatSpec, WasmBody, wasm_lane};
 pub use lane_swap::swap_pinned;

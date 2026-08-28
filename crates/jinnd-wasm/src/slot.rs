@@ -51,7 +51,7 @@ impl SeatState {
                 Registration::Provision { contract } => provisions.push(contract.clone()),
                 Registration::Listen(record) => listens.extend(record.id),
                 Registration::Alarm(record) => alarms.extend(record.id),
-                Registration::Effect { .. } => {}
+                Registration::Effect { .. } | Registration::Host(_) => {}
             }
         }
         (provisions, listens, alarms)
@@ -124,6 +124,26 @@ impl SeatState {
                         );
                     }
                 }
+                // A host-provider effect withdraws through the contract's
+                // current provider (M2-K3; R5): inverse from the spill,
+                // storage reclaimed, ledgered under its own label.
+                Registration::Host(record) => {
+                    let outcome = broker
+                        .withdraw_effect(&record.contract, record.effect)
+                        .await;
+                    if let Some((sink, fiber)) = ledger {
+                        sink.append(
+                            LedgerEventKind::EffectWithdrawn {
+                                label: record.label.clone(),
+                                clean: outcome.is_ok(),
+                            },
+                            Some(fiber),
+                        );
+                    }
+                    if let Err(error) = outcome {
+                        first.get_or_insert(error);
+                    }
+                }
                 // The broker appends the withdrawal itself (R6), so it too
                 // lands at the moment it runs.
                 Registration::Provision { contract } => broker.withdraw(peer, contract),
@@ -167,6 +187,21 @@ impl SharedSlot {
     /// Empties the slot (teardown), returning the seat to retire.
     pub fn take(&self) -> Option<SeatState> {
         self.lock().take()
+    }
+
+    /// Appends registrations made AFTER activation (a wake or call
+    /// handler's effects, M2-K3) to the live seat's journal, so teardown
+    /// withdraws them with the rest. Handed back when no seat is live yet
+    /// (the instant between activation and install): the caller keeps
+    /// them for the next drain.
+    pub fn extend(&self, late: Vec<Registration>) -> Option<Vec<Registration>> {
+        match self.lock().as_mut() {
+            Some(seat) => {
+                seat.registrations.extend(late);
+                None
+            }
+            None => Some(late),
+        }
     }
 
     /// The live instance, if any.

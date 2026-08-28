@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use crate::alarms::{AlarmSpec, ArmRequest, CLOCK_CONTRACT};
 use crate::bindings;
-use crate::handle::{AlarmRecord, Registration};
+use crate::handle::{AlarmRecord, HostRecord, Registration};
 use crate::hostfs::wire::{FileMeta, decode_metas};
+use crate::hostfs::{FS_CONTRACT, effect_label};
 use crate::instance::{HostState, Seat};
 use crate::topics::EventTarget;
 
@@ -52,65 +53,102 @@ fn file_meta(meta: FileMeta) -> bindings::fs::FileMeta {
     }
 }
 
+/// One `jinn:fs` read: the crossing under the bundle's own error (R12).
+async fn fs_read(
+    seat: &Seat,
+    operation: &str,
+    path: String,
+) -> Result<Vec<u8>, bindings::fs::FsError> {
+    seat.broker
+        .dispatch(seat.peer, FS_CONTRACT, operation, path.into_bytes())
+        .await
+        .map_err(bindings::fs_error)
+}
+
+/// One `jinn:fs` revertible effect (M2-K3): the keyed crossing, then the
+/// answered effect id JOINS THIS INSTANCE'S JOURNAL under the provider's
+/// own label — teardown withdraws it LIFO with every other registration,
+/// through the broker's current provider (R5, M1-P9b; round-2 blocker 1).
+async fn fs_effect(
+    state: &mut HostState,
+    operation: &str,
+    path: &str,
+    key: &str,
+    data: &[u8],
+) -> Result<(), bindings::fs::FsError> {
+    let payload = prefixed(&[path.as_bytes(), key.as_bytes()], data);
+    let answer = state
+        .seat
+        .broker
+        .dispatch(state.seat.peer, FS_CONTRACT, operation, payload)
+        .await
+        .map_err(bindings::fs_error)?;
+    let mut bytes = [0u8; 8];
+    let taken = answer.len().min(8);
+    bytes[..taken].copy_from_slice(&answer[..taken]);
+    let effect = u64::from_le_bytes(bytes);
+    state
+        .outcome
+        .registrations
+        .push(Registration::Host(HostRecord {
+            contract: FS_CONTRACT.to_owned(),
+            label: effect_label(operation, path, effect),
+            effect,
+        }));
+    Ok(())
+}
+
 impl bindings::fs::Host for HostState {
-    async fn read(&mut self, path: String) -> Result<Vec<u8>, bindings::types::KernelError> {
-        dispatch(&self.seat, "jinn:fs", "read", path.into_bytes()).await
+    async fn read(&mut self, path: String) -> Result<Vec<u8>, bindings::fs::FsError> {
+        fs_read(&self.seat, "read", path).await
     }
 
     async fn list(
         &mut self,
         path: String,
-    ) -> Result<Vec<bindings::fs::FileMeta>, bindings::types::KernelError> {
-        let answer = dispatch(&self.seat, "jinn:fs", "list", path.into_bytes()).await?;
-        let metas = decode_metas(&answer).map_err(bindings::wire_error)?;
+    ) -> Result<Vec<bindings::fs::FileMeta>, bindings::fs::FsError> {
+        let answer = fs_read(&self.seat, "list", path).await?;
+        let metas = decode_metas(&answer).map_err(bindings::fs_error)?;
         Ok(metas.into_iter().map(file_meta).collect())
     }
 
     async fn meta(
         &mut self,
         path: String,
-    ) -> Result<bindings::fs::FileMeta, bindings::types::KernelError> {
-        let answer = dispatch(&self.seat, "jinn:fs", "meta", path.into_bytes()).await?;
-        let metas = decode_metas(&answer).map_err(bindings::wire_error)?;
-        metas.into_iter().next().map(file_meta).ok_or_else(|| {
-            bindings::types::KernelError::ProviderFailed("empty fs meta answer".to_owned())
-        })
-    }
-
-    async fn append(
-        &mut self,
-        path: String,
-        data: Vec<u8>,
-    ) -> Result<(), bindings::types::KernelError> {
-        dispatch(
-            &self.seat,
-            "jinn:fs",
-            "append",
-            prefixed(&[path.as_bytes()], &data),
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn remove(&mut self, path: String) -> Result<(), bindings::types::KernelError> {
-        dispatch(&self.seat, "jinn:fs", "remove", path.into_bytes())
-            .await
-            .map(|_| ())
+    ) -> Result<bindings::fs::FileMeta, bindings::fs::FsError> {
+        let answer = fs_read(&self.seat, "meta", path).await?;
+        let metas = decode_metas(&answer).map_err(bindings::fs_error)?;
+        metas
+            .into_iter()
+            .next()
+            .map(file_meta)
+            .ok_or_else(|| bindings::fs::FsError::Io("empty fs meta answer".to_owned()))
     }
 
     async fn write(
         &mut self,
         path: String,
-        data: Vec<u8>,
-    ) -> Result<(), bindings::types::KernelError> {
-        dispatch(
-            &self.seat,
-            "jinn:fs",
-            "write",
-            prefixed(&[path.as_bytes()], &data),
-        )
-        .await
-        .map(|_| ())
+        bytes: Vec<u8>,
+        idempotency_key: String,
+    ) -> Result<(), bindings::fs::FsError> {
+        fs_effect(self, "write", &path, &idempotency_key, &bytes).await
+    }
+
+    async fn append(
+        &mut self,
+        path: String,
+        bytes: Vec<u8>,
+        idempotency_key: String,
+    ) -> Result<(), bindings::fs::FsError> {
+        fs_effect(self, "append", &path, &idempotency_key, &bytes).await
+    }
+
+    async fn remove(
+        &mut self,
+        path: String,
+        idempotency_key: String,
+    ) -> Result<(), bindings::fs::FsError> {
+        fs_effect(self, "remove", &path, &idempotency_key, &[]).await
     }
 }
 

@@ -1,19 +1,20 @@
 //! The `jinn:fs` operations behind the provider's broker face (M2-K3): the
 //! three reads, the three revertible effects, and the inverse/witness the
-//! retention records replay. Every effect follows one order — capture the
-//! prior, make it durable, mutate, ledger — and refuses on the record when
-//! the inverse cannot be made durable (Law 3; fail-closed like K2's grant
-//! admission).
+//! retention records replay. Every effect follows one order — authorize
+//! and resolve the path, answer a keyed replay from the record, capture
+//! the prior, make it durable, mutate, ledger — and refuses on the record
+//! when the inverse cannot be made durable (Law 3; fail-closed like K2's
+//! grant admission).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use jinnd_api::{ErrorCode, KernelError, LedgerEventKind};
 use tokio::io::AsyncWriteExt;
 
-use super::retention::{Prior, Record};
-use super::wire::{FileMeta, encode_metas, path_payload, split_write};
-use super::{HostFs, contained};
+use super::retention::{Header, Prior, Record};
+use super::wire::{FileMeta, encode_metas, path_payload, split_keyed};
+use super::{HostFs, blocking, effect_label, scope};
 use crate::broker_state::refusal;
 use crate::peer::PeerId;
 
@@ -52,22 +53,40 @@ pub(super) async fn dispatch(
     payload: Vec<u8>,
 ) -> Result<Vec<u8>, KernelError> {
     match operation {
-        "read" => read(provider, &path_payload(payload, "read")?).await,
-        "list" => list(provider, &path_payload(payload, "list")?).await,
-        "meta" => meta(provider, &path_payload(payload, "meta")?).await,
-        "write" => {
-            let (path, data) = split_write(&payload)?;
-            write(provider, caller, &path, data).await?;
-            Ok(Vec::new())
+        "read" | "list" | "meta" => {
+            let path = path_payload(payload, operation)?;
+            let file = provider.scoped(caller, &path).await?;
+            match operation {
+                "read" => read(&file, &path).await,
+                "list" => list(&file, &path).await,
+                _ => meta(&file, &path).await,
+            }
         }
-        "append" => {
-            let (path, data) = split_write(&payload)?;
-            append(provider, caller, &path, data).await?;
-            Ok(Vec::new())
-        }
-        "remove" => {
-            remove(provider, caller, &path_payload(payload, "remove")?).await?;
-            Ok(Vec::new())
+        "write" | "append" | "remove" => {
+            let (path, key, data) = split_keyed(&payload)?;
+            let file = provider.scoped(caller, &path).await?;
+            let owner = provider.attribution(caller);
+            // Keyed exactly-once (03 §Act): the recorded outcome answers a
+            // replay; the mutation never applies twice.
+            if let Some(recorded) = provider.recorded(owner, &key) {
+                return Ok(recorded.0.to_le_bytes().to_vec());
+            }
+            let effect = Effect {
+                provider,
+                caller,
+                operation,
+                header: Header {
+                    label: path.trim_start_matches('/').to_owned(),
+                    key,
+                    owner: owner.map_or(0, |fiber| fiber.0),
+                },
+                path: &path,
+            };
+            match operation {
+                "write" => effect.write(&file, data).await,
+                "append" => effect.append(&file, data).await,
+                _ => effect.remove(&file).await,
+            }
         }
         other => Err(refusal(
             ErrorCode::PluginFailed,
@@ -76,16 +95,14 @@ pub(super) async fn dispatch(
     }
 }
 
-async fn read(provider: &HostFs, path: &str) -> Result<Vec<u8>, KernelError> {
-    let file = contained(&provider.root, path)?;
-    tokio::fs::read(&file)
+async fn read(file: &Path, path: &str) -> Result<Vec<u8>, KernelError> {
+    tokio::fs::read(file)
         .await
         .map_err(|refused| io_refusal("read", path, &refused))
 }
 
-async fn list(provider: &HostFs, path: &str) -> Result<Vec<u8>, KernelError> {
-    let dir = contained(&provider.root, path)?;
-    let mut entries = tokio::fs::read_dir(&dir)
+async fn list(dir: &Path, path: &str) -> Result<Vec<u8>, KernelError> {
+    let mut entries = tokio::fs::read_dir(dir)
         .await
         .map_err(|refused| io_refusal("list", path, &refused))?;
     let mut metas = Vec::new();
@@ -107,9 +124,8 @@ async fn list(provider: &HostFs, path: &str) -> Result<Vec<u8>, KernelError> {
     Ok(encode_metas(&metas))
 }
 
-async fn meta(provider: &HostFs, path: &str) -> Result<Vec<u8>, KernelError> {
-    let file = contained(&provider.root, path)?;
-    let metadata = tokio::fs::metadata(&file)
+async fn meta(file: &Path, path: &str) -> Result<Vec<u8>, KernelError> {
+    let metadata = tokio::fs::metadata(file)
         .await
         .map_err(|refused| io_refusal("meta", path, &refused))?;
     Ok(encode_metas(&[meta_of(
@@ -118,139 +134,118 @@ async fn meta(provider: &HostFs, path: &str) -> Result<Vec<u8>, KernelError> {
     )]))
 }
 
-/// The prior content, or prior absence; any other io refusal is the
-/// operation's.
-async fn prior_content(operation: &str, path: &str, file: &Path) -> Result<Prior, KernelError> {
-    match tokio::fs::read(file).await {
-        Ok(bytes) => Ok(Prior::Content(bytes)),
-        Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Ok(Prior::Absent),
-        Err(refused) => Err(io_refusal(operation, path, &refused)),
-    }
-}
-
-/// Retains the inverse durably, or refuses the effect on the record.
-async fn retain(
-    provider: &HostFs,
+/// One revertible effect in flight: who is acting, on what, under which
+/// header (label, key, owner).
+struct Effect<'a> {
+    provider: &'a HostFs,
     caller: PeerId,
-    operation: &str,
-    label: &str,
-    prior: Prior,
-) -> Result<u64, KernelError> {
-    match provider.retain(label, prior).await {
-        Ok(id) => Ok(id),
-        Err(refused) => {
-            let error = refusal(
-                ErrorCode::EffectFailed,
-                format!(
-                    "fs {operation} {label:?} refused: inverse not durable ({})",
-                    refused.message
-                ),
-            );
-            provider.sink.append(
-                LedgerEventKind::ErrorRecorded {
-                    error: error.clone(),
-                },
-                provider.attribution(caller),
-            );
-            Err(error)
+    operation: &'a str,
+    header: Header,
+    path: &'a str,
+}
+
+impl Effect<'_> {
+    /// The one order (Law 3): retain the inverse durably — or refuse on the
+    /// record — then mutate, then ledger the registration with the
+    /// caller's attribution (Law 2). Answers the 8-byte LE effect id.
+    async fn commit(
+        self,
+        prior: Prior,
+        mutate: impl Future<Output = std::io::Result<()>>,
+    ) -> Result<Vec<u8>, KernelError> {
+        let (provider, operation, path) = (self.provider, self.operation, self.path);
+        let attribution = provider.attribution(self.caller);
+        let id = match provider.retain(self.header, prior).await {
+            Ok(id) => id,
+            Err(refused) => {
+                let error = refusal(
+                    ErrorCode::PluginFailed,
+                    format!(
+                        "fs {operation} {path:?} refused: inverse not durable ({})",
+                        refused.message
+                    ),
+                );
+                provider.sink.append(
+                    LedgerEventKind::ErrorRecorded {
+                        error: error.clone(),
+                    },
+                    attribution,
+                );
+                return Err(error);
+            }
+        };
+        if let Err(refused) = mutate.await {
+            provider.release(id).await;
+            return Err(io_refusal(operation, path, &refused));
         }
+        provider.sink.append(
+            LedgerEventKind::EffectRegistered {
+                label: effect_label(operation, path, id),
+            },
+            attribution,
+        );
+        tracing::info!(effect = id, operation, path, "fs effect registered");
+        Ok(id.to_le_bytes().to_vec())
     }
-}
 
-/// Ledgers the registered effect (Law 2) with the caller's attribution.
-fn registered(provider: &HostFs, caller: PeerId, operation: &str, label: &str, id: u64) {
-    provider.sink.append(
-        LedgerEventKind::EffectRegistered {
-            label: format!("fs {operation} {label} [effect {id}]"),
-        },
-        provider.attribution(caller),
-    );
-    tracing::info!(effect = id, operation, path = %label, "fs effect registered");
-}
-
-async fn write(
-    provider: &HostFs,
-    caller: PeerId,
-    path: &str,
-    data: Vec<u8>,
-) -> Result<(), KernelError> {
-    let file = contained(&provider.root, path)?;
-    let label = path.trim_start_matches('/');
-    let prior = prior_content("write", path, &file).await?;
-    let id = retain(provider, caller, "write", label, prior).await?;
-    let mutate = async {
-        if let Some(parent) = file.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&file, &data).await
-    };
-    if let Err(refused) = mutate.await {
-        provider.release(id).await;
-        return Err(io_refusal("write", path, &refused));
+    async fn write(self, file: &Path, data: Vec<u8>) -> Result<Vec<u8>, KernelError> {
+        let prior = match tokio::fs::read(file).await {
+            Ok(bytes) => Prior::Content(bytes),
+            Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
+            Err(refused) => return Err(io_refusal("write", self.path, &refused)),
+        };
+        let mutate = async {
+            if let Some(parent) = file.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(file, &data).await
+        };
+        self.commit(prior, mutate).await
     }
-    registered(provider, caller, "write", label, id);
-    Ok(())
-}
 
-async fn append(
-    provider: &HostFs,
-    caller: PeerId,
-    path: &str,
-    data: Vec<u8>,
-) -> Result<(), KernelError> {
-    let file = contained(&provider.root, path)?;
-    let label = path.trim_start_matches('/');
-    let prior = match tokio::fs::metadata(&file).await {
-        Ok(metadata) => Prior::Length(metadata.len()),
-        Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
-        Err(refused) => return Err(io_refusal("append", path, &refused)),
-    };
-    let id = retain(provider, caller, "append", label, prior).await?;
-    let mutate = async {
-        if let Some(parent) = file.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let mut handle = tokio::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&file)
-            .await?;
-        handle.write_all(&data).await?;
-        handle.flush().await
-    };
-    if let Err(refused) = mutate.await {
-        provider.release(id).await;
-        return Err(io_refusal("append", path, &refused));
+    async fn append(self, file: &Path, data: Vec<u8>) -> Result<Vec<u8>, KernelError> {
+        let prior = match tokio::fs::metadata(file).await {
+            Ok(metadata) => Prior::Length(metadata.len()),
+            Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
+            Err(refused) => return Err(io_refusal("append", self.path, &refused)),
+        };
+        let mutate = async {
+            if let Some(parent) = file.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let mut handle = tokio::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(file)
+                .await?;
+            handle.write_all(&data).await?;
+            handle.flush().await
+        };
+        self.commit(prior, mutate).await
     }
-    registered(provider, caller, "append", label, id);
-    Ok(())
-}
 
-async fn remove(provider: &HostFs, caller: PeerId, path: &str) -> Result<(), KernelError> {
-    let file = contained(&provider.root, path)?;
-    let label = path.trim_start_matches('/');
-    // A missing path is the typed not-found, and no effect: there is
-    // nothing to withdraw.
-    let prior = tokio::fs::read(&file)
-        .await
-        .map_err(|refused| io_refusal("remove", path, &refused))?;
-    let id = retain(provider, caller, "remove", label, Prior::Content(prior)).await?;
-    if let Err(refused) = tokio::fs::remove_file(&file).await {
-        provider.release(id).await;
-        return Err(io_refusal("remove", path, &refused));
+    async fn remove(self, file: &Path) -> Result<Vec<u8>, KernelError> {
+        // A missing path is the typed not-found, and no effect: there is
+        // nothing to withdraw.
+        let prior = tokio::fs::read(file)
+            .await
+            .map_err(|refused| io_refusal("remove", self.path, &refused))?;
+        self.commit(Prior::Content(prior), tokio::fs::remove_file(file))
+            .await
     }
-    registered(provider, caller, "remove", label, id);
-    Ok(())
 }
 
 fn failed(refused: std::io::Error) -> KernelError {
     refusal(ErrorCode::EffectFailed, refused.to_string())
 }
 
-/// Replays one spilled inverse against the root (Law 3).
-pub(super) async fn apply_inverse(root: &Path, record: &Record) -> Result<(), KernelError> {
-    let file = contained(root, &record.label)?;
-    match &record.prior {
+/// Replays one spilled inverse against the root (Law 3), on the resolved
+/// path — a link planted under the label after the fact cannot redirect
+/// the inverse outside the root.
+pub(super) async fn apply_inverse(root: PathBuf, record: Record) -> Result<(), KernelError> {
+    let label = record.header.label;
+    let file = blocking(move || scope::resolve(&root, &label)).await?;
+    match record.prior {
         Prior::Absent => match tokio::fs::remove_file(&file).await {
             Ok(()) => Ok(()),
             Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -268,7 +263,7 @@ pub(super) async fn apply_inverse(root: &Path, record: &Record) -> Result<(), Ke
                 .open(&file)
                 .await
                 .map_err(failed)?;
-            handle.set_len(*length).await.map_err(failed)
+            handle.set_len(length).await.map_err(failed)
         }
     }
 }
@@ -276,7 +271,7 @@ pub(super) async fn apply_inverse(root: &Path, record: &Record) -> Result<(), Ke
 /// The executable witness: the file now reads as the spilled prior
 /// (content, absence, or length — the bundle's declared equality).
 pub(super) fn witness(root: &Path, record: &Record) -> bool {
-    let Ok(file) = contained(root, &record.label) else {
+    let Ok(file) = scope::resolve(root, &record.header.label) else {
         return false;
     };
     match &record.prior {

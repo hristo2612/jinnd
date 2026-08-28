@@ -4,7 +4,8 @@
 //! opinion; `caller` resolves and calls a granted contract; `ungranted`
 //! asserts the broker refuses an ungranted resolve; `trap` panics; `spin`
 //! never returns; `fs-bundle` / `fs-bundle-denied` / `fs-scope-probe` drive
-//! the `jinn:fs` bundle under a root, no, and a path-prefix grant (M2-K3);
+//! the `jinn:fs` bundle under a root, no, and a path-prefix grant, and
+//! `fs-on-wake` appends from a wake handler (M2-K3);
 //! `grumpy-undo` registers an effect whose inverse fails
 //! loudly (it proves an undo replay RAN); `flaky-restore` refuses every
 //! handoff (it fails a swap's health gate on demand); `interleave` registers
@@ -170,6 +171,13 @@ impl Guest for Fixture {
                 clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
                 Ok(())
             }
+            // A one-shot wake that appends to a guest-kept log from
+            // `handle_event` (M2-K3 round 2): an effect registered AFTER
+            // activation must still join the fiber's journal.
+            "fs-on-wake" => {
+                clock::alarm_at(0, WAKE_TOKEN).map_err(fault)?;
+                Ok(())
+            }
             // A one-shot at instant 0 — already past, wakes once immediately.
             "clock-at" => {
                 services::provide(COUNTER_CONTRACT).map_err(fault)?;
@@ -238,6 +246,9 @@ impl Guest for Fixture {
                 return Err(GuestFault::Failed("a malformed wake arrived".into()));
             }
             COUNTER.fetch_add(1, Ordering::SeqCst);
+            if *MODE.lock().unwrap() == "fs-on-wake" {
+                fs::append("/wakes.log", b"tick\n", "").map_err(fs_fault)?;
+            }
             return Ok(Vec::new());
         }
         Ok(payload)

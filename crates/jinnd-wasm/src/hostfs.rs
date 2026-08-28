@@ -1,37 +1,44 @@
 //! The base `jinn:fs` host provider (R7; M2-K1, lifted from the daemon per
 //! the PLA-283 ruling; M2-K3 finalized to its declared bundle): a native
 //! peer behind the SAME broker choke point every guest crosses — grant
-//! check → ledger append → dispatch. Scope is one root directory
-//! (path-prefix containment, contract bundle `contracts/jinn-fs`).
+//! check → ledger append → dispatch. Scope is one root directory, and per
+//! caller the granted path-prefix subtrees, decided on the fully resolved
+//! path (contract bundle `contracts/jinn-fs`; `scope.rs`).
 //!
 //! `read`, `list`, and `meta` are reads (call-ledger line only). `write`,
 //! `append`, and `remove` are the revertible effect class (Law 3, R5): the
 //! provider captures the inverse — prior content, prior absence, or prior
 //! length — at the point of action and makes it DURABLE before the mutation
 //! commits (retention store, M2-K3): if the inverse cannot be made durable
-//! the effect is refused, on the record. The assembly's keyed revert replays
-//! an inverse through the ledger's exactly-once protocol with an executable
-//! witness (the [`HostFs::undo_action`] seam) and reclaims it after.
+//! the effect is refused, on the record. The forward op is keyed
+//! exactly-once (03 §Act). Each effect answers its id, which the caller's
+//! seat journals: teardown withdraws it through [`Peer::withdraw`] like
+//! every other registration (LIFO; R5, M1-P9b). The assembly's keyed
+//! revert replays an inverse through the ledger's exactly-once protocol
+//! with an executable witness (the [`HostFs::undo_action`] seam).
 
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use jinnd_api::{EffectId, ErrorCode, FiberId, KernelError, KernelFuture, Witness};
+use jinnd_api::{
+    EffectId, ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind, Witness,
+};
 
 use crate::broker::Broker;
 use crate::broker_state::refusal;
-use crate::lane::lock;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
+mod inverses;
 mod ops;
 mod retention;
+pub(crate) mod scope;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
 pub mod wire;
 
-use retention::{Prior, Record, Retention};
+use retention::{Header, Retention};
 
 /// The provider's contract name.
 pub const FS_CONTRACT: &str = "jinn:fs";
@@ -43,17 +50,29 @@ pub type UndoAction = (
     Box<dyn FnOnce() -> KernelFuture<'static, ()> + Send>,
 );
 
-/// The in-memory index of one retained inverse: its label only — prior
+/// The Law-2 label one fs effect registers and withdraws under — shared by
+/// the provider's ledger line and the caller seat's journal entry.
+#[must_use]
+pub fn effect_label(operation: &str, path: &str, effect: u64) -> String {
+    format!(
+        "fs {operation} {} [effect {effect}]",
+        path.trim_start_matches('/')
+    )
+}
+
+/// The in-memory index of one retained inverse: its header only — prior
 /// contents live in the retention store, never here (finding 8 bound).
 struct Retained {
-    label: String,
-    /// Consumed by a completed revert and reclaimed; kept so a replay of
-    /// the same key still answers from the record, never "unknown effect".
+    header: Header,
+    /// Consumed by a completed revert or withdrawal and reclaimed; kept so
+    /// a replay of the same key still answers from the record, never
+    /// "unknown effect".
     consumed: bool,
 }
 
 /// The `jinn:fs` provider over one containment root.
 pub struct HostFs {
+    /// Canonical: containment compares resolved paths against it.
     root: PathBuf,
     sink: Arc<dyn LedgerSink>,
     store: Retention,
@@ -62,39 +81,38 @@ pub struct HostFs {
     next: AtomicU64,
 }
 
-/// Resolves one guest path inside the provider's root: rooted at `root`,
-/// no parent traversal, no absolute escape (contract bundle: path-prefix
-/// containment).
-fn contained(root: &Path, path: &str) -> Result<PathBuf, KernelError> {
-    let relative = path.trim_start_matches('/');
-    let candidate = Path::new(relative);
-    if candidate
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err(refusal(
+/// Runs a blocking path resolution on the blocking pool (R1: the async
+/// lanes never block on a metadata walk).
+async fn blocking<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T, KernelError> + Send + 'static,
+) -> Result<T, KernelError> {
+    tokio::task::spawn_blocking(job).await.unwrap_or_else(|_| {
+        Err(refusal(
             ErrorCode::PluginFailed,
-            format!("fs path escapes its scope: {path:?}"),
-        ));
-    }
-    Ok(root.join(candidate))
+            "fs resolution task failed".to_owned(),
+        ))
+    })
 }
 
 impl HostFs {
-    /// Opens the provider over `root`, spilling inverses under `inverses`
-    /// (a directory OUTSIDE the root: guests must never reach the inverses)
-    /// and appending its Law-2 events to `sink`. Blocking — construction
-    /// only.
+    /// Opens the provider over `root` (created, then canonicalized),
+    /// spilling inverses under `inverses` (a directory OUTSIDE the root:
+    /// guests must never reach the inverses) and appending its Law-2 events
+    /// to `sink`. Blocking — construction only.
     ///
     /// # Errors
     ///
-    /// The retention store cannot be opened or its spilled records are
-    /// unreadable (fail-closed: revertibility is never silently weakened).
+    /// The root cannot be created or resolved, the retention store cannot
+    /// be opened, or its spilled records are unreadable (fail-closed:
+    /// revertibility is never silently weakened).
     pub fn open(
         root: PathBuf,
         inverses: PathBuf,
         sink: Arc<dyn LedgerSink>,
     ) -> Result<Self, KernelError> {
+        let root = std::fs::create_dir_all(&root)
+            .and_then(|()| std::fs::canonicalize(&root))
+            .map_err(|refused| refusal(ErrorCode::InvalidProfile, format!("fs root: {refused}")))?;
         let (store, epoch, spilled) = Retention::open(inverses)?;
         let base = (epoch + 1) << 32;
         let next = spilled
@@ -105,11 +123,11 @@ impl HostFs {
             .max(base);
         let index = spilled
             .into_iter()
-            .map(|(id, label)| {
+            .map(|(id, header)| {
                 (
                     id,
                     Retained {
-                        label,
+                        header,
                         consumed: false,
                     },
                 )
@@ -128,7 +146,7 @@ impl HostFs {
     /// Registers this provider as a broker peer holding and providing the
     /// `jinn:fs` contract (providing is authority: the provider peer is
     /// granted what it provides). The broker is kept weakly for caller
-    /// attribution (R4): it owns this peer, never the reverse.
+    /// attribution and scopes (R4): it owns this peer, never the reverse.
     ///
     /// # Errors
     ///
@@ -140,125 +158,42 @@ impl HostFs {
         broker.provide(peer, FS_CONTRACT, Arc::new(FsPeer(Arc::clone(self))))
     }
 
+    fn broker(&self) -> Option<Arc<Broker>> {
+        self.broker.get().and_then(Weak::upgrade)
+    }
+
     /// The fiber attribution of one calling peer, through the broker.
     fn attribution(&self, caller: PeerId) -> Option<FiberId> {
-        self.broker
-            .get()
-            .and_then(Weak::upgrade)
-            .and_then(|broker| broker.attribution(caller))
+        self.broker().and_then(|broker| broker.attribution(caller))
     }
 
-    /// Every live (unconsumed) revertible effect, in id order: (id, scoped
-    /// path).
-    #[must_use]
-    pub fn effects(&self) -> Vec<(EffectId, String)> {
-        lock(&self.index)
-            .iter()
-            .filter(|(_, retained)| !retained.consumed)
-            .map(|(id, retained)| (EffectId(*id), retained.label.clone()))
-            .collect()
-    }
-
-    /// The in-memory index's footprint in bytes — labels and bookkeeping
-    /// only, whatever the prior contents weighed (finding 8 bound).
-    #[must_use]
-    pub fn index_bytes(&self) -> usize {
-        lock(&self.index)
-            .values()
-            .map(|retained| retained.label.len() + std::mem::size_of::<Retained>() + 8)
-            .sum()
-    }
-
-    /// How many inverses are spilled in the retention store right now.
-    #[must_use]
-    pub fn spilled(&self) -> usize {
-        self.store.spilled()
-    }
-
-    /// The keyed-revert action for one effect this provider owns (Law 3):
-    /// the witness reads the file back against the spilled prior; the
-    /// inverse restores prior content, absence, or length from the spill.
-    /// A consumed effect still answers — with an inverse that refuses to
-    /// run again (the ledger answers its replay from the record).
-    #[must_use]
-    pub fn undo_action(&self, effect: EffectId) -> Option<UndoAction> {
-        let id = effect.0;
-        let consumed = lock(&self.index).get(&id)?.consumed;
-        if consumed {
-            let witness: Witness = Arc::new(|| false);
-            let inverse: Box<dyn FnOnce() -> KernelFuture<'static, ()> + Send> =
-                Box::new(move || {
-                    Box::pin(async move {
-                        Err(refusal(
-                            ErrorCode::EffectFailed,
-                            format!("effect {id}'s inverse was already consumed"),
-                        ))
-                    })
-                });
-            return Some((witness, inverse));
-        }
-        let (witness_root, witness_store) = (self.root.clone(), self.store.clone());
-        let witness: Witness = Arc::new(move || {
-            witness_store
-                .load_sync(id)
-                .is_some_and(|record| ops::witness(&witness_root, &record))
-        });
-        let (root, store) = (self.root.clone(), self.store.clone());
-        let inverse: Box<dyn FnOnce() -> KernelFuture<'static, ()> + Send> = Box::new(move || {
-            Box::pin(async move {
-                let record = store.load(id).await?;
-                ops::apply_inverse(&root, &record).await
-            })
-        });
-        Some((witness, inverse))
-    }
-
-    /// Consumes one reverted effect's inverse: its spilled storage is
-    /// reclaimed and it leaves the live effect list. The assembly calls
-    /// this after the ledger records the branch `Reverted`.
-    ///
-    /// # Errors
-    ///
-    /// An effect this provider does not own, or a storage refusal.
-    pub async fn reclaim(&self, effect: EffectId) -> Result<(), KernelError> {
-        let id = effect.0;
-        if !lock(&self.index).contains_key(&id) {
+    /// Authorizes and resolves one caller path: post-symlink containment
+    /// under the root AND under the caller's granted path-prefix scopes
+    /// (`scope.rs`). A scope refusal is a ledgered grant refusal with the
+    /// caller's attribution (Law 2), exactly like the broker's own.
+    async fn scoped(&self, caller: PeerId, path: &str) -> Result<PathBuf, KernelError> {
+        let Some(scopes) = self
+            .broker()
+            .and_then(|broker| broker.scopes(caller, FS_CONTRACT))
+        else {
             return Err(refusal(
                 ErrorCode::EffectFailed,
-                format!("no revertible effect {id}"),
+                "fs caller holds no grant".to_owned(),
             ));
-        }
-        self.store.reclaim(id).await?;
-        if let Some(retained) = lock(&self.index).get_mut(&id) {
-            retained.consumed = true;
-        }
-        Ok(())
-    }
-
-    /// Registers one revertible effect: the inverse is made durable FIRST;
-    /// only then may the caller mutate. Returns the effect id to label.
-    async fn retain(&self, label: &str, prior: Prior) -> Result<u64, KernelError> {
-        let id = self.next.fetch_add(1, Ordering::SeqCst);
-        let record = Record {
-            label: label.to_owned(),
-            prior,
         };
-        self.store.persist(id, &record).await?;
-        lock(&self.index).insert(
-            id,
-            Retained {
-                label: label.to_owned(),
-                consumed: false,
-            },
-        );
-        Ok(id)
-    }
-
-    /// Drops a retained inverse whose mutation never happened (the io
-    /// refused after the spill): nothing to revert, nothing to keep.
-    async fn release(&self, id: u64) {
-        lock(&self.index).remove(&id);
-        let _ = self.store.reclaim(id).await;
+        let (root, path) = (self.root.clone(), path.to_owned());
+        let outcome = blocking(move || scope::authorized(&root, &scopes, &path)).await;
+        if let Err(error) = &outcome
+            && error.code == ErrorCode::EffectFailed
+        {
+            self.sink.append(
+                LedgerEventKind::GrantRefused {
+                    contract: FS_CONTRACT.to_owned(),
+                },
+                self.attribution(caller),
+            );
+        }
+        outcome
     }
 }
 
@@ -277,5 +212,10 @@ impl Peer for FsPeer {
         let provider = Arc::clone(&self.0);
         let operation = operation.to_owned();
         Box::pin(async move { ops::dispatch(&provider, caller, &operation, payload).await })
+    }
+
+    fn withdraw(&self, effect: u64) -> KernelFuture<'static, ()> {
+        let provider = Arc::clone(&self.0);
+        Box::pin(async move { provider.withdraw(EffectId(effect)).await })
     }
 }

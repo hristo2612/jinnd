@@ -44,4 +44,19 @@ pub trait Peer: Send + Sync + 'static {
         let _ = consumer;
         Box::pin(async { Ok(true) })
     }
+
+    /// Withdraws one host-side effect this peer registered on a caller's
+    /// behalf (M2-K3 round 2; R5): the caller seat's journal replays it
+    /// LIFO through the broker at teardown, exactly like a guest inverse.
+    /// The default refuses — a peer that registers no host effects has
+    /// nothing to withdraw.
+    fn withdraw(&self, effect: u64) -> KernelFuture<'static, ()> {
+        Box::pin(async move {
+            Err(jinnd_api::KernelError {
+                code: jinnd_api::ErrorCode::EffectFailed,
+                message: format!("this provider registers no host effects ({effect})"),
+                fiber: None,
+            })
+        })
+    }
 }

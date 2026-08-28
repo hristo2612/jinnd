@@ -2,7 +2,7 @@
 //! generations, and caller-scoped handles (R4). Split from `broker.rs` by
 //! responsibility (R10 file hygiene); no locking or dispatch lives here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use jinnd_api::{ErrorCode, FiberId, KernelError};
@@ -11,7 +11,10 @@ use crate::peer::{HandleId, Peer, PeerId};
 
 pub(crate) struct PeerRecord {
     pub(crate) fiber: Option<FiberId>,
-    pub(crate) grants: HashSet<String>,
+    /// Per granted contract, the path-prefix scopes the grant carries; an
+    /// empty list is the root scope (a bare grant, or one that widened a
+    /// scoped grant — root is the explicit maximum, never a default).
+    pub(crate) grants: HashMap<String, Vec<String>>,
 }
 
 /// One live provision. `generation` is the identity of THIS provision of the
@@ -52,7 +55,7 @@ impl State {
     pub(crate) fn granted(&self, peer: PeerId, contract: &str) -> bool {
         self.peers
             .get(&peer)
-            .is_some_and(|record| record.grants.contains(contract))
+            .is_some_and(|record| record.grants.contains_key(contract))
     }
 
     /// The current generation of `contract`'s provision slot (0 = never

@@ -114,7 +114,11 @@ fn rig(name: &str) -> Rig {
 fn keyed(path: &str, key: &str, data: &[u8]) -> Vec<u8> {
     let mut wire = Vec::new();
     for segment in [path, key] {
-        wire.extend(u32::try_from(segment.len()).unwrap_or(u32::MAX).to_le_bytes());
+        wire.extend(
+            u32::try_from(segment.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
         wire.extend(segment.as_bytes());
     }
     wire.extend(data);
@@ -211,13 +215,20 @@ async fn containment_is_decided_after_symlink_resolution() {
         Err(ErrorCode::EffectFailed),
         "a write through the link is refused"
     );
-    assert!(!outside.join("a").exists(), "nothing landed outside the root");
+    assert!(
+        !outside.join("a").exists(),
+        "nothing landed outside the root"
+    );
     assert_eq!(
         rig.call(rig.guest, "list", b"/log".to_vec()).await,
         Err(ErrorCode::EffectFailed),
         "reads through the link refuse too"
     );
-    assert_eq!(rig.ledger.grant_refusals(FiberId(7)), 2, "each refusal is on the record");
+    assert_eq!(
+        rig.ledger.grant_refusals(FiberId(7)),
+        2,
+        "each refusal is on the record"
+    );
     assert!(rig.fs.effects().is_empty());
 }
 
@@ -245,7 +256,10 @@ async fn a_path_prefix_scope_authorizes_only_its_subtree() {
             "{op} outside the scope refuses"
         );
     }
-    assert!(!rig.data("other").exists(), "nothing mutated outside the scope");
+    assert!(
+        !rig.data("other").exists(),
+        "nothing mutated outside the scope"
+    );
     assert_eq!(rig.ledger.grant_refusals(FiberId(9)), 6);
     let listed = decode_metas(
         &rig.call(rig.scoped, "list", b"/log".to_vec())

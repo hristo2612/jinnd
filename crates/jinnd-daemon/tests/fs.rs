@@ -180,17 +180,23 @@ async fn the_fs_bundle_round_trips_with_revertible_inverses_from_the_spill() {
         "a distinct key is refused"
     );
 
-    // Dispose replays the fiber's remaining fs effects LIFO through its own
-    // journal (R5, M1-P9b): both writes restore prior absence, each
-    // withdrawal is ledgered under the effect's label, and the fiber's
-    // trail leaves no orphaned inverse (the verifier's round-1 probe).
+    // Dispose replays the fiber's WHOLE fs journal LIFO (R5, M1-P9b): the
+    // two effects a keyed revert already consumed withdraw as clean
+    // no-ops, both writes restore prior absence, each withdrawal is
+    // ledgered under the effect's label in strict reverse registration
+    // order, and the fiber's trail leaves no orphaned inverse (the
+    // verifier's round-1 probe).
     daemon
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
     assert!(!data.join("log/a.txt").exists(), "write a.txt withdrawn");
     assert!(!data.join("log/b.txt").exists(), "write b.txt withdrawn");
-    assert_eq!(inverse_files(&paths), 0, "dispose must reclaim the fiber trail");
+    assert_eq!(
+        inverse_files(&paths),
+        0,
+        "dispose must reclaim the fiber trail"
+    );
     assert!(daemon.fs_effects().is_empty());
     let withdrawn: Vec<String> = events(&daemon)
         .await
@@ -204,9 +210,20 @@ async fn the_fs_bundle_round_trips_with_revertible_inverses_from_the_spill() {
             _ => None,
         })
         .collect();
-    assert_eq!(withdrawn.len(), 2, "each fs withdrawal is a ledger event: {withdrawn:?}");
-    assert!(withdrawn[0].starts_with("fs write log/b.txt"), "LIFO: {withdrawn:?}");
-    assert!(withdrawn[1].starts_with("fs write log/a.txt"), "LIFO: {withdrawn:?}");
+    let order: Vec<&str> = withdrawn
+        .iter()
+        .map(|label| label.split(" [effect").next().unwrap_or(label))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            "fs remove log/b.txt",
+            "fs write log/b.txt",
+            "fs append log/a.txt",
+            "fs write log/a.txt",
+        ],
+        "every fs withdrawal is a ledger event, strictly LIFO"
+    );
 }
 
 /// Red-first (M2-K3): each new op — list, meta, append, remove — refuses
@@ -229,6 +246,36 @@ async fn each_new_fs_op_refuses_without_a_grant_on_the_record() {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
+/// An effect registered AFTER activation — from a wake handler, the
+/// harness scheduler's own pattern — still joins the fiber's live journal:
+/// dispose withdraws it and reclaims its inverse (R5, M1-P9b).
+#[tokio::test]
+async fn effects_registered_after_activation_join_the_fibers_journal() {
+    let home = home("late");
+    let paths = paths(
+        &home,
+        serde_json::json!(["jinn:fs", "jinn:clock"]),
+        "fs-on-wake",
+    );
+    let daemon = booted(paths.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert_eq!(
+        std::fs::read(paths.data.join("wakes.log")).ok(),
+        Some(b"tick\n".to_vec()),
+        "the wake handler appended"
+    );
+    assert_eq!(inverse_files(&paths), 1);
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+    assert!(
+        !paths.data.join("wakes.log").exists(),
+        "dispose withdrew the late append"
+    );
+    assert_eq!(inverse_files(&paths), 0, "no orphaned inverse");
 }
 
 /// The COO's round-2 ruling: a well-typed path-prefix grant admits and
@@ -257,7 +304,10 @@ async fn a_path_prefix_grant_admits_and_scopes_the_entry() {
         Some(b"in".to_vec()),
         "valid path-prefix grant must admit and authorize /log"
     );
-    assert!(!paths.data.join("other").exists(), "nothing landed beside the scope");
+    assert!(
+        !paths.data.join("other").exists(),
+        "nothing landed beside the scope"
+    );
     assert_eq!(
         grant_refusals(&events(&daemon).await, fiber),
         1,
@@ -283,13 +333,26 @@ async fn containment_is_decided_after_symlink_resolution() {
     std::os::unix::fs::symlink(&outside, paths.data.join("log"))
         .unwrap_or_else(|error| panic!("{error}"));
     let daemon = Daemon::open(paths.clone()).unwrap_or_else(|error| panic!("open: {error:?}"));
-    let report = daemon
+    daemon
         .boot()
         .await
         .unwrap_or_else(|error| panic!("boot: {error:?}"));
+    let fiber = daemon
+        .entry_fiber("scribe")
+        .unwrap_or_else(|| panic!("the entry has a fiber"));
+    let records = events(&daemon).await;
     assert!(
-        !report.errors.is_empty(),
-        "the refused write faults the guest's activation, contained"
+        records.iter().any(|record| matches!(
+            &record.kind,
+            LedgerEventKind::FiberTransition(transition)
+                if transition.fiber == fiber && transition.to == FiberState::Failed
+        )),
+        "the refused write faults exactly this entry's activation (R11): {records:?}"
+    );
+    assert_eq!(
+        grant_refusals(&records, fiber),
+        1,
+        "the refusal is on the record"
     );
     assert!(
         !outside.join("a.txt").exists(),

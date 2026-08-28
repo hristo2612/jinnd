@@ -3,7 +3,9 @@
 // new, `remove` is reclassified revertible, nothing is removed or reshaped).
 // Base host-provider contract implemented by the kernel (01 §Mechanical closure).
 // Demonstrates the scoped-grant pattern: grants carry a path-prefix scope with a
-// decidable subset predicate (01 §Contract anatomy).
+// decidable subset predicate (01 §Contract anatomy), enforced per call on the
+// fully resolved path. The plugin world's `fs` import (wit/plugin.wit, 0.2.0)
+// carries this interface verbatim — operations, `fs-error`, idempotency keys.
 package jinn:fs@0.2.0;
 
 interface files {
@@ -18,7 +20,9 @@ interface files {
   meta: func(path: string) -> result<file-meta, fs-error>;
 
   // effect = revertible: inverse obligation = restore prior content/absence.
-  // Provider implements keyed exactly-once semantics (03 §The protocol).
+  // Provider implements keyed exactly-once semantics (03 §The protocol): a
+  // repeated delivery of the same non-empty key from the same fiber answers
+  // the recorded effect without mutating again; an empty key claims none.
   write: func(path: string, bytes: list<u8>, idempotency-key: string)
     -> result<_, fs-error>;
 
