@@ -1,8 +1,10 @@
-# Contract-bundle metadata for jinn:fs@0.1.0 — SKELETON
+# Contract-bundle metadata for jinn:fs@0.2.0 (M2-K3: finalized; additive
+# edition over 0.1.0 per R12 — `meta` and `append` added, `remove`
+# reclassified revertible, every 0.1.0 operation unchanged in shape).
 
 [contract]
 name    = "jinn:fs"
-version = "0.1.0"
+version = "0.2.0"
 
 [scope]
 type   = "path-prefix"
@@ -19,6 +21,10 @@ sensitivity = "personal"
 effect      = "read"
 sensitivity = "personal"
 
+[operations.meta]
+effect      = "read"
+sensitivity = "personal"
+
 [operations.write]
 effect      = "revertible"
 sensitivity = "personal"
@@ -26,12 +32,34 @@ sensitivity = "personal"
 # Witness: post-inverse state observationally equal to pre-state under [equality].
 inverse     = "restore-prior-content-or-absence"
 
-[operations.remove]
-effect      = "irreversible"   # v0.1: no trash; confirmation flow applies (03)
+[operations.append]
+effect      = "revertible"
 sensitivity = "personal"
+# Inverse obligation (03): truncate the file to its prior length, or restore
+# prior absence. Witness: the file's length equals the recorded prior length.
+inverse     = "truncate-to-prior-length-or-absence"
+
+[operations.remove]
+effect      = "revertible"   # 0.2.0: was irreversible in 0.1.0 (no trash)
+sensitivity = "personal"
+# Inverse obligation (03): restore the removed file's prior content.
+inverse     = "restore-prior-content"
 
 [equality]
 # Observational equivalence: same paths with same byte content and same dir
 # structure under the granted scope. Timestamps and inode identity are NOT
 # observable state.
 relation = "content-tree-under-scope"
+
+[retention]
+# Effect-retention policy (M2-K3; harness finding 8): every revertible
+# effect's inverse is made DURABLE in the provider's retention store —
+# keyed by effect id, outside the granted scope — BEFORE the mutation
+# commits. If the inverse cannot be made durable the effect is REFUSED with
+# a ledgered per-entry error (fail-closed: revertibility is never silently
+# weakened). Provider memory holds an index of labels, never prior
+# contents; a completed revert consumes the inverse and reclaims its
+# storage. Retention is event-driven (register/revert) — no compaction
+# daemon, no expiry window.
+policy   = "durable-before-commit-refuse-otherwise"
+reclaim  = "on-completed-revert"

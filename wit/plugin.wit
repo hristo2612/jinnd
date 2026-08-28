@@ -41,6 +41,10 @@ interface types {
     provider-failed(string),
     /// The kernel refused the operation as malformed.
     invalid(string),
+    /// A base host-provider read, stat, or removal named a path that does
+    /// not exist (M2-K3, additive within 0.x): absence is classified by
+    /// case, never by folding a provider failure.
+    not-found(string),
   }
 
   /// The five dispatch modes of the one event bus (LAW §3).
@@ -131,15 +135,44 @@ interface events {
 interface fs {
   use types.{kernel-error};
 
-  /// Reads one file. Effect class: read.
+  /// One directory entry or stat answer (contract bundle `file-meta`).
+  /// Broker wire (M2-K3): u32-LE length of the path's UTF-8 bytes, the
+  /// path bytes, u64-LE size, u64-LE modified-ms (unix ms), one is-dir
+  /// byte; a `list` answer is these records back to back.
+  record file-meta { path: string, size: u64, modified-ms: u64, is-dir: bool }
+
+  /// Reads one file. Effect class: read. A missing path answers
+  /// `not-found`.
   /// Broker wire: operation `read`, payload = the path's UTF-8 bytes.
   read: func(path: string) -> result<list<u8>, kernel-error>;
 
+  /// Lists one directory's entries (names relative to it, sorted). Effect
+  /// class: read. A missing path answers `not-found` (M2-K3).
+  /// Broker wire: operation `list`, payload = the path's UTF-8 bytes.
+  %list: func(path: string) -> result<list<file-meta>, kernel-error>;
+
+  /// Describes one path. Effect class: read. A missing path answers
+  /// `not-found` (M2-K3).
+  /// Broker wire: operation `meta`, payload = the path's UTF-8 bytes.
+  meta: func(path: string) -> result<file-meta, kernel-error>;
+
   /// Writes one file. Effect class: revertible — the provider registers the
-  /// inverse (constitution 03).
+  /// inverse (constitution 03): restore prior content or absence.
   /// Broker wire: operation `write`, payload = u32-LE length of the path's
   /// UTF-8 bytes, the path bytes, then the data.
   write: func(path: string, data: list<u8>) -> result<_, kernel-error>;
+
+  /// Appends to one file, creating it. Effect class: revertible — inverse
+  /// = truncate to the prior length, or restore prior absence (M2-K3; the
+  /// shape for guest-kept logs).
+  /// Broker wire: operation `append`, payload as `write`.
+  append: func(path: string, data: list<u8>) -> result<_, kernel-error>;
+
+  /// Removes one file. Effect class: revertible — inverse = restore the
+  /// prior content (M2-K3). A missing path answers `not-found` and
+  /// registers no effect.
+  /// Broker wire: operation `remove`, payload = the path's UTF-8 bytes.
+  remove: func(path: string) -> result<_, kernel-error>;
 }
 
 /// Base host-provider contract `jinn:process` (R7). Same grant discipline

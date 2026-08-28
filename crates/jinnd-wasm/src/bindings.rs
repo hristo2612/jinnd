@@ -29,6 +29,7 @@ pub fn wire_error(error: jinnd_api::KernelError) -> types::KernelError {
             types::KernelError::ProviderFailed(error.message)
         }
         ErrorCode::EffectFailed => types::KernelError::GrantRefused(error.message),
+        ErrorCode::NotFound => types::KernelError::NotFound(error.message),
         ErrorCode::DependencyCycle | ErrorCode::InvalidProfile | ErrorCode::DuplicateProvision => {
             types::KernelError::Invalid(error.message)
         }
