@@ -67,13 +67,48 @@ fn serve(connection: &Connection, op: Op) {
             ack,
         } => {
             let appended = append(connection, &kind, entry.as_ref(), fiber);
-            if let Some(ack) = ack {
-                let _ = ack.send(appended);
+            match ack {
+                Some(ack) => {
+                    let _ = ack.send(appended);
+                }
+                // The unreceipted lane has no caller to answer: a storage
+                // refusal is recorded via the ledger's own honesty path —
+                // an `ErrorRecorded` event under the failed append's own
+                // attribution — never silently dropped (M2-K2; R6, R11).
+                None => {
+                    if let Err(refused) = appended {
+                        record_refusal(connection, &refused, entry.as_ref(), fiber);
+                    }
+                }
             }
         }
         Op::Query { query, ack } => {
             let _ = ack.send(select(connection, &query));
         }
+    }
+}
+
+/// The honesty append for a refused unreceipted write. When storage refuses
+/// the honesty event too, the ledger cannot testify about itself: the
+/// last-resort surface is the process trace, never silence.
+fn record_refusal(
+    connection: &Connection,
+    refused: &LedgerError,
+    entry: Option<&jinnd_api::EntryId>,
+    fiber: Option<jinnd_api::FiberId>,
+) {
+    let error = jinnd_api::KernelError {
+        code: jinnd_api::ErrorCode::EffectFailed,
+        message: format!("unreceipted ledger append failed: {refused}"),
+        fiber,
+    };
+    if let Err(twice) = append(
+        connection,
+        &LedgerEventKind::ErrorRecorded { error },
+        entry,
+        fiber,
+    ) {
+        tracing::error!(refused = %refused, honesty = %twice, "ledger storage refused both an unreceipted append and its honesty event");
     }
 }
 
@@ -162,4 +197,123 @@ fn now_millis() -> i64 {
 
 fn storage(error: rusqlite::Error) -> LedgerError {
     LedgerError::Storage(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use jinnd_api::{DispatchMode, ErrorCode, FiberId, LedgerEventKind, LedgerQuery};
+
+    use super::{open_memory, serve};
+    use crate::store::Op;
+
+    /// M2-K2 (R6, R11): an unreceipted append that storage refuses is
+    /// recorded through the ledger's own honesty path — an `ErrorRecorded`
+    /// event with the original attribution — never silently dropped.
+    #[test]
+    fn a_refused_unreceipted_append_lands_an_error_recorded_event() {
+        let connection = open_memory().unwrap_or_else(|error| panic!("open: {error}"));
+        connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_traces BEFORE INSERT ON events
+                 WHEN new.kind LIKE '%DispatchTrace%'
+                 BEGIN SELECT RAISE(ABORT, 'trace storage refused'); END",
+            )
+            .unwrap_or_else(|error| panic!("trigger: {error}"));
+
+        serve(
+            &connection,
+            Op::Append {
+                kind: LedgerEventKind::DispatchTrace {
+                    topic: "jinn:test/topic".to_owned(),
+                    mode: DispatchMode::Emit,
+                    listeners: 0,
+                    failures: 0,
+                    emitter: 9,
+                },
+                entry: None,
+                fiber: Some(FiberId(7)),
+                ack: None,
+            },
+        );
+
+        let records = super::select(
+            &connection,
+            &LedgerQuery {
+                entry: None,
+                fiber: None,
+                from_sequence: None,
+            },
+        )
+        .unwrap_or_else(|error| panic!("select: {error}"));
+        assert_eq!(records.len(), 1, "the honesty event landed: {records:?}");
+        match &records[0].kind {
+            LedgerEventKind::ErrorRecorded { error } => {
+                assert_eq!(error.code, ErrorCode::EffectFailed);
+                assert!(
+                    error.message.contains("unreceipted ledger append failed"),
+                    "names the failure class: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("trace storage refused"),
+                    "carries storage's verbatim refusal: {}",
+                    error.message
+                );
+            }
+            other => panic!("not the honesty event: {other:?}"),
+        }
+        assert_eq!(
+            records[0].fiber,
+            Some(FiberId(7)),
+            "the failed append's attribution survives onto the honesty event"
+        );
+    }
+
+    /// The receipted lane keeps its contract: the caller gets the storage
+    /// error through its acknowledgement, and no honesty event doubles it.
+    #[test]
+    fn a_refused_receipted_append_answers_its_caller_without_doubling() {
+        let connection = open_memory().unwrap_or_else(|error| panic!("open: {error}"));
+        connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_traces BEFORE INSERT ON events
+                 WHEN new.kind LIKE '%DispatchTrace%'
+                 BEGIN SELECT RAISE(ABORT, 'trace storage refused'); END",
+            )
+            .unwrap_or_else(|error| panic!("trigger: {error}"));
+
+        let (ack, receipt) = tokio::sync::oneshot::channel();
+        serve(
+            &connection,
+            Op::Append {
+                kind: LedgerEventKind::DispatchTrace {
+                    topic: "jinn:test/topic".to_owned(),
+                    mode: DispatchMode::Emit,
+                    listeners: 0,
+                    failures: 0,
+                    emitter: 9,
+                },
+                entry: None,
+                fiber: None,
+                ack: Some(ack),
+            },
+        );
+        let answered = receipt
+            .blocking_recv()
+            .unwrap_or_else(|error| panic!("answered: {error}"));
+        assert!(answered.is_err(), "the caller holds the refusal");
+        let records = super::select(
+            &connection,
+            &LedgerQuery {
+                entry: None,
+                fiber: None,
+                from_sequence: None,
+            },
+        )
+        .unwrap_or_else(|error| panic!("select: {error}"));
+        assert!(
+            records.is_empty(),
+            "the receipted lane surfaces to its caller, not the honesty path: {records:?}"
+        );
+    }
 }

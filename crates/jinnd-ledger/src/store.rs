@@ -106,13 +106,20 @@ impl Ledger {
     /// append and query, but no durability acknowledgement returns. For
     /// boundary sites that cannot await (R1); the receipted lane is
     /// [`Ledger::append`].
+    /// A storage refusal on this lane is recorded via the ledger's own
+    /// honesty path (an `ErrorRecorded` event, M2-K2); a writer that is
+    /// gone can no longer testify, so that loss surfaces on the process
+    /// trace — never silently (R6, R11).
     pub fn record(&self, kind: LedgerEventKind, entry: Option<EntryId>, fiber: Option<FiberId>) {
-        let _ = self.tx.send(Op::Append {
+        let refused = self.tx.send(Op::Append {
             kind,
             entry,
             fiber,
             ack: None,
         });
+        if let Err(mpsc::error::SendError(Op::Append { kind, .. })) = refused {
+            tracing::error!(event = ?kind, "the ledger writer is gone; an unreceipted event was dropped");
+        }
     }
 
     /// Reads records matching `query`, in monotonic sequence order. The read
