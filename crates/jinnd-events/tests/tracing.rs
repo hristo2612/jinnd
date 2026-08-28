@@ -6,7 +6,7 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::{ContextId, DispatchMode, Event};
+use jinnd_api::{ContextId, DispatchMode};
 use jinnd_events::{DispatchTraceRecord, EventBus, TraceSink};
 use support::{FnListener, Gather, Ping, Routed, boxed, failure};
 

@@ -76,7 +76,11 @@ async fn every_traced_emit_lands_exactly_one_dispatch_trace() {
     let recorded = sink.recorded();
     assert_eq!(recorded.len(), 1, "exactly one trace per emit");
     let (kind, fiber) = &recorded[0];
-    assert_eq!(*fiber, Some(FiberId(3)), "emitter fiber attribution (Law 2)");
+    assert_eq!(
+        *fiber,
+        Some(FiberId(3)),
+        "emitter fiber attribution (Law 2)"
+    );
     assert_eq!(
         *kind,
         LedgerEventKind::DispatchTrace {

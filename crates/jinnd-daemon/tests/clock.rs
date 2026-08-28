@@ -23,10 +23,7 @@ impl Drop for Home {
 }
 
 fn home(name: &str) -> Home {
-    let root = std::env::temp_dir().join(format!(
-        "jinnd-clock-test-{name}-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("jinnd-clock-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("artifacts")).unwrap_or_else(|error| panic!("{error}"));
     Home(root)
@@ -78,8 +75,12 @@ fn wake_count(records: &[LedgerRecord]) -> usize {
 #[tokio::test]
 async fn a_profile_entry_holds_a_periodic_alarm_ledgered_wake_by_wake() {
     let home = home("alarm");
-    let daemon = Daemon::open(paths(&home, &["jinn:clock", "jinn:test/counter"], "clock-alarm"))
-        .unwrap_or_else(|error| panic!("open: {error:?}"));
+    let daemon = Daemon::open(paths(
+        &home,
+        &["jinn:clock", "jinn:test/counter"],
+        "clock-alarm",
+    ))
+    .unwrap_or_else(|error| panic!("open: {error:?}"));
     let report = daemon
         .boot()
         .await

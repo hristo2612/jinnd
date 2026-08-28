@@ -142,6 +142,7 @@ impl LocalTopics {
     /// lands after the walk settled, attributed to `fiber` — the append is
     /// fire-and-forget relative to the walk and never changes the report
     /// (M2-K2; Law 2, R11).
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit(
         &self,
         emitter: u64,

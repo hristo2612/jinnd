@@ -41,7 +41,11 @@ fn no_wake_is_appended_after_cancel_returns() {
             .unwrap_or_else(|_| panic!("canceller join"));
         let total = *appended.lock().unwrap_or_else(|poison| poison.into_inner());
 
-        assert_eq!(total, u32::from(fired), "an append happens iff the wake claimed");
+        assert_eq!(
+            total,
+            u32::from(fired),
+            "an append happens iff the wake claimed"
+        );
         assert_eq!(
             total, at_cancel,
             "no wake append lands after cancel returned"
@@ -69,7 +73,9 @@ fn finish_and_cancel_agree_on_ownership() {
             thread::spawn(move || table.take(id).is_some())
         };
         let finished = finisher.join().unwrap_or_else(|_| panic!("finisher join"));
-        let cancelled = canceller.join().unwrap_or_else(|_| panic!("canceller join"));
+        let cancelled = canceller
+            .join()
+            .unwrap_or_else(|_| panic!("canceller join"));
 
         assert!(finished != cancelled, "exactly one side owns the row");
         assert!(!table.alive(id));

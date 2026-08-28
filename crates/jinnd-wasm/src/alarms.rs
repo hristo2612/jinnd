@@ -166,7 +166,10 @@ impl Alarms {
         for id in old {
             self.cancel(*id);
         }
-        requests.into_iter().map(|request| self.arm(request)).collect()
+        requests
+            .into_iter()
+            .map(|request| self.arm(request))
+            .collect()
     }
 }
 

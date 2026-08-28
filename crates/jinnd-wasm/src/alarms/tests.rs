@@ -44,17 +44,11 @@ impl EventTarget for ChannelTarget {
     }
 }
 
-fn fixture() -> (
-    Arc<Alarms>,
-    Arc<RecordingSink>,
-    Arc<ChannelTarget>,
-    mpsc::UnboundedReceiver<(u64, String, Vec<u8>)>,
-) {
+type Wakes = mpsc::UnboundedReceiver<(u64, String, Vec<u8>)>;
+
+fn fixture() -> (Arc<Alarms>, Arc<RecordingSink>, Arc<ChannelTarget>, Wakes) {
     let sink = Arc::new(RecordingSink::default());
-    let alarms = Arc::new(Alarms::new(
-        Arc::clone(&sink) as Arc<dyn LedgerSink>,
-        250,
-    ));
+    let alarms = Arc::new(Alarms::new(Arc::clone(&sink) as Arc<dyn LedgerSink>, 250));
     let (tx, rx) = mpsc::unbounded_channel();
     (alarms, sink, Arc::new(ChannelTarget(tx)), rx)
 }
@@ -82,10 +76,10 @@ async fn a_periodic_alarm_delivers_typed_wakes_and_ledgers_each_one() {
     let wakes = sink.wakes();
     assert!(wakes.len() >= 3, "every wake is a ledger event (Law 2)");
     assert!(
-        wakes
-            .iter()
-            .all(|(kind, fiber)| *kind == LedgerEventKind::AlarmWake { alarm: id }
-                && *fiber == Some(FiberId(3))),
+        wakes.iter().all(
+            |(kind, fiber)| *kind == LedgerEventKind::AlarmWake { alarm: id }
+                && *fiber == Some(FiberId(3))
+        ),
         "attributed to the requesting fiber"
     );
 }
@@ -97,7 +91,10 @@ async fn cancel_stops_wakes_and_is_idempotent() {
     rx.recv().await.unwrap_or_else(|| panic!("the first wake"));
 
     assert!(alarms.cancel(id), "the undo cancels the alarm (R5)");
-    assert!(!alarms.cancel(id), "idempotent: the second cancel is a no-op");
+    assert!(
+        !alarms.cancel(id),
+        "idempotent: the second cancel is a no-op"
+    );
 
     let ledgered = sink.wakes().len();
     assert!(
@@ -110,7 +107,10 @@ async fn cancel_stops_wakes_and_is_idempotent() {
 #[tokio::test(start_paused = true)]
 async fn an_at_alarm_fires_exactly_once_then_completes() {
     let (alarms, sink, target, mut rx) = fixture();
-    let id = alarms.arm(request(AlarmSpec::At(now_unix_ms().saturating_sub(1)), &target));
+    let id = alarms.arm(request(
+        AlarmSpec::At(now_unix_ms().saturating_sub(1)),
+        &target,
+    ));
 
     rx.recv().await.unwrap_or_else(|| panic!("the one wake"));
     assert!(
@@ -139,7 +139,9 @@ async fn rebind_cancels_the_displaced_alarms_and_arms_the_staged_ones() {
         .unwrap_or_else(|| panic!("the new seat's wake"));
     let before = sink.wakes().len();
     assert!(
-        timeout(Duration::from_secs(60), old_rx.recv()).await.is_err(),
+        timeout(Duration::from_secs(60), old_rx.recv())
+            .await
+            .is_err(),
         "the displaced seat's alarm is gone"
     );
     assert!(sink.wakes().len() > before, "the new alarm keeps waking");
@@ -149,9 +151,10 @@ async fn rebind_cancels_the_displaced_alarms_and_arms_the_staged_ones() {
 fn a_period_finer_than_the_floor_is_refused() {
     let sink = Arc::new(RecordingSink::default());
     let alarms = Alarms::new(Arc::clone(&sink) as Arc<dyn LedgerSink>, 250);
-    let refused: KernelError = alarms
-        .validate(&AlarmSpec::Every(10))
-        .expect_err("finer than the floor (R9)");
+    let refused: KernelError = match alarms.validate(&AlarmSpec::Every(10)) {
+        Err(refused) => refused,
+        Ok(()) => panic!("a period finer than the floor must refuse (R9)"),
+    };
     assert!(refused.message.contains("250ms"), "{}", refused.message);
     alarms
         .validate(&AlarmSpec::Every(250))
