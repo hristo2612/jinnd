@@ -11,7 +11,14 @@ use jinnd_api::{ErrorCode, KernelError};
 
 use crate::alarms::CLOCK_CONTRACT;
 use crate::broker_state::refusal;
+use crate::hostcaps::{NET_CONTRACT, PROCESS_CONTRACT};
 use crate::hostfs::FS_CONTRACT;
+
+mod policy;
+#[cfg(all(test, not(feature = "loom")))]
+mod tests;
+
+pub use policy::{EnvPolicy, GrantScope, NetScope, ProcessScope};
 
 /// One scope value as the profile document wrote it (constitution 04
 /// §Format): the decoder preserves the written shape — including one it
@@ -23,6 +30,10 @@ pub enum ScopeValue {
     Rate(u64),
     /// A string — the shape of the `path-prefix` scope type.
     Path(String),
+    /// A list of written values (M2-K6: policy fields).
+    List(Vec<ScopeValue>),
+    /// A keyed document (M2-K6: the `process-policy` / `net-policy` shape).
+    Map(Vec<(String, ScopeValue)>),
     /// Any other written shape, carried verbatim for the refusal record.
     Malformed(String),
 }
@@ -32,6 +43,20 @@ impl std::fmt::Display for ScopeValue {
         match self {
             Self::Rate(floor) => write!(out, "{floor}"),
             Self::Path(path) => write!(out, "{path:?}"),
+            Self::List(items) => {
+                write!(out, "[")?;
+                for (index, item) in items.iter().enumerate() {
+                    write!(out, "{}{item}", if index == 0 { "" } else { ", " })?;
+                }
+                write!(out, "]")
+            }
+            Self::Map(fields) => {
+                write!(out, "{{")?;
+                for (index, (key, value)) in fields.iter().enumerate() {
+                    write!(out, "{}{key}: {value}", if index == 0 { " " } else { ", " })?;
+                }
+                write!(out, " }}")
+            }
             Self::Malformed(wrote) => write!(out, "{wrote}"),
         }
     }
@@ -70,6 +95,10 @@ enum Declared {
     Rate,
     /// `path-prefix`: a containment path (jinn:fs).
     PathPrefix,
+    /// `process-policy`: exec allowlist + env policy (jinn:process, M2-K6).
+    ProcessPolicy,
+    /// `net-policy`: bind range + outbound allowlist (jinn:net, M2-K6).
+    NetPolicy,
     /// The bundle declares no scope (jinn:ledger).
     NoScope,
     /// No shipped bundle declares a scope type for this contract.
@@ -80,6 +109,8 @@ fn declared(contract: &str) -> Declared {
     match contract {
         CLOCK_CONTRACT => Declared::Rate,
         FS_CONTRACT => Declared::PathPrefix,
+        PROCESS_CONTRACT => Declared::ProcessPolicy,
+        NET_CONTRACT => Declared::NetPolicy,
         "jinn:ledger" => Declared::NoScope,
         _ => Declared::Undeclared,
     }
@@ -90,13 +121,12 @@ fn refused(message: String) -> KernelError {
 }
 
 /// THE fail-closed judgment on one grant (round-3 ruling). A bare grant
-/// admits (the contract's root/default scope — unchanged v0.1 semantics).
-/// A scoped grant admits only when its scope validates against the
-/// contract's declared scope type — the clock's rate floor (M2-K2) and the
-/// fs's path prefix (M2-K3 round 2, which RETIRED the K2-era "path scopes
-/// are v0.1-unenforceable → refuse" branch: the provider now enforces them
-/// per call on the resolved path); everything else refuses with an error
-/// naming exactly why.
+/// admits (the contract's root/default scope — for the process and net
+/// bundles that is the EMPTY policy, M2-K6). A scoped grant admits only
+/// when its scope validates against the contract's declared scope type —
+/// the clock's rate floor (M2-K2), the fs's path prefix (M2-K3 round 2),
+/// the process and net policies (M2-K6); everything else refuses with an
+/// error naming exactly why.
 ///
 /// # Errors
 ///
@@ -124,6 +154,8 @@ fn admit(grant: &Grant) -> Result<(), KernelError> {
             "grant refused: {contract} declares scope type path-prefix; \
              scope {wrote} is not a path"
         ))),
+        (Declared::ProcessPolicy, wrote) => policy::process_scope(contract, wrote).map(|_| ()),
+        (Declared::NetPolicy, wrote) => policy::net_scope(contract, wrote).map(|_| ()),
         (Declared::NoScope, wrote) => Err(refused(format!(
             "grant refused: {contract} declares no scope type; scope {wrote} cannot validate"
         ))),
@@ -131,6 +163,32 @@ fn admit(grant: &Grant) -> Result<(), KernelError> {
             "grant refused: no contract bundle declares a scope type for \
              {contract}; scope {wrote} cannot validate"
         ))),
+    }
+}
+
+/// The broker authority one ADMITTED grant holds: the parsed policy for
+/// the process/net bundles (empty for a bare grant — default deny), the
+/// path subtree for fs, the root scope otherwise. Only admitted grants
+/// reach here, so a policy parse cannot fail; a shape that somehow did is
+/// the empty policy, never root.
+#[must_use]
+pub(crate) fn authority(grant: &Grant) -> GrantScope {
+    let contract = grant.contract.as_str();
+    match (declared(contract), &grant.scope) {
+        (Declared::ProcessPolicy, scope) => GrantScope::Process(
+            scope
+                .as_ref()
+                .and_then(|wrote| policy::process_scope(contract, wrote).ok())
+                .unwrap_or_default(),
+        ),
+        (Declared::NetPolicy, scope) => GrantScope::Net(
+            scope
+                .as_ref()
+                .and_then(|wrote| policy::net_scope(contract, wrote).ok())
+                .unwrap_or_default(),
+        ),
+        (_, Some(ScopeValue::Path(path))) => GrantScope::Paths(vec![path.clone()]),
+        _ => GrantScope::Root,
     }
 }
 
@@ -147,146 +205,4 @@ pub(crate) fn admission(grants: &[Grant]) -> (Vec<Grant>, Vec<KernelError>) {
         }
     }
     (admitted, refusals)
-}
-
-#[cfg(all(test, not(feature = "loom")))]
-mod tests {
-    use super::{Grant, ScopeValue, admission};
-
-    fn only(grant: Grant) -> Result<(), String> {
-        let (admitted, refusals) = admission(&[grant]);
-        match (admitted.len(), refusals.first()) {
-            (1, None) => Ok(()),
-            (0, Some(refusal)) => Err(refusal.message.clone()),
-            (admitted, _) => panic!("one grant, one verdict; admitted {admitted}"),
-        }
-    }
-
-    fn scoped(contract: &str, scope: ScopeValue) -> Grant {
-        Grant {
-            contract: contract.to_owned(),
-            scope: Some(scope),
-        }
-    }
-
-    fn refusal_of(verdict: Result<(), String>) -> String {
-        match verdict {
-            Err(message) => message,
-            Ok(()) => panic!("the scope must refuse the grant"),
-        }
-    }
-
-    /// The verifier's round-2 probe, pinned (round-3 ruling): a numeric
-    /// scope on a contract whose declared scope type is `path-prefix` is
-    /// the wrong type — the grant refuses; it never widens into root-wide
-    /// authority.
-    #[test]
-    fn the_fs_scope_9_probe_refuses_as_wrong_type() {
-        let message = refusal_of(only(scoped("jinn:fs", ScopeValue::Rate(9))));
-        assert!(
-            message.contains("jinn:fs") && message.contains("path-prefix"),
-            "the refusal names the contract and its declared scope type: {message}"
-        );
-    }
-
-    /// The mirror mismatch: a string scope on a `rate` contract refuses.
-    #[test]
-    fn a_string_scope_on_a_rate_contract_refuses_as_wrong_type() {
-        let message = refusal_of(only(scoped("jinn:clock", ScopeValue::Path("fine".into()))));
-        assert!(
-            message.contains("jinn:clock") && message.contains("rate"),
-            "the refusal names the contract and its declared scope type: {message}"
-        );
-    }
-
-    /// A scope on a contract declaring NO scope type refuses.
-    #[test]
-    fn a_scope_on_a_contract_declaring_none_refuses() {
-        let verdict = only(scoped("jinn:ledger", ScopeValue::Rate(5)));
-        assert!(
-            verdict.is_err(),
-            "jinn:ledger declares no scope; a scoped grant cannot validate"
-        );
-    }
-
-    /// A scope on a contract with no shipped bundle refuses — there is no
-    /// declared type to validate against (fail-closed, never benign-default).
-    #[test]
-    fn a_scope_on_an_undeclared_contract_refuses() {
-        let verdict = only(scoped("jinn:test/counter", ScopeValue::Rate(5)));
-        assert!(
-            verdict.is_err(),
-            "no declared scope type means no validation means no admission"
-        );
-    }
-
-    /// M2-K3 round 2 (COO ruling): a well-typed `path-prefix` scope admits
-    /// — the fs provider enforces it per call on the resolved path — and
-    /// a traversing "scope" is no containment path: it refuses.
-    #[test]
-    fn a_well_typed_path_scope_admits_and_a_traversing_one_refuses() {
-        let verdict = only(scoped("jinn:fs", ScopeValue::Path("/data".into())));
-        assert!(
-            verdict.is_ok(),
-            "the path-prefix scope is enforceable: {verdict:?}"
-        );
-        let message = refusal_of(only(scoped("jinn:fs", ScopeValue::Path("../up".into()))));
-        assert!(
-            message.contains("containment"),
-            "the refusal names the shape: {message}"
-        );
-    }
-
-    /// A scope shape the decoder could not read refuses wherever it lands.
-    #[test]
-    fn a_malformed_scope_refuses_on_every_contract() {
-        for contract in ["jinn:clock", "jinn:fs", "jinn:ledger", "demo:thing"] {
-            let verdict = only(scoped(contract, ScopeValue::Malformed("-5".into())));
-            assert!(
-                verdict.is_err(),
-                "a malformed scope must refuse: {contract}"
-            );
-        }
-    }
-
-    /// The clock's rate floor admits.
-    #[test]
-    fn a_rate_scope_on_the_clock_admits() {
-        let verdict = only(scoped("jinn:clock", ScopeValue::Rate(1000)));
-        assert!(verdict.is_ok(), "the rate scope is v0.1's enforced scope");
-    }
-
-    /// Bare grants (no scope) admit for every contract — the contract's
-    /// root/default scope, exactly the pre-ruling semantics.
-    #[test]
-    fn bare_grants_admit_unchanged() {
-        for contract in ["jinn:clock", "jinn:fs", "jinn:ledger", "jinn:test/counter"] {
-            let verdict = only(Grant {
-                contract: contract.to_owned(),
-                scope: None,
-            });
-            assert!(verdict.is_ok(), "a bare grant admits: {contract}");
-        }
-    }
-
-    /// One judgment call, split verdicts: mixed lists partition exactly.
-    #[test]
-    fn admission_partitions_a_mixed_grant_list() {
-        let (admitted, refusals) = admission(&[
-            Grant {
-                contract: "jinn:test/counter".to_owned(),
-                scope: None,
-            },
-            scoped("jinn:fs", ScopeValue::Rate(9)),
-            scoped("jinn:clock", ScopeValue::Rate(1000)),
-        ]);
-        assert_eq!(
-            admitted
-                .iter()
-                .map(|grant| grant.contract.as_str())
-                .collect::<Vec<_>>(),
-            vec!["jinn:test/counter", "jinn:clock"],
-        );
-        assert_eq!(refusals.len(), 1, "exactly the fs probe refused");
-    }
 }

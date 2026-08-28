@@ -22,9 +22,8 @@ use jinnd_loader::host::Rebind;
 
 use crate::alarms::clock_floor;
 use crate::broker_state::refusal;
-use crate::grants::ScopeValue;
-use crate::grants::admission;
 pub use crate::grants::{Grant, SeatSpec};
+use crate::grants::{admission, authority};
 use crate::handle::Registration;
 use crate::host::LoadedComponent;
 use crate::instance::Seat;
@@ -112,15 +111,11 @@ impl FiberBody for WasmBody {
                 core.sink
                     .append(LedgerEventKind::ErrorRecorded { error }, Some(fiber));
             }
-            // An admitted path-prefix scope travels to the broker (M2-K3
-            // round 2): the provider enforces it per call.
+            // An admitted scope travels to the broker as typed authority
+            // (M2-K3 round 2, M2-K6): the provider enforces it per call.
             for grant in &admitted {
-                match &grant.scope {
-                    Some(ScopeValue::Path(scope)) => {
-                        core.broker.grant_scoped(peer, &grant.contract, scope);
-                    }
-                    _ => core.broker.grant(peer, &grant.contract),
-                }
+                core.broker
+                    .grant_with(peer, &grant.contract, authority(grant));
             }
             // The entry's granted `jinn:clock` resolution floor (M2-K2,
             // R9): grants scope alarm resolution per entry — read off the

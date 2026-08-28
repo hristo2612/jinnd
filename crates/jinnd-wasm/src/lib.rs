@@ -46,7 +46,7 @@ pub use alarms::{
 };
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
-pub use grants::ScopeValue;
+pub use grants::{EnvPolicy, GrantScope, NetScope, ProcessScope, ScopeValue};
 pub use handle::{
     ActivationOutcome, AlarmRecord, HostRecord, InstanceHandle, ListenRecord, Registration,
 };
