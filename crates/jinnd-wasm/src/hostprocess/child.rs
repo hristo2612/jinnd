@@ -1,24 +1,21 @@
 //! One spawned child behind the `jinn:process` provider (M2-K6; R1): a
-//! supervisor task owns the `Child` and is the only reaper; one pump task
-//! per output stream moves bytes into a bounded ring, one feeder task
-//! drains the stdin ring into the pipe; the guest's calls touch only
-//! clones — rings, an exit watch, a signal channel — so no lock is ever
-//! held across an await, no call touches a pipe, and no call blocks past
-//! its bound.
+//! supervisor task owns the `Child` and is the only reaper; the guest's
+//! calls touch only clones — streams, an exit watch, a signal channel — so
+//! no lock is ever held across an await and no call blocks past its bound.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Notify, mpsc, watch};
+use tokio::process::{Child, Command};
+use tokio::sync::{mpsc, watch};
 
 use super::HostProcess;
-use super::ring::{Ring, STREAM_CAP};
+use super::stream::{Stream, feed, pump};
 use crate::broker_state::refusal;
 use crate::grants::{EnvPolicy, ProcessScope};
+use crate::hostbase::Owned;
 use crate::peer::PeerId;
 
 /// The `wait` cap (R1: no host call blocks across the guest deadline).
@@ -55,63 +52,6 @@ impl Signal {
     }
 }
 
-/// One stream ring and the signal that resumes the task waiting on it:
-/// for an output stream a take wakes the stalled pump; for stdin an offer
-/// wakes the idle feeder.
-#[derive(Clone)]
-pub(super) struct Stream {
-    ring: Arc<Ring>,
-    space: Arc<Notify>,
-}
-
-impl Stream {
-    fn new() -> Self {
-        Self {
-            ring: Arc::new(Ring::new(STREAM_CAP)),
-            space: Arc::new(Notify::new()),
-        }
-    }
-
-    /// One non-blocking read: `(bytes, eof)`; a take that made room wakes
-    /// the pump.
-    pub(super) fn take(&self, max: usize) -> (Vec<u8>, bool) {
-        let (data, eof) = self.ring.take(max);
-        if !data.is_empty() {
-            self.space.notify_one();
-        }
-        (data, eof)
-    }
-
-    /// Offers bytes to stdin without blocking; answers the accepted count
-    /// (up to the ring's free space), waking the feeder.
-    ///
-    /// # Errors
-    ///
-    /// A closed stdin.
-    fn offer(&self, bytes: &[u8]) -> Result<usize, KernelError> {
-        if self.ring.is_closed() {
-            return Err(refusal(
-                ErrorCode::PluginFailed,
-                "process stdin is closed".to_owned(),
-            ));
-        }
-        let accepted = self.ring.offer(bytes);
-        self.space.notify_one();
-        Ok(accepted)
-    }
-
-    /// Ends the stream and frees a stalled pump or feeder.
-    fn release(&self) {
-        self.ring.close();
-        self.space.notify_one();
-    }
-
-    #[cfg(test)]
-    pub(super) fn buffered(&self) -> usize {
-        self.ring.len()
-    }
-}
-
 /// The guest-facing face of one child: every field is a cheap clone of a
 /// shared piece, so a call takes the table lock only to copy the row out.
 #[derive(Clone)]
@@ -123,6 +63,12 @@ pub(super) struct Row {
     pub(super) stderr: Stream,
     control: mpsc::UnboundedSender<Signal>,
     exit: watch::Receiver<Option<i32>>,
+}
+
+impl Owned for Row {
+    fn owner(&self) -> PeerId {
+        self.owner
+    }
 }
 
 /// The command under the grant's env policy (bundle README): the child's
@@ -154,8 +100,8 @@ pub(super) fn command(
     command
 }
 
-/// Takes the pipes off a freshly spawned child, starts its pumps and its
-/// supervisor, and answers the row the table holds.
+/// Takes the pipes off a freshly spawned child, starts its pumps, feeder,
+/// and supervisor, and answers the row the table holds.
 pub(super) fn spawn_row(
     provider: &Arc<HostProcess>,
     handle: u64,
@@ -166,17 +112,17 @@ pub(super) fn spawn_row(
     let stdin = Stream::new();
     match child.stdin.take() {
         Some(pipe) => drop(tokio::spawn(feed(pipe, stdin.clone()))),
-        None => stdin.ring.close(),
+        None => stdin.close(),
     }
     let stdout = Stream::new();
-    let stderr = Stream::new();
     match child.stdout.take() {
         Some(pipe) => drop(tokio::spawn(pump(pipe, stdout.clone()))),
-        None => stdout.ring.close(),
+        None => stdout.close(),
     }
+    let stderr = Stream::new();
     match child.stderr.take() {
         Some(pipe) => drop(tokio::spawn(pump(pipe, stderr.clone()))),
-        None => stderr.ring.close(),
+        None => stderr.close(),
     }
     let (control, control_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit) = watch::channel(None);
@@ -196,48 +142,6 @@ pub(super) fn spawn_row(
         stderr,
         control,
         exit,
-    }
-}
-
-/// Moves one pipe into its ring; stalls on a full ring until a take makes
-/// room (backpressure, R9); closes the ring at the pipe's end.
-async fn pump(mut pipe: impl AsyncRead + Unpin, stream: Stream) {
-    let mut chunk = vec![0u8; 8192];
-    loop {
-        let read = match pipe.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(read) => read,
-        };
-        let mut offset = 0;
-        while offset < read {
-            offset += stream.ring.offer(&chunk[offset..read]);
-            if offset < read {
-                if stream.ring.is_closed() {
-                    return;
-                }
-                stream.space.notified().await;
-            }
-        }
-    }
-    stream.ring.close();
-}
-
-/// Drains the stdin ring into the pipe; idles until an offer; the ring's
-/// close (the guest's `close-stdin`, or the release) is the child's EOF.
-async fn feed(mut pipe: ChildStdin, stream: Stream) {
-    loop {
-        let (chunk, eof) = stream.ring.take(8192);
-        if !chunk.is_empty() {
-            if pipe.write_all(&chunk).await.is_err() {
-                stream.ring.close();
-                return;
-            }
-        } else if eof {
-            let _ = pipe.shutdown().await;
-            return;
-        } else {
-            stream.space.notified().await;
-        }
     }
 }
 
@@ -298,6 +202,7 @@ async fn supervise(
         }
     };
     provider
+        .core
         .sink
         .append(LedgerEventKind::ProcessExited { handle, code }, fiber);
     let _ = exit.send(Some(code));
@@ -327,8 +232,7 @@ impl Row {
         let mut exit = self.exit.clone();
         let cap = Duration::from_millis(timeout_ms).min(WAIT_CAP);
         let _ = tokio::time::timeout(cap, exit.wait_for(|code| code.is_some())).await;
-        let code = *exit.borrow();
-        code
+        *exit.borrow()
     }
 
     /// Delivers a signal; `false` when the child already exited.

@@ -24,6 +24,7 @@ mod entry;
 mod grants;
 mod handle;
 mod host;
+mod hostbase;
 mod hostcaps;
 mod hostclock;
 mod hostfs;

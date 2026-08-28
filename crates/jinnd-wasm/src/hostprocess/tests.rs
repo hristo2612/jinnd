@@ -194,10 +194,7 @@ async fn an_unread_stream_backpressures_the_child_under_the_bound() {
         )
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let buffered = {
-        let table = crate::lane::lock(&rig.provider.table);
-        table[&handle].stdout.buffered()
-    };
+    let buffered = rig.provider.buffered(rig.guest, handle);
     assert!(buffered <= STREAM_CAP, "never above the cap: {buffered}");
     assert!(buffered > 0, "the pump filled what it could");
     assert_eq!(

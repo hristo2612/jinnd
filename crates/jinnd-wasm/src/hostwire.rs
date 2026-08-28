@@ -9,11 +9,11 @@ use jinnd_api::{ErrorCode, KernelError};
 use crate::broker_state::refusal;
 
 /// Answer tag: bytes follow.
-pub const TAG_DATA: u8 = 0;
+pub(crate) const TAG_DATA: u8 = 0;
 /// Answer tag: nothing yet (`would-block`); `running` for `wait`.
-pub const TAG_WOULD_BLOCK: u8 = 1;
+pub(crate) const TAG_WOULD_BLOCK: u8 = 1;
 /// Answer tag: the stream ended (`eof`).
-pub const TAG_EOF: u8 = 2;
+pub(crate) const TAG_EOF: u8 = 2;
 
 /// Appends one u32-LE length-prefixed segment.
 pub fn put_segment(wire: &mut Vec<u8>, segment: &[u8]) {
@@ -26,7 +26,7 @@ pub fn put_segment(wire: &mut Vec<u8>, segment: &[u8]) {
 }
 
 /// A bounds-checked cursor over one payload.
-pub struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     wire: &'a [u8],
     what: &'static str,
 }
@@ -53,20 +53,12 @@ impl<'a> Reader<'a> {
         Ok(head)
     }
 
-    /// One byte.
-    ///
-    /// # Errors
-    ///
-    /// A truncated payload.
+    /// One byte; a truncated payload is malformed.
     pub fn u8(&mut self) -> Result<u8, KernelError> {
         Ok(self.take(1)?[0])
     }
 
     /// One u32-LE.
-    ///
-    /// # Errors
-    ///
-    /// A truncated payload.
     pub fn u32(&mut self) -> Result<u32, KernelError> {
         let mut bytes = [0u8; 4];
         bytes.copy_from_slice(self.take(4)?);
@@ -74,10 +66,6 @@ impl<'a> Reader<'a> {
     }
 
     /// One u64-LE (handles, timeouts).
-    ///
-    /// # Errors
-    ///
-    /// A truncated payload.
     pub fn u64(&mut self) -> Result<u64, KernelError> {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(self.take(8)?);
@@ -85,10 +73,6 @@ impl<'a> Reader<'a> {
     }
 
     /// One i32-LE (exit codes).
-    ///
-    /// # Errors
-    ///
-    /// A truncated payload.
     pub fn i32(&mut self) -> Result<i32, KernelError> {
         let mut bytes = [0u8; 4];
         bytes.copy_from_slice(self.take(4)?);
@@ -96,20 +80,12 @@ impl<'a> Reader<'a> {
     }
 
     /// One length-prefixed segment.
-    ///
-    /// # Errors
-    ///
-    /// A truncated payload.
     pub fn segment(&mut self) -> Result<&'a [u8], KernelError> {
         let length = self.u32()? as usize;
         self.take(length)
     }
 
-    /// One length-prefixed UTF-8 segment.
-    ///
-    /// # Errors
-    ///
-    /// A truncated payload or non-UTF-8 bytes.
+    /// One length-prefixed UTF-8 segment (non-UTF-8 is malformed).
     pub fn text(&mut self) -> Result<String, KernelError> {
         let bytes = self.segment()?;
         String::from_utf8(bytes.to_vec()).map_err(|_| self.malformed())
@@ -123,10 +99,6 @@ impl<'a> Reader<'a> {
 }
 
 /// Decodes a `spawn` request: argc, envc, then command, cwd, args, env.
-///
-/// # Errors
-///
-/// A malformed payload.
 #[allow(clippy::type_complexity)]
 pub fn decode_spawn(
     payload: &[u8],
@@ -170,24 +142,14 @@ pub fn encode_spawn(
 }
 
 /// Decodes a `run` request: the command then each argument, prefixed.
-///
-/// # Errors
-///
-/// A malformed payload.
 pub fn decode_run(payload: &[u8]) -> Result<(String, Vec<String>), KernelError> {
     let mut reader = Reader::new(payload, "process run");
     let command = reader.text()?;
     let mut args = Vec::new();
-    while !reader.rest_is_empty() {
+    while !reader.wire.is_empty() {
         args.push(reader.text()?);
     }
     Ok((command, args))
-}
-
-impl Reader<'_> {
-    fn rest_is_empty(&self) -> bool {
-        self.wire.is_empty()
-    }
 }
 
 /// A tagged read answer: `data` bytes, `would-block`, or `eof`.
@@ -211,10 +173,6 @@ pub fn encode_handle(handle: u64) -> Vec<u8> {
 }
 
 /// Decodes an 8-byte LE handle answer.
-///
-/// # Errors
-///
-/// A short answer.
 pub fn decode_handle(answer: &[u8]) -> Result<u64, KernelError> {
     Reader::new(answer, "handle answer").u64()
 }
