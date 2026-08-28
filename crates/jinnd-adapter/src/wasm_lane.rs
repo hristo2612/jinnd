@@ -80,6 +80,7 @@ impl WasmLane for Adapter {
         // String config, verbatim.
         let decode = move |config: &String| SeatSpec {
             grants: (*grants).clone(),
+            faults: Vec::new(),
             payload: config.clone().into_bytes(),
         };
         let track = move |body: Arc<WasmBody>, signal| {

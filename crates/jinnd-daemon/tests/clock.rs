@@ -190,6 +190,62 @@ async fn a_scoped_profile_grant_caps_how_fine_a_timer_an_entry_may_hold() {
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }
 
+/// Round-3 blocker pin (Law 1; constitution 01 §Scope + §Grants): the
+/// verifier's probe `{ "contract": "jinn:fs", "scope": 9 }` — a scope of
+/// the wrong type for the contract's declared `path-prefix` scope type —
+/// REFUSES the grant fail-closed at admission: the refusal is a ledgered
+/// per-entry error, the guest's fs read is refused at the broker choke
+/// point (authority never widened to root-wide `jinn:fs`), and the entry
+/// itself still activates cleanly — refusal is per-grant, contained (R11).
+#[tokio::test]
+async fn a_wrong_typed_scope_refuses_on_the_record_and_never_widens() {
+    let home = home("probe");
+    let daemon = Daemon::open(paths(
+        &home,
+        serde_json::json!([{ "contract": "jinn:fs", "scope": 9 }]),
+        "fs-denied",
+    ))
+    .unwrap_or_else(|error| panic!("open: {error:?}"));
+    let report = daemon
+        .boot()
+        .await
+        .unwrap_or_else(|error| panic!("boot: {error:?}"));
+    assert!(
+        report.errors.is_empty(),
+        "the entry activates cleanly without the refused authority: {:?}",
+        report.errors
+    );
+    let fiber = daemon
+        .entry_fiber("waker")
+        .unwrap_or_else(|| panic!("the entry has a fiber"));
+
+    let records = events(&daemon).await;
+    assert!(
+        records.iter().any(|record| match &record.kind {
+            LedgerEventKind::ErrorRecorded { error } =>
+                record.fiber == Some(fiber)
+                    && error.message.contains("jinn:fs")
+                    && error.message.contains("path-prefix"),
+            _ => false,
+        }),
+        "the admission refusal is a ledgered per-entry error naming the \
+         contract and its declared scope type: {records:?}"
+    );
+    assert!(
+        records.iter().any(|record| matches!(
+            &record.kind,
+            LedgerEventKind::GrantRefused { contract } if contract == "jinn:fs"
+        )),
+        "the guest's fs call was refused at the broker choke point — the \
+         wrong-typed scope never widened into root authority: {records:?}"
+    );
+
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
 #[tokio::test]
 async fn a_bus_emit_through_the_daemon_path_lands_exactly_one_dispatch_trace() {
     let home = home("trace");

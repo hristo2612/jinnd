@@ -183,18 +183,19 @@ fn the_effective_floor_comes_from_the_clock_grants_scope() {
         contract: "jinn:clock".to_owned(),
         scope,
     };
+    let rate = |floor| Some(crate::grants::ScopeValue::Rate(floor));
     assert_eq!(clock_floor(&[scoped(None)]), DEFAULT_MIN_PERIOD_MS);
-    assert_eq!(clock_floor(&[scoped(Some(1000))]), 1000);
-    assert_eq!(clock_floor(&[scoped(Some(50))]), 50);
+    assert_eq!(clock_floor(&[scoped(rate(1000))]), 1000);
+    assert_eq!(clock_floor(&[scoped(rate(50))]), 50);
     assert_eq!(
-        clock_floor(&[scoped(Some(0))]),
+        clock_floor(&[scoped(rate(0))]),
         1,
         "the absolute floor is 1ms"
     );
     assert_eq!(
         clock_floor(&[Grant {
             contract: "jinn:fs".to_owned(),
-            scope: Some(9),
+            scope: rate(9),
         }]),
         DEFAULT_MIN_PERIOD_MS,
         "another contract's scope never floors the clock"

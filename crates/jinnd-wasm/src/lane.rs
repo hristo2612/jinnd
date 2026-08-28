@@ -24,6 +24,9 @@ use jinnd_loader::{PackageLane, SpawnRequest};
 
 use crate::alarms::{Alarms, clock_floor};
 use crate::broker::Broker;
+use crate::broker_state::refusal;
+use crate::grants::admission;
+pub use crate::grants::{Grant, SeatSpec};
 use crate::handle::Registration;
 use crate::host::{LoadedComponent, WasmHost};
 use crate::instance::Seat;
@@ -38,27 +41,6 @@ pub(crate) const DEADLINE: Duration = Duration::from_secs(5);
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
-}
-
-/// One granted contract with its optional scope (constitution 01 §Grants: a
-/// grant is (identity, contract, version range, optional scope); 04 §Format:
-/// a profile grant entry is a bare contract name or `{ contract, scope }`).
-/// v0.1 enforces the `rate` scope type — for `jinn:clock`, the minimum
-/// period in milliseconds the entry may hold; `None` holds the contract's
-/// default floor (contracts/jinn-clock `[scope]`).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Grant {
-    pub contract: String,
-    pub scope: Option<u64>,
-}
-
-/// One entry's seat configuration: `grants` are the contracts the profile
-/// side grants the instance, each with its optional scope (constitution 01:
-/// requests are not grants), `payload` is the opaque payload handed to the
-/// guest's `activate` (R9: data, never behavior).
-pub struct SeatSpec {
-    pub grants: Vec<Grant>,
-    pub payload: Vec<u8>,
 }
 
 /// One live wasm entry, addressable by the swap machine.
@@ -149,20 +131,46 @@ impl Rebind for WasmBody {
 impl FiberBody for WasmBody {
     fn activate<'a>(&'a self, mut setup: Setup<'a>) -> KernelFuture<'a, ()> {
         Box::pin(async move {
-            let (grants, config) = {
+            let (grants, faults, config) = {
                 let seat = lock(&self.seat);
-                (seat.grants.clone(), seat.payload.clone())
+                (
+                    seat.grants.clone(),
+                    seat.faults.clone(),
+                    seat.payload.clone(),
+                )
             };
             let at = lock(&self.at).clone();
             let fiber = setup.fiber();
             let core = Arc::clone(&self.core);
             let peer = core.broker.register_peer(Some(fiber));
-            for grant in &grants {
+            // Fail-closed scope admission (round-3 ruling; Law 1, 01
+            // §Grants): only admitted grants become broker authority; every
+            // refusal — an invalid scope, or an entry unreadable as a grant
+            // at all — is a ledgered per-entry error, never a silent drop
+            // and never a widened unscoped grant.
+            for fault in &faults {
+                core.sink.append(
+                    LedgerEventKind::ErrorRecorded {
+                        error: refusal(
+                            jinnd_api::ErrorCode::EffectFailed,
+                            format!("grant entry refused: {fault}"),
+                        ),
+                    },
+                    Some(fiber),
+                );
+            }
+            let (admitted, refusals) = admission(&grants);
+            for error in refusals {
+                core.sink
+                    .append(LedgerEventKind::ErrorRecorded { error }, Some(fiber));
+            }
+            for grant in &admitted {
                 core.broker.grant(peer, &grant.contract);
             }
             // The entry's granted `jinn:clock` resolution floor (M2-K2,
-            // R9): grants scope alarm resolution per entry.
-            let clock_floor_ms = clock_floor(&grants);
+            // R9): grants scope alarm resolution per entry — read off the
+            // ADMITTED grants only.
+            let clock_floor_ms = clock_floor(&admitted);
             let slot_id = core.next_slot.fetch_add(1, Ordering::SeqCst) + 1;
             let component = lock(&self.component).clone();
             let handle = core.host.instantiate(

@@ -39,17 +39,21 @@ pub const WAKE_TOPIC: &str = "jinn:clock/alarm";
 /// holds for a `jinn:clock` grant carrying no scope.
 pub const DEFAULT_MIN_PERIOD_MS: u64 = 250;
 
-/// The effective `jinn:clock` resolution floor an entry's grants hold
-/// (contracts/jinn-clock `[scope]`, type `rate`): the grant's scoped
+/// The effective `jinn:clock` resolution floor an entry's ADMITTED grants
+/// hold (contracts/jinn-clock `[scope]`, type `rate`): the grant's scoped
 /// minimum period, or [`DEFAULT_MIN_PERIOD_MS`] for an unscoped grant.
-/// A scope of 0 would nullify the floor into a busy-wake hazard (R9), so
-/// the kernel's absolute floor is 1ms.
+/// Admission already refused every non-`rate` scope on the clock (round-3
+/// ruling), so no other shape reaches here. A scope of 0 would nullify the
+/// floor into a busy-wake hazard (R9), so the kernel's absolute floor is 1ms.
 #[must_use]
-pub fn clock_floor(grants: &[crate::lane::Grant]) -> u64 {
+pub fn clock_floor(grants: &[crate::grants::Grant]) -> u64 {
     grants
         .iter()
         .find(|grant| grant.contract == CLOCK_CONTRACT)
-        .and_then(|grant| grant.scope)
+        .and_then(|grant| match grant.scope {
+            Some(crate::grants::ScopeValue::Rate(floor)) => Some(floor),
+            _ => None,
+        })
         .map_or(DEFAULT_MIN_PERIOD_MS, |floor| floor.max(1))
 }
 

@@ -20,6 +20,7 @@ mod broker;
 mod broker_state;
 #[cfg(all(test, not(feature = "loom")))]
 mod broker_tests;
+mod grants;
 mod handle;
 mod host;
 mod hostcaps;
@@ -42,6 +43,7 @@ pub use alarms::{
 };
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
+pub use grants::ScopeValue;
 pub use handle::{ActivationOutcome, AlarmRecord, InstanceHandle, ListenRecord, Registration};
 pub use host::{LoadedComponent, WasmHost};
 pub use hostclock::HostClock;
