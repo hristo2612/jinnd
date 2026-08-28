@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::alarms::{AlarmSpec, ArmRequest, CLOCK_CONTRACT};
 use crate::bindings;
 use crate::handle::{AlarmRecord, Registration};
+use crate::hostfs::wire::{FileMeta, decode_metas};
 use crate::instance::{HostState, Seat};
 use crate::topics::EventTarget;
 
@@ -41,9 +42,60 @@ async fn dispatch(
         .map_err(bindings::wire_error)
 }
 
+/// The typed `file-meta` off the provider's wire (M2-K3).
+fn file_meta(meta: FileMeta) -> bindings::fs::FileMeta {
+    bindings::fs::FileMeta {
+        path: meta.path,
+        size: meta.size,
+        modified_ms: meta.modified_ms,
+        is_dir: meta.is_dir,
+    }
+}
+
 impl bindings::fs::Host for HostState {
     async fn read(&mut self, path: String) -> Result<Vec<u8>, bindings::types::KernelError> {
         dispatch(&self.seat, "jinn:fs", "read", path.into_bytes()).await
+    }
+
+    async fn list(
+        &mut self,
+        path: String,
+    ) -> Result<Vec<bindings::fs::FileMeta>, bindings::types::KernelError> {
+        let answer = dispatch(&self.seat, "jinn:fs", "list", path.into_bytes()).await?;
+        let metas = decode_metas(&answer).map_err(bindings::wire_error)?;
+        Ok(metas.into_iter().map(file_meta).collect())
+    }
+
+    async fn meta(
+        &mut self,
+        path: String,
+    ) -> Result<bindings::fs::FileMeta, bindings::types::KernelError> {
+        let answer = dispatch(&self.seat, "jinn:fs", "meta", path.into_bytes()).await?;
+        let metas = decode_metas(&answer).map_err(bindings::wire_error)?;
+        metas.into_iter().next().map(file_meta).ok_or_else(|| {
+            bindings::types::KernelError::ProviderFailed("empty fs meta answer".to_owned())
+        })
+    }
+
+    async fn append(
+        &mut self,
+        path: String,
+        data: Vec<u8>,
+    ) -> Result<(), bindings::types::KernelError> {
+        dispatch(
+            &self.seat,
+            "jinn:fs",
+            "append",
+            prefixed(&[path.as_bytes()], &data),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn remove(&mut self, path: String) -> Result<(), bindings::types::KernelError> {
+        dispatch(&self.seat, "jinn:fs", "remove", path.into_bytes())
+            .await
+            .map(|_| ())
     }
 
     async fn write(

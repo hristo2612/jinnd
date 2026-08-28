@@ -1,58 +1,64 @@
 //! The base `jinn:fs` host provider (R7; M2-K1, lifted from the daemon per
-//! the PLA-283 ruling): a native peer behind the SAME broker choke point
-//! every guest crosses — grant check → ledger append → dispatch. Scope is
-//! one root directory (path-prefix containment, contract bundle
-//! `contracts/jinn-fs`). A write is the revertible effect class (Law 3):
-//! the provider captures the inverse — the prior content, or prior
-//! absence — at the point of action, and the assembly's keyed revert
-//! replays it through the ledger's exactly-once protocol with an
-//! executable witness (the [`HostFs::undo_action`] seam).
+//! the PLA-283 ruling; M2-K3 finalized to its declared bundle): a native
+//! peer behind the SAME broker choke point every guest crosses — grant
+//! check → ledger append → dispatch. Scope is one root directory
+//! (path-prefix containment, contract bundle `contracts/jinn-fs`).
+//!
+//! `read`, `list`, and `meta` are reads (call-ledger line only). `write`,
+//! `append`, and `remove` are the revertible effect class (Law 3, R5): the
+//! provider captures the inverse — prior content, prior absence, or prior
+//! length — at the point of action and makes it DURABLE before the mutation
+//! commits (retention store, M2-K3): if the inverse cannot be made durable
+//! the effect is refused, on the record. The assembly's keyed revert replays
+//! an inverse through the ledger's exactly-once protocol with an executable
+//! witness (the [`HostFs::undo_action`] seam) and reclaims it after.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use jinnd_api::{EffectId, ErrorCode, KernelError, KernelFuture, LedgerEventKind, Witness};
+use jinnd_api::{EffectId, ErrorCode, FiberId, KernelError, KernelFuture, Witness};
 
 use crate::broker::Broker;
 use crate::broker_state::refusal;
 use crate::lane::lock;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
+mod ops;
+mod retention;
+#[cfg(all(test, not(feature = "loom")))]
+mod tests;
+pub mod wire;
+
+use retention::{Prior, Record, Retention};
+
 /// The provider's contract name.
 pub const FS_CONTRACT: &str = "jinn:fs";
 
-/// One write effect's revert action (Law 3): the executable witness and the
+/// One effect's revert action (Law 3): the executable witness and the
 /// inverse the assembly feeds to the ledger's exactly-once revert protocol.
 pub type UndoAction = (
     Witness,
     Box<dyn FnOnce() -> KernelFuture<'static, ()> + Send>,
 );
 
-/// Provider-charged effect ids live far above the fiber scopes' range so a
-/// ledger reader never conflates the two id spaces (v0.1 demo convention).
-const FS_EFFECT_BASE: u64 = 1 << 32;
-
-/// One write's inverse: the prior content, or `None` for prior absence.
-#[derive(Clone)]
-struct UndoRecord {
-    path: PathBuf,
-    prior: Option<Vec<u8>>,
-}
-
-#[derive(Default)]
-struct FsState {
-    undos: HashMap<u64, UndoRecord>,
-    /// Registration order, for operator listing.
-    order: Vec<(u64, String)>,
+/// The in-memory index of one retained inverse: its label only — prior
+/// contents live in the retention store, never here (finding 8 bound).
+struct Retained {
+    label: String,
+    /// Consumed by a completed revert and reclaimed; kept so a replay of
+    /// the same key still answers from the record, never "unknown effect".
+    consumed: bool,
 }
 
 /// The `jinn:fs` provider over one containment root.
 pub struct HostFs {
     root: PathBuf,
     sink: Arc<dyn LedgerSink>,
-    state: Mutex<FsState>,
+    store: Retention,
+    index: Mutex<BTreeMap<u64, Retained>>,
+    broker: OnceLock<Weak<Broker>>,
     next: AtomicU64,
 }
 
@@ -74,133 +80,185 @@ fn contained(root: &Path, path: &str) -> Result<PathBuf, KernelError> {
     Ok(root.join(candidate))
 }
 
-/// One scoped io refusal, worded exactly as the operation reports it.
-fn io_refusal(operation: &str, path: &str, refused: &std::io::Error) -> KernelError {
-    refusal(
-        ErrorCode::PluginFailed,
-        format!("fs {operation} {path:?}: {refused}"),
-    )
-}
-
-/// Decodes the `write` wire: u32-LE path length, path bytes, then the data
-/// (wit/plugin.wit `interface fs`).
-fn split_write(payload: &[u8]) -> Result<(String, Vec<u8>), KernelError> {
-    let malformed = || refusal(ErrorCode::PluginFailed, "malformed fs write payload".into());
-    if payload.len() < 4 {
-        return Err(malformed());
-    }
-    let mut length = [0u8; 4];
-    length.copy_from_slice(&payload[..4]);
-    let length = u32::from_le_bytes(length) as usize;
-    let rest = &payload[4..];
-    if rest.len() < length {
-        return Err(malformed());
-    }
-    let path = String::from_utf8(rest[..length].to_vec()).map_err(|_| malformed())?;
-    Ok((path, rest[length..].to_vec()))
-}
-
 impl HostFs {
-    /// The provider over `root`, appending its Law-2 events to `sink`.
-    #[must_use]
-    pub fn new(root: PathBuf, sink: Arc<dyn LedgerSink>) -> Self {
-        Self {
+    /// Opens the provider over `root`, spilling inverses under `inverses`
+    /// (a directory OUTSIDE the root: guests must never reach the inverses)
+    /// and appending its Law-2 events to `sink`. Blocking — construction
+    /// only.
+    ///
+    /// # Errors
+    ///
+    /// The retention store cannot be opened or its spilled records are
+    /// unreadable (fail-closed: revertibility is never silently weakened).
+    pub fn open(
+        root: PathBuf,
+        inverses: PathBuf,
+        sink: Arc<dyn LedgerSink>,
+    ) -> Result<Self, KernelError> {
+        let (store, epoch, spilled) = Retention::open(inverses)?;
+        let base = (epoch + 1) << 32;
+        let next = spilled
+            .iter()
+            .map(|(id, _)| id + 1)
+            .max()
+            .unwrap_or(base)
+            .max(base);
+        let index = spilled
+            .into_iter()
+            .map(|(id, label)| {
+                (
+                    id,
+                    Retained {
+                        label,
+                        consumed: false,
+                    },
+                )
+            })
+            .collect();
+        Ok(Self {
             root,
             sink,
-            state: Mutex::new(FsState::default()),
-            next: AtomicU64::new(0),
-        }
+            store,
+            index: Mutex::new(index),
+            broker: OnceLock::new(),
+            next: AtomicU64::new(next),
+        })
     }
 
     /// Registers this provider as a broker peer holding and providing the
     /// `jinn:fs` contract (providing is authority: the provider peer is
-    /// granted what it provides).
+    /// granted what it provides). The broker is kept weakly for caller
+    /// attribution (R4): it owns this peer, never the reverse.
     ///
     /// # Errors
     ///
     /// The broker's refusal of the provision.
-    pub fn register(self: &Arc<Self>, broker: &Broker) -> Result<(), KernelError> {
+    pub fn register(self: &Arc<Self>, broker: &Arc<Broker>) -> Result<(), KernelError> {
+        let _ = self.broker.set(Arc::downgrade(broker));
         let peer = broker.register_peer(None);
         broker.grant(peer, FS_CONTRACT);
         broker.provide(peer, FS_CONTRACT, Arc::new(FsPeer(Arc::clone(self))))
     }
 
-    /// Every recorded write effect, in registration order: (id, scoped path).
+    /// The fiber attribution of one calling peer, through the broker.
+    fn attribution(&self, caller: PeerId) -> Option<FiberId> {
+        self.broker
+            .get()
+            .and_then(Weak::upgrade)
+            .and_then(|broker| broker.attribution(caller))
+    }
+
+    /// Every live (unconsumed) revertible effect, in id order: (id, scoped
+    /// path).
     #[must_use]
     pub fn effects(&self) -> Vec<(EffectId, String)> {
-        lock(&self.state)
-            .order
+        lock(&self.index)
             .iter()
-            .map(|(id, path)| (EffectId(*id), path.clone()))
+            .filter(|(_, retained)| !retained.consumed)
+            .map(|(id, retained)| (EffectId(*id), retained.label.clone()))
             .collect()
     }
 
-    /// The keyed-revert action for one write effect this provider owns
-    /// (Law 3): the witness reads the file back against the recorded prior;
-    /// the inverse restores the prior content or absence. The assembly
-    /// feeds both to the ledger's exactly-once revert protocol.
+    /// The in-memory index's footprint in bytes — labels and bookkeeping
+    /// only, whatever the prior contents weighed (finding 8 bound).
+    #[must_use]
+    pub fn index_bytes(&self) -> usize {
+        lock(&self.index)
+            .values()
+            .map(|retained| retained.label.len() + std::mem::size_of::<Retained>() + 8)
+            .sum()
+    }
+
+    /// How many inverses are spilled in the retention store right now.
+    #[must_use]
+    pub fn spilled(&self) -> usize {
+        self.store.spilled()
+    }
+
+    /// The keyed-revert action for one effect this provider owns (Law 3):
+    /// the witness reads the file back against the spilled prior; the
+    /// inverse restores prior content, absence, or length from the spill.
+    /// A consumed effect still answers — with an inverse that refuses to
+    /// run again (the ledger answers its replay from the record).
     #[must_use]
     pub fn undo_action(&self, effect: EffectId) -> Option<UndoAction> {
-        let UndoRecord { path, prior } = lock(&self.state).undos.get(&effect.0).cloned()?;
-        let (witness_path, witness_prior) = (path.clone(), prior.clone());
-        let witness: Witness = Arc::new(move || match &witness_prior {
-            Some(bytes) => std::fs::read(&witness_path)
-                .map(|current| current == *bytes)
-                .unwrap_or(false),
-            None => !witness_path.exists(),
+        let id = effect.0;
+        let consumed = lock(&self.index).get(&id)?.consumed;
+        if consumed {
+            let witness: Witness = Arc::new(|| false);
+            let inverse: Box<dyn FnOnce() -> KernelFuture<'static, ()> + Send> =
+                Box::new(move || {
+                    Box::pin(async move {
+                        Err(refusal(
+                            ErrorCode::EffectFailed,
+                            format!("effect {id}'s inverse was already consumed"),
+                        ))
+                    })
+                });
+            return Some((witness, inverse));
+        }
+        let (witness_root, witness_store) = (self.root.clone(), self.store.clone());
+        let witness: Witness = Arc::new(move || {
+            witness_store
+                .load_sync(id)
+                .is_some_and(|record| ops::witness(&witness_root, &record))
         });
-        let failed =
-            |refused: std::io::Error| refusal(ErrorCode::EffectFailed, refused.to_string());
+        let (root, store) = (self.root.clone(), self.store.clone());
         let inverse: Box<dyn FnOnce() -> KernelFuture<'static, ()> + Send> = Box::new(move || {
             Box::pin(async move {
-                match prior {
-                    Some(bytes) => tokio::fs::write(&path, bytes).await.map_err(failed),
-                    None => match tokio::fs::remove_file(&path).await {
-                        Ok(()) => Ok(()),
-                        Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                        Err(refused) => Err(failed(refused)),
-                    },
-                }
+                let record = store.load(id).await?;
+                ops::apply_inverse(&root, &record).await
             })
         });
         Some((witness, inverse))
     }
 
-    async fn read(&self, path: &str) -> Result<Vec<u8>, KernelError> {
-        let file = contained(&self.root, path)?;
-        tokio::fs::read(&file)
-            .await
-            .map_err(|refused| io_refusal("read", path, &refused))
+    /// Consumes one reverted effect's inverse: its spilled storage is
+    /// reclaimed and it leaves the live effect list. The assembly calls
+    /// this after the ledger records the branch `Reverted`.
+    ///
+    /// # Errors
+    ///
+    /// An effect this provider does not own, or a storage refusal.
+    pub async fn reclaim(&self, effect: EffectId) -> Result<(), KernelError> {
+        let id = effect.0;
+        if !lock(&self.index).contains_key(&id) {
+            return Err(refusal(
+                ErrorCode::EffectFailed,
+                format!("no revertible effect {id}"),
+            ));
+        }
+        self.store.reclaim(id).await?;
+        if let Some(retained) = lock(&self.index).get_mut(&id) {
+            retained.consumed = true;
+        }
+        Ok(())
     }
 
-    async fn write(&self, path: &str, data: Vec<u8>) -> Result<(), KernelError> {
-        let file = contained(&self.root, path)?;
-        let prior = tokio::fs::read(&file).await.ok();
-        if let Some(parent) = file.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|refused| io_refusal("write", path, &refused))?;
-        }
-        tokio::fs::write(&file, &data)
-            .await
-            .map_err(|refused| io_refusal("write", path, &refused))?;
-        // The inverse is registered at the point of action (Law 3, R5), and
-        // the registration is a ledger event (Law 2).
-        let id = FS_EFFECT_BASE + self.next.fetch_add(1, Ordering::SeqCst);
-        let label = path.trim_start_matches('/').to_owned();
-        {
-            let mut state = lock(&self.state);
-            state.undos.insert(id, UndoRecord { path: file, prior });
-            state.order.push((id, label.clone()));
-        }
-        self.sink.append(
-            LedgerEventKind::EffectRegistered {
-                label: format!("fs write {label} [effect {id}]"),
+    /// Registers one revertible effect: the inverse is made durable FIRST;
+    /// only then may the caller mutate. Returns the effect id to label.
+    async fn retain(&self, label: &str, prior: Prior) -> Result<u64, KernelError> {
+        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        let record = Record {
+            label: label.to_owned(),
+            prior,
+        };
+        self.store.persist(id, &record).await?;
+        lock(&self.index).insert(
+            id,
+            Retained {
+                label: label.to_owned(),
+                consumed: false,
             },
-            None,
         );
-        tracing::info!(effect = id, path = %label, "fs write effect registered");
-        Ok(())
+        Ok(id)
+    }
+
+    /// Drops a retained inverse whose mutation never happened (the io
+    /// refused after the spill): nothing to revert, nothing to keep.
+    async fn release(&self, id: u64) {
+        lock(&self.index).remove(&id);
+        let _ = self.store.reclaim(id).await;
     }
 }
 
@@ -211,78 +269,13 @@ struct FsPeer(Arc<HostFs>);
 impl Peer for FsPeer {
     fn call(
         &self,
-        _caller: PeerId,
+        caller: PeerId,
         _contract: &str,
         operation: &str,
         payload: Vec<u8>,
     ) -> KernelFuture<'static, Vec<u8>> {
         let provider = Arc::clone(&self.0);
         let operation = operation.to_owned();
-        Box::pin(async move {
-            match operation.as_str() {
-                "read" => {
-                    let path = String::from_utf8(payload).map_err(|_| {
-                        refusal(ErrorCode::PluginFailed, "malformed fs read payload".into())
-                    })?;
-                    provider.read(&path).await
-                }
-                "write" => {
-                    let (path, data) = split_write(&payload)?;
-                    provider.write(&path, data).await?;
-                    Ok(Vec::new())
-                }
-                other => Err(refusal(
-                    ErrorCode::PluginFailed,
-                    format!("unknown fs operation {other:?}"),
-                )),
-            }
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{contained, split_write};
-    use std::path::Path;
-
-    #[test]
-    fn contained_scopes_paths_under_the_root() {
-        let root = Path::new("/data");
-        assert_eq!(
-            contained(root, "journal.txt").unwrap_or_else(|error| panic!("scoped: {error:?}")),
-            Path::new("/data/journal.txt")
-        );
-        assert_eq!(
-            contained(root, "/nested/file").unwrap_or_else(|error| panic!("scoped: {error:?}")),
-            Path::new("/data/nested/file")
-        );
-    }
-
-    #[test]
-    fn contained_refuses_parent_traversal() {
-        let root = Path::new("/data");
-        assert!(contained(root, "../escape").is_err());
-        assert!(contained(root, "a/../../escape").is_err());
-    }
-
-    #[test]
-    fn split_write_decodes_the_wire() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&5u32.to_le_bytes());
-        payload.extend_from_slice(b"a.txt");
-        payload.extend_from_slice(b"body");
-        let (path, data) =
-            split_write(&payload).unwrap_or_else(|error| panic!("well-formed: {error:?}"));
-        assert_eq!(path, "a.txt");
-        assert_eq!(data, b"body".to_vec());
-    }
-
-    #[test]
-    fn split_write_refuses_truncation() {
-        assert!(split_write(&[1, 0]).is_err());
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&9u32.to_le_bytes());
-        payload.extend_from_slice(b"short");
-        assert!(split_write(&payload).is_err());
+        Box::pin(async move { ops::dispatch(&provider, caller, &operation, payload).await })
     }
 }

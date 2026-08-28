@@ -47,6 +47,7 @@ pub use grants::ScopeValue;
 pub use handle::{ActivationOutcome, AlarmRecord, InstanceHandle, ListenRecord, Registration};
 pub use host::{LoadedComponent, WasmHost};
 pub use hostclock::HostClock;
+pub use hostfs::wire::FileMeta;
 pub use hostfs::{FS_CONTRACT, HostFs, UndoAction};
 pub use instance::Seat;
 pub use lane::{Grant, LaneCore, SeatSpec, WasmBody, wasm_lane};

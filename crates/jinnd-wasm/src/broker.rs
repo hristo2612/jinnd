@@ -56,6 +56,14 @@ impl Broker {
         id
     }
 
+    /// The fiber `peer` is attributed to, for a native provider ledgering
+    /// an effect on a caller's behalf (R4: effects are charged to the
+    /// caller by construction).
+    #[must_use]
+    pub fn attribution(&self, peer: PeerId) -> Option<FiberId> {
+        self.lock().fiber_of(peer)
+    }
+
     /// Grants `peer` the named contract (constitution 01: grants arrive from
     /// the profile/policy side; requests are not grants).
     pub fn grant(&self, peer: PeerId, contract: &str) {

@@ -34,6 +34,14 @@ pub struct DaemonPaths {
     pub data: PathBuf,
 }
 
+impl DaemonPaths {
+    /// The `jinn:fs` inverse spill (M2-K3): beside the root, never inside.
+    #[must_use]
+    pub fn inverses(&self) -> PathBuf {
+        self.data.with_extension("inverses")
+    }
+}
+
 fn storage(refused: jinnd_ledger::LedgerError) -> KernelError {
     error(ErrorCode::EffectFailed, refused.to_string())
 }
@@ -72,7 +80,8 @@ impl Daemon {
         // same ordered ledger record lane (R6).
         let sink: Arc<dyn LedgerSink> = Arc::new(Sink(ledger.clone()));
         let lane = Arc::new(LaneCore::new(Arc::clone(&sink))?);
-        let hostfs = Arc::new(HostFs::new(paths.data.clone(), sink));
+        // Inverses spill OUTSIDE the guests' containment root (M2-K3).
+        let hostfs = Arc::new(HostFs::open(paths.data.clone(), paths.inverses(), sink)?);
         hostfs.register(&lane.broker)?;
         // The jinn:clock read provider (M2-K2): time enters through the
         // same choke point; alarm machinery lives in the lane's registry.
@@ -152,9 +161,10 @@ impl Daemon {
         Ok(report)
     }
 
-    /// Keyed exactly-once revert of one recorded fs write effect (Law 3):
-    /// the inverse restores the prior content or absence; the witness reads
-    /// the file back. Receipts land in the ledger either way.
+    /// Keyed exactly-once revert of one recorded fs effect (Law 3): the
+    /// inverse restores the prior content, absence, or length from the
+    /// retention store; the witness reads the file back. Receipts land in
+    /// the ledger either way.
     ///
     /// # Errors
     ///
@@ -174,7 +184,8 @@ impl Daemon {
                 format!("no revertible effect {}", effect.0),
             )
         })?;
-        self.revert
+        let resolution = self
+            .revert
             .revert(
                 effect,
                 RevertKey(key.to_owned()),
@@ -183,10 +194,18 @@ impl Daemon {
                 None,
                 None,
             )
-            .await
+            .await?;
+        // Consumption reclaims the spilled inverse (M2-K3 retention): only
+        // once the ledger holds the branch `Reverted`, so a crash between
+        // completion and reclaim resumes from the record, never re-runs.
+        if resolution == RevertResolution::Reverted {
+            self.hostfs.reclaim(effect).await?;
+        }
+        Ok(resolution)
     }
 
-    /// Every recorded fs write effect, in registration order.
+    /// Every live (unconsumed) fs effect — write, append, remove — in id
+    /// order.
     #[must_use]
     pub fn fs_effects(&self) -> Vec<(EffectId, String)> {
         self.hostfs.effects()
