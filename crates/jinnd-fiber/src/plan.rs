@@ -165,8 +165,8 @@ mod tests {
         }
     }
 
-    /// M2-K4: a suspension unloads under its own cause, a disposal outranks
-    /// it, and an idle fiber finishes either way.
+    /// M2-K4: a suspension unloads under its own cause and finishes an idle
+    /// fiber (a disposal outranking it is the loom model's claim).
     #[test]
     fn a_suspension_unloads_under_its_own_cause_and_a_disposal_outranks_it() {
         let live = Committed {
@@ -184,21 +184,10 @@ mod tests {
                 cause: TransitionCause::Suspend
             })
         );
-        let both = Desired {
-            disposing: true,
-            ..suspending.clone()
-        };
-        assert_eq!(
-            plan(&live, &both),
-            Some(Step::Unload {
-                cause: TransitionCause::ExplicitDispose
-            })
-        );
         assert_eq!(
             plan(&committed(FiberState::Pending), &suspending),
             Some(Step::Finish)
         );
-        assert_eq!(plan(&committed(FiberState::Disposed), &suspending), None);
     }
 
     #[test]

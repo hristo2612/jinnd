@@ -278,12 +278,8 @@ mod tests {
             record = parent;
         }
 
-        let scope = EffectScope {
-            roots: vec![record],
-            withdrawn: Vec::new(),
-            replayed: false,
-        };
-
+        let mut scope = EffectScope::new();
+        scope.roots.push(record);
         drop(scope);
     }
 
