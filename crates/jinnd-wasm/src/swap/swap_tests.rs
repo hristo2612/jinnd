@@ -80,7 +80,7 @@ impl SwapSlots for MockSlots {
         Some(prepared)
     }
 
-    fn retire_displaced(&self, _: usize) -> KernelFuture<'_, ()> {
+    fn retire_displaced(&self, _: &EntryId, _: usize) -> KernelFuture<'_, ()> {
         self.retired.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(()) })
     }

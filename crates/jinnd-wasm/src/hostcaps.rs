@@ -76,6 +76,9 @@ async fn fs_effect(
     key: &str,
     data: &[u8],
 ) -> Result<(), bindings::fs::FsError> {
+    state
+        .admit(&format!("fs {operation}"))
+        .map_err(bindings::fs_error)?;
     let payload = prefixed(&[path.as_bytes(), key.as_bytes()], data);
     let answer = state
         .seat
@@ -190,6 +193,7 @@ fn alarm(
     spec: AlarmSpec,
     token: u64,
 ) -> Result<u64, bindings::types::KernelError> {
+    state.admit("alarm").map_err(bindings::wire_error)?;
     state
         .seat
         .broker

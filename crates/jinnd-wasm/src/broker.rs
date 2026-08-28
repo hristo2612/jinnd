@@ -50,10 +50,36 @@ impl Broker {
             id,
             PeerRecord {
                 fiber,
+                entry: None,
                 grants: std::collections::HashMap::new(),
             },
         );
         id
+    }
+
+    /// Names the profile entry `peer` acts for (M2-K4): host providers
+    /// retain inverses under the entry, whose contribution outlives any one
+    /// fiber incarnation.
+    pub fn attribute_entry(&self, peer: PeerId, entry: &str) {
+        if let Some(record) = self.lock().peers.get_mut(&peer) {
+            record.entry = Some(entry.to_owned());
+        }
+    }
+
+    /// The profile entry `peer` acts for, if named.
+    #[must_use]
+    pub fn entry_of(&self, peer: PeerId) -> Option<String> {
+        self.lock()
+            .peers
+            .get(&peer)
+            .and_then(|record| record.entry.clone())
+    }
+
+    /// The one ledger sink every crossing lands on (R6), for a surface that
+    /// must record a refusal with the caller's attribution.
+    #[must_use]
+    pub fn ledger(&self) -> &Arc<dyn LedgerSink> {
+        &self.ledger
     }
 
     /// The fiber `peer` is attributed to, for a native provider ledgering

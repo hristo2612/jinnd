@@ -153,6 +153,12 @@ pub(crate) enum Command {
         blob: Vec<u8>,
         reply: oneshot::Sender<Result<(), KernelError>>,
     },
+    /// Seals the instance (M2-K4): answered once every guest entry already
+    /// in flight has returned; afterwards no activation, call, or delivery
+    /// runs the guest — only inverses and disposal.
+    Seal {
+        reply: oneshot::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -258,6 +264,16 @@ impl InstanceHandle {
     pub async fn restore(&self, blob: Vec<u8>) -> Result<(), KernelError> {
         let (reply, rx) = oneshot::channel();
         self.send(Command::Restore { blob, reply }, rx).await?
+    }
+
+    /// Seals the instance ahead of its retirement or suspension (M2-K4,
+    /// FINDINGS #15): resolves once every guest entry in flight has
+    /// returned and committed its late registrations, after which the
+    /// instance refuses new entries — the journal that teardown replays is
+    /// then exactly the instance's contribution, never a prefix (I1).
+    pub async fn seal(&self) {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.send(Command::Seal { reply }, rx).await;
     }
 
     /// Disposes the instance: its store drops inside the supervisor, so its

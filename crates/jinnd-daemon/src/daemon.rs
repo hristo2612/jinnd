@@ -86,6 +86,13 @@ impl Daemon {
         // The jinn:clock read provider (M2-K2): time enters through the
         // same choke point; alarm machinery lives in the lane's registry.
         HostClock::register(&lane.broker)?;
+        // Every entry's retained journal crosses the process boundary
+        // through the retention store (M2-K4 ruling 3): the lane inherits
+        // it here, so a successor incarnation's dispose withdraws the
+        // whole trail and a removal-while-down withdraws at boot.
+        for (entry, records) in hostfs.journals() {
+            lane.inherit(&EntryId(entry), records);
+        }
         let tree = ContextTree::new();
         let root = tree.root();
         let registry = Registry::new();
@@ -117,7 +124,27 @@ impl Daemon {
         let document = store.load().await?.unwrap_or_default();
         self.loader
             .attach_store::<serde_json::Value>(self.paths.profile.clone(), document.clone());
-        self.apply(document).await
+        let report = self.apply(document).await?;
+        self.withdraw_orphaned_journals().await;
+        Ok(report)
+    }
+
+    /// An entry that left the profile while the daemon was down left the
+    /// composition (M2-K4; I4): its retained journal withdraws at boot,
+    /// LIFO, every withdrawal ledgered under the entry — a fresh boot of
+    /// the final configuration shows no trace of it. Entries still named
+    /// (faulted or not) keep theirs.
+    async fn withdraw_orphaned_journals(&self) {
+        let named: Vec<String> = self.entries();
+        for entry in self.lane.journaled_entries() {
+            if named.contains(&entry.0) {
+                continue;
+            }
+            if let Err(error) = self.lane.withdraw_journal(&entry, None).await {
+                self.ledger
+                    .record(LedgerEventKind::ErrorRecorded { error }, Some(entry), None);
+            }
+        }
     }
 
     /// Re-reads the profile file and reconciles by id — the file watcher's
@@ -267,10 +294,14 @@ impl Daemon {
         }
     }
 
-    /// Graceful shutdown (M1-P9 card): dispose every fiber (each seat's
-    /// withdrawal is ledgered), reach quiescence, then flush the ledger —
-    /// the barrier is a read through the single writer, so every event sent
-    /// before it is durably committed when this returns `Ok`.
+    /// Graceful shutdown (M1-P9 card; M2-K4 ruling 2: shutdown = SUSPEND):
+    /// suspend every fiber — kernel registrations release, world mutations
+    /// stay on disk for the entries that persist in the profile, each
+    /// suspension a typed ledger event — reach quiescence, then flush the
+    /// ledger: the barrier is a read through the single writer, so every
+    /// event sent before it is durably committed when this returns `Ok`.
+    /// Crash and clean shutdown agree on the disk outcome; only the clean
+    /// path reaches quiescence and flushes.
     ///
     /// # Errors
     ///
@@ -283,7 +314,7 @@ impl Daemon {
             .map(|tracked| Arc::clone(&tracked.fiber))
             .collect();
         for fiber in &handles {
-            fiber.dispose().await;
+            fiber.suspend().await;
         }
         self.loader.quiesce().await;
         self.sync_transitions();

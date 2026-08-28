@@ -19,16 +19,17 @@ use jinnd_api::{EntryId, FiberId, KernelError, KernelFuture, LedgerEventKind};
 use jinnd_context::Context;
 use jinnd_effects::Disposer;
 use jinnd_fiber::{Fiber, FiberBody, Setup, WatchReadiness};
-use jinnd_loader::host::{LaneHandle, Rebind, config_of};
+use jinnd_loader::host::{Rebind, config_of};
 use jinnd_loader::{PackageLane, SpawnRequest};
 
 use crate::alarms::{Alarms, clock_floor};
 use crate::broker::Broker;
 use crate::broker_state::refusal;
+use crate::entry::WasmHandle;
 use crate::grants::ScopeValue;
 use crate::grants::admission;
 pub use crate::grants::{Grant, SeatSpec};
-use crate::handle::Registration;
+use crate::handle::{HostRecord, Registration};
 use crate::host::{LoadedComponent, WasmHost};
 use crate::instance::Seat;
 use crate::peer::{LedgerSink, PeerId};
@@ -74,6 +75,11 @@ pub struct LaneCore {
     pub(crate) roster: Mutex<HashMap<EntryId, Roster>>,
     pub swap: SwapCore,
     next_slot: AtomicU64,
+    /// Per profile entry, the world effects retained across incarnations
+    /// (M2-K4): what suspended seats handed back, in registration order,
+    /// for the entry's true dispose to withdraw LIFO after the live seat's
+    /// own trail — the journal belongs to the ENTRY, never to a fiber.
+    journals: Mutex<HashMap<EntryId, Vec<HostRecord>>>,
 }
 
 impl LaneCore {
@@ -95,7 +101,80 @@ impl LaneCore {
             roster: Mutex::new(HashMap::new()),
             swap: SwapCore::default(),
             next_slot: AtomicU64::new(0),
+            journals: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Hands `entry` retained world effects (M2-K4): a suspended seat's,
+    /// or a prior process's, rehydrated from the provider's retention store
+    /// by the assembly at open. Appended after what the entry already holds.
+    pub fn inherit(&self, entry: &EntryId, records: Vec<HostRecord>) {
+        let mut journals = lock(&self.journals);
+        let journal = journals.entry(entry.clone()).or_default();
+        // A keyed replay answers the recorded effect (03 §Act): the seat
+        // journals the same id again, and the entry's journal keeps ONE —
+        // the trail is the contribution, never a contribution twice.
+        for record in records {
+            if !journal.iter().any(|held| held.effect == record.effect) {
+                journal.push(record);
+            }
+        }
+    }
+
+    /// Forgets effects the live seat's own trail just withdrew: a keyed
+    /// replay's id may sit in both, and it withdraws exactly once.
+    fn release(&self, entry: &EntryId, withdrawn: &[u64]) {
+        if let Some(journal) = lock(&self.journals).get_mut(entry) {
+            journal.retain(|record| !withdrawn.contains(&record.effect));
+        }
+    }
+
+    /// The entries holding a retained journal right now.
+    #[must_use]
+    pub fn journaled_entries(&self) -> Vec<EntryId> {
+        let mut entries: Vec<EntryId> = lock(&self.journals)
+            .iter()
+            .filter(|(_, records)| !records.is_empty())
+            .map(|(entry, _)| entry.clone())
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+
+    /// Withdraws `entry`'s retained journal LIFO through each effect's
+    /// current provider (M2-K4; R5, I1) — the entry left the composition,
+    /// so its whole contribution goes, every withdrawal ledgered under the
+    /// entry's (and, when known, the fiber's) attribution. The first
+    /// failing inverse is reported after the rest still ran (R9, R11).
+    ///
+    /// # Errors
+    ///
+    /// The first failing inverse.
+    pub async fn withdraw_journal(
+        &self,
+        entry: &EntryId,
+        fiber: Option<FiberId>,
+    ) -> Result<(), KernelError> {
+        let retained = lock(&self.journals).remove(entry).unwrap_or_default();
+        let mut first = None;
+        for record in retained.iter().rev() {
+            let outcome = self
+                .broker
+                .withdraw_effect(&record.contract, record.effect)
+                .await;
+            self.sink.append_for(
+                LedgerEventKind::EffectWithdrawn {
+                    label: record.label.clone(),
+                    clean: outcome.is_ok(),
+                },
+                Some(entry.clone()),
+                fiber,
+            );
+            if let Err(error) = outcome {
+                first.get_or_insert(error);
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
 }
 
@@ -144,6 +223,9 @@ impl FiberBody for WasmBody {
             let fiber = setup.fiber();
             let core = Arc::clone(&self.core);
             let peer = core.broker.register_peer(Some(fiber));
+            // Host providers retain this seat's inverses under the ENTRY
+            // (M2-K4): the journal spans incarnations and processes.
+            core.broker.attribute_entry(peer, &self.entry.0);
             // Fail-closed scope admission (round-3 ruling; Law 1, 01
             // §Grants): only admitted grants become broker authority; every
             // refusal — an invalid scope, or an entry unreadable as a grant
@@ -180,6 +262,9 @@ impl FiberBody for WasmBody {
             // ADMITTED grants only.
             let clock_floor_ms = clock_floor(&admitted);
             let slot_id = core.next_slot.fetch_add(1, Ordering::SeqCst) + 1;
+            // A fresh incarnation opens a fresh journal: the previous
+            // seat's seal landed before this activation was planned.
+            self.slot.unseal();
             let component = lock(&self.component).clone();
             let handle = core.host.instantiate(
                 &component,
@@ -212,31 +297,60 @@ impl FiberBody for WasmBody {
             );
             // ONE effect owns the whole guest contribution: tombstone the
             // swap slot FIRST (loom-modeled arbitration — a racing claim
-            // refuses and discards), then retire the live seat exactly
-            // (I1, R5).
+            // refuses and discards), SEAL the journal (M2-K4, FINDINGS
+            // #15: the slot flag, then the instance — a guest entry still
+            // in flight sees its next registration refused and finishes
+            // before the seat is taken), then retire the live seat exactly
+            // (I1, R5) — or, on suspension, release its kernel
+            // registrations and hand its world effects to the entry's
+            // journal (decision log 2026-08-28).
             let trail = self.guest_trail;
-            let (slot, entry, owner) = (
-                Arc::clone(&self.slot),
-                self.entry.clone(),
-                Arc::clone(&core),
-            );
-            setup.effect(
+            let closing = SeatClosing {
+                slot: Arc::clone(&self.slot),
+                entry: self.entry.clone(),
+                owner: Arc::clone(&core),
+                slot_id,
+                peer,
+            };
+            let suspending = closing.clone();
+            setup.suspendable_effect(
                 "wasm guest seat",
                 Disposer::future(move || async move {
-                    owner.swap.dispose(slot_id);
-                    // With the trail on, the seat retires ledgered: every
-                    // effect and listener withdrawal is a ledger event.
-                    let ledger = trail.then_some((owner.sink.as_ref(), fiber));
-                    let retired = match slot.take() {
+                    let retired = match closing.close().await {
                         Some(seat) => {
-                            seat.retire(&owner.broker, &owner.topics, &owner.alarms, peer, ledger)
-                                .await
+                            let ledger = trail.then_some((closing.owner.sink.as_ref(), fiber));
+                            let owner = &closing.owner;
+                            let held = seat.host_effects();
+                            let retired = seat
+                                .retire(&owner.broker, &owner.topics, &owner.alarms, peer, ledger)
+                                .await;
+                            owner.release(&closing.entry, &held);
+                            retired
                         }
                         None => Ok(()),
                     };
-                    owner.broker.remove_peer(peer);
-                    lock(&owner.roster).remove(&entry);
+                    closing.forget();
                     retired
+                }),
+                Disposer::future(move || async move {
+                    let closing = suspending;
+                    if let Some(seat) = closing.close().await {
+                        let ledger = trail.then_some((closing.owner.sink.as_ref(), fiber));
+                        let owner = &closing.owner;
+                        let retained = seat
+                            .suspend(&owner.broker, &owner.topics, &owner.alarms, peer, ledger)
+                            .await;
+                        let count = retained.len() as u64;
+                        owner.inherit(&closing.entry, retained);
+                        if trail {
+                            owner.sink.append(
+                                LedgerEventKind::FiberSuspended { retained: count },
+                                Some(fiber),
+                            );
+                        }
+                    }
+                    closing.forget();
+                    Ok(())
                 }),
             )?;
             // The body runs once per fiber; its contribution commits into
@@ -266,6 +380,36 @@ impl FiberBody for WasmBody {
             }
             outcome
         })
+    }
+}
+
+/// One seat's closing sequence (M2-K4), shared by its two inverses.
+#[derive(Clone)]
+struct SeatClosing {
+    slot: Arc<SharedSlot>,
+    entry: EntryId,
+    owner: Arc<LaneCore>,
+    slot_id: u64,
+    peer: PeerId,
+}
+
+impl SeatClosing {
+    /// Tombstones the swap slot, seals the journal, drains the instance's
+    /// in-flight guest entry, and takes the seat — or `None` when no seat
+    /// was ever installed.
+    async fn close(&self) -> Option<SeatState> {
+        self.owner.swap.dispose(self.slot_id);
+        self.slot.seal();
+        if let Some(instance) = self.slot.current() {
+            instance.seal().await;
+        }
+        self.slot.take()
+    }
+
+    /// The seat is gone: the peer and the roster row go with it.
+    fn forget(&self) {
+        self.owner.broker.remove_peer(self.peer);
+        lock(&self.owner.roster).remove(&self.entry);
     }
 }
 
@@ -306,7 +450,13 @@ where
                 body.restate_seat(decode(&config));
                 Ok(())
             };
-            Ok(Arc::new(LaneHandle::new(fiber, body, restate)))
+            Ok(Arc::new(WasmHandle::new(
+                fiber,
+                body,
+                Arc::clone(&core),
+                request.entry.clone(),
+                restate,
+            )))
         }),
     }
 }

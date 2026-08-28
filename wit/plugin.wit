@@ -282,6 +282,19 @@ interface lifecycle {
   /// The plugin body: runs exactly once per fiber, receiving the entry's
   /// serialized config (constitution 04). Effects registered here are the
   /// fiber's contribution; they are withdrawn LIFO on teardown (I1).
+  ///
+  /// Suspend ≠ dispose (M2-K4, decision log 2026-08-28): a contribution
+  /// belongs to the profile ENTRY. Only the entry's removal from the
+  /// composition withdraws it. A kernel shutdown, or an incarnation
+  /// replacement (config edit, dependency change, hot-swap), SUSPENDS the
+  /// instance instead: kernel registrations — provisions, listeners,
+  /// alarms — release and are re-established by the next `activate`;
+  /// host-provider effects (`jinn:fs` writes) are retained for the entry
+  /// and its next incarnation inherits them, revertible by key, withdrawn
+  /// LIFO at the entry's eventual dispose. A guest-side inverse (`undo`)
+  /// is instance-bound: it runs on withdrawal, never on suspension.
+  /// Once the instance's journal seals for withdrawal or suspension, every
+  /// further registration is refused (`inactive-context`, ledgered).
   activate: func(config: list<u8>) -> result<_, guest-fault>;
 
   /// Per-consumer vitality check (decision log 2026-08-25, C3 binding): the

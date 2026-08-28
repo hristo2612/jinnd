@@ -130,9 +130,34 @@ async fn serve(
     rx: &mut mpsc::Receiver<Command>,
 ) {
     let guest = plugin.jinn_plugin_lifecycle();
+    let mut sealed = false;
     while let Some(command) = rx.recv().await {
+        // A sealed instance runs no guest entry (M2-K4): the seat's journal
+        // is closed, so nothing may register into it or escape it.
+        match &command {
+            Command::Activate { reply, .. } if sealed => {
+                if let Command::Activate { reply, .. } = command {
+                    let _ = reply.send((Err(sealed_error()), ActivationOutcome::default()));
+                }
+                continue;
+            }
+            Command::HandleCall { .. } | Command::Deliver { .. } if sealed => {
+                match command {
+                    Command::HandleCall { reply, .. } | Command::Deliver { reply, .. } => {
+                        let _ = reply.send(Err(sealed_error()));
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            _ => {}
+        }
         match command {
             Command::Shutdown => return,
+            Command::Seal { reply } => {
+                sealed = true;
+                let _ = reply.send(());
+            }
             Command::Activate { config, reply } => {
                 let settled = settle(deadline, guest.call_activate(&mut *store, &config)).await;
                 let outcome = std::mem::take(&mut store.data_mut().outcome);
@@ -231,6 +256,16 @@ async fn serve(
     }
 }
 
+/// The refusal a sealed seat answers (M2-K4): typed as the inactive
+/// context it is — the instance's journal is closed for withdrawal.
+pub(crate) fn sealed_error() -> KernelError {
+    KernelError {
+        code: jinnd_api::ErrorCode::InactiveContext,
+        message: "refused: the seat's journal is sealed for withdrawal".to_owned(),
+        fiber: None,
+    }
+}
+
 /// Commits registrations a guest made outside its activation (from a
 /// `handle-event` or `handle-call`) into the live seat's journal (M2-K3
 /// round 2; R5, I1): an effect registered late is withdrawn LIFO with the
@@ -257,6 +292,7 @@ async fn refuse_all(rx: &mut mpsc::Receiver<Command>, error: KernelError) {
     while let Some(command) = rx.recv().await {
         match command {
             Command::Shutdown => return,
+            Command::Seal { reply } => drop(reply.send(())),
             Command::Activate { reply, .. } => {
                 let _ = reply.send((Err(error.clone()), ActivationOutcome::default()));
             }

@@ -39,6 +39,11 @@ pub(crate) struct Header {
     pub(crate) label: String,
     pub(crate) key: String,
     pub(crate) owner: u64,
+    /// The profile entry the effect belongs to (M2-K4: the journal is
+    /// entry-scoped and spans incarnations; empty = unattributed) and the
+    /// operation, so the Law-2 label reconstructs across a restart.
+    pub(crate) entry: String,
+    pub(crate) operation: String,
 }
 
 /// One spilled inverse: its header and what to restore.
@@ -51,6 +56,9 @@ pub(crate) struct Record {
 const TAG_ABSENT: u8 = 0;
 const TAG_CONTENT: u8 = 1;
 const TAG_LENGTH: u8 = 2;
+/// Tag flag (M2-K4, additive): the header carries entry and operation after
+/// the owner. Records without it (M2-K3) still decode, unattributed.
+const TAG_ENTRY: u8 = 0x80;
 
 fn corrupt(id: u64, detail: &str) -> KernelError {
     refusal(
@@ -80,10 +88,12 @@ impl Header {
     /// Wire: one tag byte, then u32-LE-prefixed label and key, then the
     /// u64-LE owner. The tag names the body that follows.
     fn encode(&self, tag: u8) -> Vec<u8> {
-        let mut bytes = vec![tag];
+        let mut bytes = vec![tag | TAG_ENTRY];
         push_prefixed(&mut bytes, self.label.as_bytes());
         push_prefixed(&mut bytes, self.key.as_bytes());
         bytes.extend(self.owner.to_le_bytes());
+        push_prefixed(&mut bytes, self.entry.as_bytes());
+        push_prefixed(&mut bytes, self.operation.as_bytes());
         bytes
     }
 
@@ -91,17 +101,25 @@ impl Header {
         let (&tag, rest) = bytes.split_first().ok_or_else(|| corrupt(id, "empty"))?;
         let (label, rest) = take_prefixed(rest).ok_or_else(|| corrupt(id, "label"))?;
         let (key, rest) = take_prefixed(rest).ok_or_else(|| corrupt(id, "key"))?;
-        let (owner, body) = rest
+        let (owner, mut body) = rest
             .split_at_checked(8)
             .ok_or_else(|| corrupt(id, "owner"))?;
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(owner);
+        let (mut entry, mut operation) = (String::new(), String::new());
+        if tag & TAG_ENTRY != 0 {
+            let (read_entry, rest) = take_prefixed(body).ok_or_else(|| corrupt(id, "entry"))?;
+            let (read_op, rest) = take_prefixed(rest).ok_or_else(|| corrupt(id, "operation"))?;
+            (entry, operation, body) = (read_entry, read_op, rest);
+        }
         let header = Self {
             label,
             key,
             owner: u64::from_le_bytes(bytes),
+            entry,
+            operation,
         };
-        Ok((tag, header, body))
+        Ok((tag & !TAG_ENTRY, header, body))
     }
 }
 

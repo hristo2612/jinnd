@@ -11,6 +11,9 @@ use crate::peer::{HandleId, Peer, PeerId};
 
 pub(crate) struct PeerRecord {
     pub(crate) fiber: Option<FiberId>,
+    /// The profile entry the peer acts for (M2-K4): a host provider keys
+    /// the retained inverse to the ENTRY, whose journal outlives fibers.
+    pub(crate) entry: Option<String>,
     /// Per granted contract, the path-prefix scopes the grant carries; an
     /// empty list is the root scope (a bare grant, or one that widened a
     /// scoped grant — root is the explicit maximum, never a default).

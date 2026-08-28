@@ -179,11 +179,21 @@ impl SwapSlots for LaneSlots {
         )
     }
 
-    fn retire_displaced(&self, displaced: SeatState) -> KernelFuture<'_, ()> {
+    fn retire_displaced(&self, entry: &EntryId, displaced: SeatState) -> KernelFuture<'_, ()> {
+        let entry = entry.clone();
         Box::pin(async move {
-            // Dispose-only: the handoff transferred its contribution to the
-            // committed successor, whose own activation registered its own
-            // inverses (warm until commit, R8).
+            // Dispose-only for kernel registrations: the handoff transferred
+            // them to the committed successor, whose own activation
+            // registered its own (warm until commit, R8). The displaced
+            // seat's WORLD effects stay the entry's (M2-K4): they join the
+            // entry's journal for its eventual dispose.
+            let mut retained = Vec::new();
+            for registration in &displaced.registrations {
+                if let Registration::Host(record) = registration {
+                    retained.push(record.clone());
+                }
+            }
+            self.core.inherit(&entry, retained);
             displaced.instance.dispose().await;
             Ok(())
         })

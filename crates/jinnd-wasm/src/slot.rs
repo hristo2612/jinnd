@@ -9,13 +9,14 @@
 //! staged activation's outcome is committed, exactly as an initial
 //! activation's is; nothing is ever retargeted through a mutable cell.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
 use crate::alarms::{Alarms, ArmRequest};
 use crate::broker::Broker;
-use crate::handle::{ActivationOutcome, InstanceHandle, Registration, peer_face};
+use crate::handle::{ActivationOutcome, HostRecord, InstanceHandle, Registration, peer_face};
 use crate::peer::{LedgerSink, Peer, PeerId};
 use crate::topics::{EventTarget, LocalTopics, Rebind};
 
@@ -38,6 +39,18 @@ impl SeatState {
             instance,
             registrations: outcome.registrations,
         }
+    }
+
+    /// The host-provider effect ids this seat holds (M2-K4), in order.
+    #[must_use]
+    pub fn host_effects(&self) -> Vec<u64> {
+        self.registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Host(record) => Some(record.effect),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The seat's provided contracts, minted listener ids, and armed alarm
@@ -79,6 +92,7 @@ impl SeatState {
         ledger: Option<(&dyn LedgerSink, FiberId)>,
     ) -> Result<(), KernelError> {
         let mut first = None;
+        let mut withdrawn_hosts = Vec::new();
         for registration in self.registrations.iter().rev() {
             match registration {
                 Registration::Effect { label, token } => {
@@ -128,6 +142,12 @@ impl SeatState {
                 // current provider (M2-K3; R5): inverse from the spill,
                 // storage reclaimed, ledgered under its own label.
                 Registration::Host(record) => {
+                    // A keyed replay journaled the same id twice (03 §Act):
+                    // it withdraws exactly once.
+                    if withdrawn_hosts.contains(&record.effect) {
+                        continue;
+                    }
+                    withdrawn_hosts.push(record.effect);
                     let outcome = broker
                         .withdraw_effect(&record.contract, record.effect)
                         .await;
@@ -155,12 +175,78 @@ impl SeatState {
             Some(error) => Err(error),
         }
     }
+
+    /// Suspends exactly this seat (M2-K4; decision log 2026-08-28): ONE
+    /// LIFO pass over the same journal that RELEASES kernel registrations
+    /// — listeners unlisten, alarms cancel, provisions withdraw, each
+    /// ledgered as it runs — and RETAINS world mutations: the host-provider
+    /// effects are handed back, in registration order, for the entry's live
+    /// journal. Guest-owned inverses are instance-bound by nature (their
+    /// undo lives in the store that disposes here) and run no more than the
+    /// process's crash would have run them; the seat's suspension is the
+    /// ledgered fact. The instance disposes last.
+    pub async fn suspend(
+        self,
+        broker: &Broker,
+        topics: &LocalTopics,
+        alarms: &Alarms,
+        peer: PeerId,
+        ledger: Option<(&dyn LedgerSink, FiberId)>,
+    ) -> Vec<HostRecord> {
+        // The world effects, in registration order, once each (a keyed
+        // replay journaled its id again).
+        let mut retained: Vec<HostRecord> = Vec::new();
+        for registration in &self.registrations {
+            if let Registration::Host(record) = registration
+                && !retained.iter().any(|held| held.effect == record.effect)
+            {
+                retained.push(record.clone());
+            }
+        }
+        for registration in self.registrations.iter().rev() {
+            match registration {
+                Registration::Effect { .. } | Registration::Host(_) => {}
+                Registration::Listen(record) => {
+                    let topic = record.id.and_then(|id| topics.unlisten(id));
+                    if let (Some((sink, fiber)), Some(topic)) = (ledger, topic) {
+                        sink.append(
+                            LedgerEventKind::EffectWithdrawn {
+                                label: format!("listen {topic}"),
+                                clean: true,
+                            },
+                            Some(fiber),
+                        );
+                    }
+                }
+                Registration::Alarm(record) => {
+                    let cancelled = record.id.is_some_and(|id| alarms.cancel(id));
+                    if let Some((sink, fiber)) = ledger
+                        && cancelled
+                    {
+                        sink.append(
+                            LedgerEventKind::EffectWithdrawn {
+                                label: record.label.clone(),
+                                clean: true,
+                            },
+                            Some(fiber),
+                        );
+                    }
+                }
+                Registration::Provision { contract } => broker.withdraw(peer, contract),
+            }
+        }
+        self.instance.dispose().await;
+        retained
+    }
 }
 
 /// The live seat behind one fiber, swappable whole.
 #[derive(Default)]
 pub struct SharedSlot {
     current: Mutex<Option<SeatState>>,
+    /// Raised once the seat's journal closes for withdrawal or suspension
+    /// (M2-K4): every later registration attempt refuses on the record.
+    sealed: AtomicBool,
 }
 
 fn empty() -> KernelError {
@@ -187,6 +273,26 @@ impl SharedSlot {
     /// Empties the slot (teardown), returning the seat to retire.
     pub fn take(&self) -> Option<SeatState> {
         self.lock().take()
+    }
+
+    /// Closes the journal (M2-K4, FINDINGS #15): stored `SeqCst` BEFORE the
+    /// instance is asked to seal, so any guest entry still in flight sees
+    /// its next registration refused, and the entries that follow never
+    /// run.
+    pub fn seal(&self) {
+        self.sealed.store(true, Ordering::SeqCst);
+    }
+
+    /// True once the journal closed.
+    pub fn sealed(&self) -> bool {
+        self.sealed.load(Ordering::SeqCst)
+    }
+
+    /// Opens the journal for a fresh incarnation (M2-K4): a restart reuses
+    /// the fiber's slot, and its closing sequence has already landed on the
+    /// fiber's own task before the next activation begins (single-flight).
+    pub fn unseal(&self) {
+        self.sealed.store(false, Ordering::SeqCst);
     }
 
     /// Appends registrations made AFTER activation (a wake or call
