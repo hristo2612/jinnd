@@ -12,7 +12,7 @@ use super::child::RUN_CAP;
 use super::collector::RUN_OUTPUT_CAP;
 use super::tests::{Rig, rig};
 use crate::hostcaps::PROCESS_CONTRACT;
-use crate::hostwire::put_segment;
+use crate::hostwire::{TAG_TRUNCATED, put_segment};
 
 fn run_wire(command: &str, args: &[&str]) -> Vec<u8> {
     let mut wire = Vec::new();
@@ -88,23 +88,17 @@ fn pid_in(path: &std::path::Path) -> i32 {
 }
 
 /// Output past the declared cap is a TYPED truncation, never silent
-/// growth (R9): the read end is cut, the child killed and reaped, and the
-/// ledger reads truncated → killed → exited, all inside the bound.
+/// growth (R9): the answer is the truncation TAG on the broker wire (round
+/// 4: what the guest matches as `output-truncated`, never a message), the
+/// read end is cut, the child killed and reaped, and the ledger reads
+/// truncated → killed → exited, all inside the bound.
 #[tokio::test]
 async fn output_past_the_cap_is_a_typed_truncation_cut_killed_and_reaped() {
     let rig = rig();
     let started = Instant::now();
-    let error = run(&rig, "/usr/bin/yes", &[])
-        .await
-        .err()
-        .unwrap_or_else(|| panic!("a runaway writer never answers success"));
+    let answer = run(&rig, "/usr/bin/yes", &[]).await;
     assert!(started.elapsed() < ANSWER_WITHIN, "{:?}", started.elapsed());
-    assert_eq!(error.code, ErrorCode::PluginFailed);
-    assert!(
-        error.message.starts_with("output-truncated"),
-        "typed by its class: {}",
-        error.message
-    );
+    assert_eq!(answer, Ok(vec![TAG_TRUNCATED]), "typed by its tag");
     let kinds = rig.ledger.kinds();
     let truncated = position(&kinds, |kind| {
         matches!(kind, LedgerEventKind::ProcessOutputTruncated { cap, .. } if *cap == RUN_OUTPUT_CAP as u64)
@@ -142,16 +136,19 @@ async fn a_writing_descendant_is_cut_off_at_the_bound_and_dies_of_epipe() {
         pid_file.display()
     );
     let started = Instant::now();
-    let error = run(&rig, "/bin/sh", &["-c", &script])
-        .await
-        .err()
-        .unwrap_or_else(|| panic!("a held-open, written pipe never answers success"));
+    let answer = run(&rig, "/bin/sh", &["-c", &script]).await;
     assert!(
         started.elapsed() < RUN_CAP + Duration::from_secs(2),
         "{:?}",
         started.elapsed()
     );
-    assert_eq!(error.code, ErrorCode::PluginFailed);
+    // Whichever bound the writer hits first — the output cap (the typed
+    // truncation tag) or the time cap (the typed failure) — it is never
+    // a prefix passed off as the output.
+    match &answer {
+        Ok(wire) => assert_eq!(wire, &vec![TAG_TRUNCATED], "a held-open, written pipe never answers success"),
+        Err(error) => assert_eq!(error.code, ErrorCode::PluginFailed),
+    }
     let pid = pid_in(&pid_file);
     let deadline = Instant::now() + Duration::from_secs(3);
     while alive(pid) {

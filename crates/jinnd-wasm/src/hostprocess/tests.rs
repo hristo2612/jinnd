@@ -324,7 +324,11 @@ async fn run_answers_stdout_and_a_runaway_is_killed_and_reaped_on_the_record() {
     let mut wire = Vec::new();
     put_segment(&mut wire, b"/bin/echo");
     put_segment(&mut wire, b"hi");
-    assert_eq!(rig.call(rig.guest, "run", wire).await, Ok(b"hi\n".to_vec()));
+    assert_eq!(
+        rig.call(rig.guest, "run", wire).await,
+        Ok(b"\0hi\n".to_vec()),
+        "a tagged answer: data then the bytes"
+    );
     let mut wire = Vec::new();
     put_segment(&mut wire, b"/bin/sleep");
     put_segment(&mut wire, b"30");

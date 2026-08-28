@@ -348,6 +348,39 @@ async fn run_answers_a_one_shot_commands_output() {
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }
 
+/// Round 4 (R3; the world mirrors its bundle): output past the cap reaches
+/// the GUEST as the bundle's `output-truncated` variant — the fixture
+/// matches it on the wire, so a clean activation is the proof; the ledger
+/// reads truncated → killed → exited, and the child is reaped.
+#[tokio::test]
+async fn run_past_the_output_cap_is_the_typed_truncation_on_the_guest_wire() {
+    let home = home("truncated");
+    let (paths, _) = paths(
+        &home,
+        serde_json::json!([process_grant(&["/bin/cat"])]),
+        "proc-truncated",
+    );
+    let daemon = booted(paths.clone()).await;
+    let pids = spawned_pids(&events(&daemon).await);
+    assert_eq!(pids.len(), 1, "one spawn on the record");
+    assert_reaped(pids[0].0);
+    let records = events(&daemon).await;
+    let position = |probe: fn(&LedgerEventKind) -> bool| {
+        records
+            .iter()
+            .position(|record| probe(&record.kind))
+            .unwrap_or_else(|| panic!("on the record: {records:?}"))
+    };
+    let truncated = position(|kind| matches!(kind, LedgerEventKind::ProcessOutputTruncated { .. }));
+    let killed = position(|kind| matches!(kind, LedgerEventKind::ProcessKilled { .. }));
+    let exited = position(|kind| matches!(kind, LedgerEventKind::ProcessExited { code, .. } if *code < 0));
+    assert!(truncated < killed && killed < exited, "{records:?}");
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
 /// No grant, no spawn (red-first): refused at the broker choke point, on
 /// the record; the entry activates cleanly around the refusal (R11).
 #[tokio::test]

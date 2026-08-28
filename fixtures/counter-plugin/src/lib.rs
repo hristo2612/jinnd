@@ -56,6 +56,14 @@ fn fs_fault(error: fs::FsError) -> GuestFault {
     GuestFault::Failed(format!("{error:?}"))
 }
 
+fn process_fault(error: process::ProcessError) -> GuestFault {
+    GuestFault::Failed(format!("{error:?}"))
+}
+
+fn net_fault(error: net::NetError) -> GuestFault {
+    GuestFault::Failed(format!("{error:?}"))
+}
+
 /// Spins until `condition` answers `Some`, or the clock says `budget_ms`
 /// passed (a guest has no sleep; polling is the v0.1 wake shape, M2-K6).
 fn poll<T>(budget_ms: u64, mut condition: impl FnMut() -> Result<Option<T>, GuestFault>) -> Result<T, GuestFault> {
@@ -73,7 +81,7 @@ fn poll<T>(budget_ms: u64, mut condition: impl FnMut() -> Result<Option<T>, Gues
 /// Drains one child stream until EOF (M2-K6), bounded by the clock.
 fn drain(handle: u64, which: process::ChildStream, budget_ms: u64) -> Result<Vec<u8>, GuestFault> {
     let mut collected = Vec::new();
-    poll(budget_ms, || match process::read(handle, which, 4096).map_err(fault)? {
+    poll(budget_ms, || match process::read(handle, which, 4096).map_err(process_fault)? {
         process::ReadResult::Data(bytes) => {
             collected.extend(bytes);
             Ok(None)
@@ -92,14 +100,14 @@ fn drain(handle: u64, which: process::ChildStream, budget_ms: u64) -> Result<Vec
 fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
     match mode {
         "proc-echo" => {
-            let child = process::spawn("/bin/cat", &[], None, &[]).map_err(fault)?;
-            let accepted = process::write_stdin(child, b"hello\n").map_err(fault)?;
+            let child = process::spawn("/bin/cat", &[], None, &[]).map_err(process_fault)?;
+            let accepted = process::write_stdin(child, b"hello\n").map_err(process_fault)?;
             if accepted != 6 {
                 return Err(GuestFault::Failed(format!("stdin accepted {accepted}")));
             }
-            process::close_stdin(child).map_err(fault)?;
+            process::close_stdin(child).map_err(process_fault)?;
             let echoed = drain(child, process::ChildStream::Stdout, 3000)?;
-            let status = poll(3000, || match process::wait(child, 1000).map_err(fault)? {
+            let status = poll(3000, || match process::wait(child, 1000).map_err(process_fault)? {
                 process::WaitResult::Exited(code) => Ok(Some(code)),
                 process::WaitResult::Running => Ok(None),
             })?;
@@ -109,13 +117,13 @@ fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
             fs::write("/proc-echo.out", &echoed, "").map_err(fs_fault)
         }
         "proc-sleeper" => {
-            process::spawn("/bin/sleep", &["30".to_owned()], None, &[]).map_err(fault)?;
+            process::spawn("/bin/sleep", &["30".to_owned()], None, &[]).map_err(process_fault)?;
             Ok(())
         }
         "proc-kill" => {
-            let child = process::spawn("/bin/sleep", &["30".to_owned()], None, &[]).map_err(fault)?;
-            process::kill(child, process::Signal::Terminate).map_err(fault)?;
-            let status = poll(3000, || match process::wait(child, 1000).map_err(fault)? {
+            let child = process::spawn("/bin/sleep", &["30".to_owned()], None, &[]).map_err(process_fault)?;
+            process::kill(child, process::Signal::Terminate).map_err(process_fault)?;
+            let status = poll(3000, || match process::wait(child, 1000).map_err(process_fault)? {
                 process::WaitResult::Exited(code) => Ok(Some(code)),
                 process::WaitResult::Running => Ok(None),
             })?;
@@ -123,20 +131,28 @@ fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
         }
         "proc-env" => {
             let env = vec![("JINND_GUEST_VAR".to_owned(), "from-guest".to_owned())];
-            let child = process::spawn("/usr/bin/env", &[], None, &env).map_err(fault)?;
+            let child = process::spawn("/usr/bin/env", &[], None, &env).map_err(process_fault)?;
             let listing = drain(child, process::ChildStream::Stdout, 3000)?;
             fs::write("/proc-env.out", &listing, "").map_err(fs_fault)
         }
         "proc-run" => {
-            let out = process::run("/bin/echo", &["hi".to_owned()]).map_err(fault)?;
+            let out = process::run("/bin/echo", &["hi".to_owned()]).map_err(process_fault)?;
             fs::write("/proc-run.out", &out, "").map_err(fs_fault)
         }
         "proc-denied" => match process::spawn("/bin/cat", &[], None, &[]) {
             Err(_) => Ok(()),
             Ok(_) => Err(GuestFault::Failed("an ungranted spawn was not refused".into())),
         },
+        // Output past the bundle's cap is the TYPED truncation ON THE WIRE
+        // (M2-K6 round 4): a guest matches the bundle variant, never a string.
+        "proc-truncated" => match process::run("/bin/cat", &["/dev/zero".to_owned()]) {
+            Err(process::ProcessError::OutputTruncated) => Ok(()),
+            other => Err(GuestFault::Failed(format!(
+                "a runaway output was not the typed truncation: {other:?}"
+            ))),
+        },
         "proc-escape" => match process::spawn(arg, &[], None, &[]) {
-            Err(jinn::plugin::types::KernelError::GrantRefused(_)) => Ok(()),
+            Err(process::ProcessError::Denied(_)) => Ok(()),
             other => Err(GuestFault::Failed(format!(
                 "a link out of the allowlist was not the typed refusal: {other:?}"
             ))),
@@ -150,13 +166,13 @@ fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
 fn net_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
     match mode {
         "net-echo" => {
-            let listener = net::listen(&format!("127.0.0.1:{arg}")).map_err(fault)?;
+            let listener = net::listen(&format!("127.0.0.1:{arg}")).map_err(net_fault)?;
             LISTENER.store(listener, Ordering::SeqCst);
             clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
             Ok(())
         }
         "net-refused" => match net::listen(arg) {
-            Err(jinn::plugin::types::KernelError::GrantRefused(_)) => Ok(()),
+            Err(net::NetError::Denied(_)) => Ok(()),
             other => Err(GuestFault::Failed(format!(
                 "the bind was not the typed refusal: {other:?}"
             ))),
@@ -170,20 +186,20 @@ fn net_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
 fn echo_tick() -> Result<(), GuestFault> {
     let listener = LISTENER.load(Ordering::SeqCst);
     let mut conns = CONNS.lock().unwrap();
-    while let net::AcceptResult::Connection(conn) = net::accept(listener).map_err(fault)? {
+    while let net::AcceptResult::Connection(conn) = net::accept(listener).map_err(net_fault)? {
         conns.push(conn);
     }
     let mut closed = Vec::new();
     for &conn in conns.iter() {
-        match net::read(conn, 4096).map_err(fault)? {
+        match net::read(conn, 4096).map_err(net_fault)? {
             net::ReadResult::Data(bytes) => {
                 let mut offered = 0;
                 while offered < bytes.len() {
-                    offered += net::write(conn, &bytes[offered..]).map_err(fault)? as usize;
+                    offered += net::write(conn, &bytes[offered..]).map_err(net_fault)? as usize;
                 }
             }
             net::ReadResult::Eof => {
-                net::close(conn).map_err(fault)?;
+                net::close(conn).map_err(net_fault)?;
                 closed.push(conn);
             }
             net::ReadResult::WouldBlock => {}
