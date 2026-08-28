@@ -4,14 +4,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
 use jinnd_fiber::Fiber;
 use jinnd_wasm::LedgerSink;
-
-/// The guest-call deadline (R11 containment horizon).
-pub(crate) const DEADLINE: Duration = Duration::from_secs(5);
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())

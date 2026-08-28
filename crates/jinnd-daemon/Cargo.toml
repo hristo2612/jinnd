@@ -22,7 +22,6 @@ path = "src/main.rs"
 [dependencies]
 jinnd-api = { path = "../jinnd-api", default-features = false }
 jinnd-context = { path = "../jinnd-context" }
-jinnd-effects = { path = "../jinnd-effects" }
 jinnd-fiber = { path = "../jinnd-fiber" }
 jinnd-ledger = { path = "../jinnd-ledger" }
 jinnd-loader = { path = "../jinnd-loader" }
