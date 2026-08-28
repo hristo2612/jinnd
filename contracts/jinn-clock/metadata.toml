@@ -52,3 +52,8 @@ relation = "live-alarm-set-under-scope"
 #   payload = 8-byte little-endian wake instant (unix ms).
 # - Every wake is a ledger event with requesting-fiber attribution (Law 2).
 restart = "alarms-drop-on-restart-re-request-on-activate"
+# Lifecycle class (jinn:plugin@0.3.0, M2-K4): alarms are KERNEL
+# REGISTRATIONS, not world mutations — suspend (daemon shutdown) and
+# incarnation replacement release them without running an inverse; the
+# next `activate` re-arms. Dispose cancels them as part of the LIFO trail.
+lifecycle = "kernel-registration-released-on-suspend-rearmed-on-activate"

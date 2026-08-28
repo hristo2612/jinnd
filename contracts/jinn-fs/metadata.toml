@@ -63,3 +63,9 @@ relation = "content-tree-under-scope"
 # daemon, no expiry window.
 policy   = "durable-before-commit-refuse-otherwise"
 reclaim  = "on-completed-revert"
+# Lifecycle class (jinn:plugin@0.3.0, M2-K4): every revertible operation
+# here is a WORLD MUTATION, scoped to the profile entry. Suspend (daemon
+# shutdown) and incarnation replacement run NO inverse; the retained trail
+# is inherited by the entry's next incarnation, revertible by key, and
+# withdrawn LIFO only at the entry's dispose (I1).
+lifecycle = "entry-scoped-survives-suspend-withdrawn-on-dispose"

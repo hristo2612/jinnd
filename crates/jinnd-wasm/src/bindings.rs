@@ -66,3 +66,6 @@ pub fn api_mode(mode: types::DispatchMode) -> jinnd_api::DispatchMode {
         types::DispatchMode::Waterfall => jinnd_api::DispatchMode::Waterfall,
     }
 }
+
+#[cfg(test)]
+mod tests;
