@@ -456,19 +456,25 @@ async fn a_fixture_listens_on_loopback_echoes_and_suspend_releases_the_listener(
     let daemon = booted(paths.clone()).await;
     let fiber = daemon.entry_fiber("worker");
 
-    let mut stream = connect(port).unwrap_or_else(|| panic!("the listener accepts"));
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap_or_else(|error| panic!("{error}"));
-    stream
-        .write_all(b"ping")
-        .unwrap_or_else(|error| panic!("write: {error}"));
-    let mut echoed = [0u8; 4];
-    stream
-        .read_exact(&mut echoed)
-        .unwrap_or_else(|error| panic!("the guest echoes: {error}"));
+    // The peer runs off the runtime thread: a blocking read on the test's
+    // own thread would starve the daemon's alarm, guest, and reactor.
+    let echoed = tokio::task::spawn_blocking(move || {
+        let mut stream = connect(port).unwrap_or_else(|| panic!("the listener accepts"));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap_or_else(|error| panic!("{error}"));
+        stream
+            .write_all(b"ping")
+            .unwrap_or_else(|error| panic!("write: {error}"));
+        let mut echoed = [0u8; 4];
+        stream
+            .read_exact(&mut echoed)
+            .unwrap_or_else(|error| panic!("the guest echoes: {error}"));
+        echoed
+    })
+    .await
+    .unwrap_or_else(|error| panic!("peer: {error}"));
     assert_eq!(&echoed, b"ping");
-    drop(stream);
 
     let records = events(&daemon).await;
     assert!(
