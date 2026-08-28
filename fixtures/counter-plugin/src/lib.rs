@@ -99,6 +99,46 @@ impl Guest for Fixture {
                     "an ungranted host-fs read was not refused".into(),
                 )),
             },
+            // The full jinn:fs bundle (M2-K3): write, append, meta, list,
+            // remove, and the typed not-found; stashes the listing.
+            "fs-bundle" => {
+                fs::write("/log/a.txt", b"one\n").map_err(fault)?;
+                fs::append("/log/a.txt", b"two\n").map_err(fault)?;
+                fs::write("/log/b.txt", b"bee").map_err(fault)?;
+                let meta = fs::meta("/log/a.txt").map_err(fault)?;
+                if meta.size != 8 || meta.is_dir || meta.modified_ms == 0 {
+                    return Err(GuestFault::Failed(format!("meta misdescribes: {meta:?}")));
+                }
+                let listed = fs::list("/log").map_err(fault)?;
+                let names: Vec<String> = listed.iter().map(|m| m.path.clone()).collect();
+                fs::remove("/log/b.txt").map_err(fault)?;
+                for absent in [fs::read("/log/b.txt").map(|_| ()), fs::meta("/missing").map(|_| ())] {
+                    match absent {
+                        Err(jinn::plugin::types::KernelError::NotFound(_)) => {}
+                        other => {
+                            return Err(GuestFault::Failed(format!(
+                                "absence was not the typed not-found: {other:?}"
+                            )))
+                        }
+                    }
+                }
+                *STASH.lock().unwrap() = names.join(",").into_bytes();
+                Ok(())
+            }
+            // Every new op refuses without a grant (M2-K3, red-first).
+            "fs-bundle-denied" => {
+                let refused = fs::list("/").is_err()
+                    && fs::meta("/x").is_err()
+                    && fs::append("/x", b"y").is_err()
+                    && fs::remove("/x").is_err();
+                if refused {
+                    Ok(())
+                } else {
+                    Err(GuestFault::Failed(
+                        "an ungranted fs bundle op was not refused".into(),
+                    ))
+                }
+            }
             // Reads the granted clock and stashes the 8-byte LE instant.
             "clock-now" => {
                 let reading = clock::now().map_err(fault)?;
