@@ -100,8 +100,36 @@ fn refused(message: String) -> KernelError {
 /// A typed refusal for a malformed, wrong-type, undeclared, or
 /// v0.1-unenforceable scope.
 fn admit(grant: &Grant) -> Result<(), KernelError> {
-    let _ = (grant, declared(&grant.contract), refused);
-    Ok(())
+    let Some(scope) = &grant.scope else {
+        return Ok(());
+    };
+    let contract = &grant.contract;
+    match (declared(contract), scope) {
+        // The one scope type v0.1 enforces: the clock's rate floor.
+        (Declared::Rate, ScopeValue::Rate(_)) => Ok(()),
+        (Declared::Rate, wrote) => Err(refused(format!(
+            "grant refused: {contract} declares scope type rate; scope {wrote} is not a rate"
+        ))),
+        // Well-typed, but v0.1 cannot enforce a per-entry path scope (the
+        // fs provider holds one containment root per assembly; per-entry
+        // fs scoping is M2-K3) — admitting it would hand out root-wide
+        // authority under a scoped label. Refuse honestly instead.
+        (Declared::PathPrefix, ScopeValue::Path(path)) => Err(refused(format!(
+            "grant refused: {contract} scope {path:?} is declared path-prefix, \
+             which v0.1 cannot enforce per entry; refusing rather than widening"
+        ))),
+        (Declared::PathPrefix, wrote) => Err(refused(format!(
+            "grant refused: {contract} declares scope type path-prefix; \
+             scope {wrote} is not a path"
+        ))),
+        (Declared::NoScope, wrote) => Err(refused(format!(
+            "grant refused: {contract} declares no scope type; scope {wrote} cannot validate"
+        ))),
+        (Declared::Undeclared, wrote) => Err(refused(format!(
+            "grant refused: no contract bundle declares a scope type for \
+             {contract}; scope {wrote} cannot validate"
+        ))),
+    }
 }
 
 /// Splits a seat's grants into the admitted and the refusals to record —
@@ -139,14 +167,20 @@ mod tests {
         }
     }
 
+    fn refusal_of(verdict: Result<(), String>) -> String {
+        match verdict {
+            Err(message) => message,
+            Ok(()) => panic!("the scope must refuse the grant"),
+        }
+    }
+
     /// The verifier's round-2 probe, pinned (round-3 ruling): a numeric
     /// scope on a contract whose declared scope type is `path-prefix` is
     /// the wrong type — the grant refuses; it never widens into root-wide
     /// authority.
     #[test]
     fn the_fs_scope_9_probe_refuses_as_wrong_type() {
-        let verdict = only(scoped("jinn:fs", ScopeValue::Rate(9)));
-        let message = verdict.expect_err("a wrong-type scope must refuse the grant");
+        let message = refusal_of(only(scoped("jinn:fs", ScopeValue::Rate(9))));
         assert!(
             message.contains("jinn:fs") && message.contains("path-prefix"),
             "the refusal names the contract and its declared scope type: {message}"
@@ -156,8 +190,7 @@ mod tests {
     /// The mirror mismatch: a string scope on a `rate` contract refuses.
     #[test]
     fn a_string_scope_on_a_rate_contract_refuses_as_wrong_type() {
-        let verdict = only(scoped("jinn:clock", ScopeValue::Path("fine".into())));
-        let message = verdict.expect_err("a wrong-type scope must refuse the grant");
+        let message = refusal_of(only(scoped("jinn:clock", ScopeValue::Path("fine".into()))));
         assert!(
             message.contains("jinn:clock") && message.contains("rate"),
             "the refusal names the contract and its declared scope type: {message}"
@@ -191,8 +224,7 @@ mod tests {
     /// under a scoped label, which IS the widening hazard. Refuse honestly.
     #[test]
     fn a_well_typed_path_scope_refuses_as_unenforceable_in_v01() {
-        let verdict = only(scoped("jinn:fs", ScopeValue::Path("/data".into())));
-        let message = verdict.expect_err("an unenforceable scope must refuse the grant");
+        let message = refusal_of(only(scoped("jinn:fs", ScopeValue::Path("/data".into()))));
         assert!(
             message.contains("enforce"),
             "the refusal says v0.1 cannot enforce it: {message}"
@@ -204,7 +236,10 @@ mod tests {
     fn a_malformed_scope_refuses_on_every_contract() {
         for contract in ["jinn:clock", "jinn:fs", "jinn:ledger", "demo:thing"] {
             let verdict = only(scoped(contract, ScopeValue::Malformed("-5".into())));
-            assert!(verdict.is_err(), "a malformed scope must refuse: {contract}");
+            assert!(
+                verdict.is_err(),
+                "a malformed scope must refuse: {contract}"
+            );
         }
     }
 
