@@ -376,6 +376,27 @@ Ordering rule: never touch a layer until the layer above it is already useful.
      cannot cross the component boundary; realm queries evaluated kernel-side);
      Mode-1 swap batches all entries sharing an artifact hash.
 
+- **2026-08-28** — **Suspend ≠ dispose adjudicated (harness FINDINGS #14/#15 →
+  M2-K4).** At 41cb2f4, clean SIGINT withdrew every fs mutation (state/history
+  reverted to activation-time content) while SIGKILL preserved them — crash kept
+  state, graceful shutdown erased it. Ruled a CONFLATION, not a LAW consequence:
+  §3 LIFO teardown governs removal from the composition; effect withdrawal is
+  bound to the profile ENTRY, never to a fiber incarnation or a process
+  lifetime. Codified: dispose (entry removal) withdraws the full trail LIFO
+  unchanged; daemon shutdown SUSPENDS (quiescence + ledger flush + typed
+  suspension events, zero world-mutation undos); incarnation replacement
+  (reconcile/config-edit) hands the successor the entry's live effect journal —
+  the durable retention store exists precisely to span incarnations; kernel
+  registrations (alarms, listeners, services) release on suspend and re-arm on
+  activate, distinct from world mutations. FINDINGS #15 (registrations escaping
+  a sealed journal, torn dispose trail) joins the same card: post-seal
+  registrations refuse with a ledgered error — a dispose trail is exactly the
+  fiber's contribution (I1), never a prefix. Shape (i) (a jinn:ledger read
+  import for guest-driven record replay) was considered and DEFERRED to v0.2 —
+  the record lane may yet be the ledger, but not before a consumer needs it.
+  Card: docs/packets/M2-K4.md. Harness interim: soak planned stops use the hard
+  path (SOAK.md ruling 48a44f5) so audit evidence cannot be reverted.
+
 - **2026-08-28** — **M1 ACCEPTED AND CLOSED.** All 9 packets + 3 patch packets
   landed (final main cb9b3c9, 183 commits). Acceptance demonstrated per the
   operator-delegated protocol: a fresh operator-role session drove
