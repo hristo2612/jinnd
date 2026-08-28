@@ -61,6 +61,10 @@ pub(crate) struct Persistence {
     encode_profile: EncodeProfile,
     encode_config: EncodeConfig,
     baseline: std::sync::Mutex<Document>,
+    /// The exact text of the last save this persistence made (M2-K5 #17):
+    /// what the loader WROTE, remembered at the save — never re-read from a
+    /// file another writer may have replaced since.
+    written: std::sync::Mutex<Option<String>>,
 }
 
 impl Persistence {
@@ -78,6 +82,7 @@ impl Persistence {
             Document::merge_profile(values, &baseline)
         };
         self.store.save(&document).await?;
+        *lock(&self.written) = Some(document.render());
         *lock(&self.baseline) = document;
         Ok(())
     }
@@ -97,6 +102,7 @@ impl Persistence {
             baseline.amended(&entry.0, config, disabled)?
         };
         self.store.save(&document).await?;
+        *lock(&self.written) = Some(document.render());
         *lock(&self.baseline) = document;
         Ok(())
     }
@@ -153,7 +159,18 @@ impl Loader {
             encode_profile,
             encode_config,
             baseline: std::sync::Mutex::new(baseline),
+            written: std::sync::Mutex::new(None),
         }));
+    }
+
+    /// The exact text of the attached store's last write-back, `None`
+    /// before the first save or without a store (M2-K5 #17): a daemon
+    /// recognizes its own echo by these bytes — what it wrote, never what a
+    /// re-read of the file happens to hold now.
+    #[must_use]
+    pub fn last_written(&self) -> Option<String> {
+        self.persistence()
+            .and_then(|persistence| lock(&persistence.written).clone())
     }
 
     /// The attached persistence, if any: one coherent snapshot per operation.

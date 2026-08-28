@@ -13,11 +13,13 @@
 
 mod daemon;
 mod packages;
+mod paths;
 mod seat;
 mod support;
 mod swap;
 mod watch;
 
-pub use daemon::{Daemon, DaemonPaths};
+pub use daemon::Daemon;
 pub use jinnd_wasm::SwapOutcome;
+pub use paths::DaemonPaths;
 pub use watch::{Watch, log_report, log_status};
