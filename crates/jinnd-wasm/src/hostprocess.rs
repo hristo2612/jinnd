@@ -24,6 +24,9 @@ use crate::hostwire::{decode_spawn, encode_handle};
 use crate::peer::{LedgerSink, Peer, PeerId};
 
 mod child;
+mod collector;
+#[cfg(all(test, not(feature = "loom")))]
+mod collector_tests;
 mod ops;
 mod reap;
 #[cfg(all(test, not(feature = "loom")))]
@@ -31,6 +34,8 @@ mod reap_tests;
 mod ring;
 #[cfg(all(test, feature = "loom"))]
 mod ring_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod run_tests;
 mod stream;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;

@@ -16,7 +16,7 @@ use crate::hostcaps::PROCESS_CONTRACT;
 use crate::hostwire::{TAG_DATA, TAG_EOF, TAG_WOULD_BLOCK, encode_spawn, put_segment};
 use crate::peer::LedgerSink;
 
-struct Recording(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
+pub(super) struct Recording(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
 
 impl LedgerSink for Recording {
     fn append(&self, kind: LedgerEventKind, fiber: Option<FiberId>) {
@@ -28,7 +28,7 @@ impl LedgerSink for Recording {
 }
 
 impl Recording {
-    fn kinds(&self) -> Vec<(LedgerEventKind, Option<FiberId>)> {
+    pub(super) fn kinds(&self) -> Vec<(LedgerEventKind, Option<FiberId>)> {
         self.0
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -45,17 +45,17 @@ impl Recording {
     }
 }
 
-struct Rig {
-    ledger: Arc<Recording>,
-    broker: Arc<Broker>,
-    provider: Arc<HostProcess>,
+pub(super) struct Rig {
+    pub(super) ledger: Arc<Recording>,
+    pub(super) broker: Arc<Broker>,
+    pub(super) provider: Arc<HostProcess>,
     /// Fiber 7, allowed `/bin` and `/usr/bin`, inherit-none.
-    guest: u64,
+    pub(super) guest: u64,
     /// Fiber 8, a bare grant: the empty policy.
     bare: u64,
 }
 
-fn rig() -> Rig {
+pub(super) fn rig() -> Rig {
     let ledger = Arc::new(Recording(Mutex::new(Vec::new())));
     let broker = Arc::new(Broker::new(Arc::clone(&ledger) as Arc<dyn LedgerSink>));
     let provider = HostProcess::new(Arc::clone(&ledger) as Arc<dyn LedgerSink>);

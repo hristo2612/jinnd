@@ -94,6 +94,10 @@ pub enum LedgerEventKind {
     /// within the bound (M2-K6 round 2; Law 2): never silent — the host
     /// task finishes the reap and `ProcessExited` follows when it lands.
     ProcessReapPending { handle: u64 },
+    /// One `jinn:process` `run` produced more than the bundle's declared
+    /// total-output cap (M2-K6 round 3; R9): the answer is a typed
+    /// truncation, the read end is cut, the child killed and reaped.
+    ProcessOutputTruncated { handle: u64, cap: u64 },
     /// One `jinn:net` loopback listener bound (M2-K6): a kernel
     /// registration, attributed like a spawn.
     NetListening { handle: u64, port: u16 },
