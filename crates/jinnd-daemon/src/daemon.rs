@@ -11,7 +11,7 @@ use jinnd_context::ContextTree;
 use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::{Document, FileStore, Loader};
 use jinnd_registry::Registry;
-use jinnd_wasm::{HostClock, HostFs, LaneCore, LedgerSink};
+use jinnd_wasm::{HostClock, HostFs, HostNet, HostProcess, LaneCore, LedgerSink};
 
 pub use crate::paths::DaemonPaths;
 use crate::support::{SharedFibers, Sink, error, lock};
@@ -59,6 +59,10 @@ impl Daemon {
         // The jinn:clock read provider (M2-K2): time enters through the
         // same choke point; alarm machinery lives in the lane's registry.
         HostClock::register(&lane.broker)?;
+        // The jinn:process and jinn:net providers (M2-K6, finding 5): the
+        // same choke point; their registrations release on suspend.
+        HostProcess::new(Arc::clone(&lane.sink)).register(&lane.broker)?;
+        HostNet::new(Arc::clone(&lane.sink)).register(&lane.broker)?;
         // Every entry's retained journal crosses the process boundary
         // through the retention store (M2-K4 ruling 3): the lane inherits
         // it here, so a successor incarnation's dispose withdraws the
