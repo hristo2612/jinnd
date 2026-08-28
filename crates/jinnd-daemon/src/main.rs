@@ -1,6 +1,6 @@
 //! The `jinnd` shell (M1-P9; R10 — the daemon has no features): parse the
-//! two required paths, assemble the kernel, boot, then serve three inputs
-//! until SIGINT — profile-file edits (reconcile-by-id), artifact-file
+//! two required paths, arm the file watcher, assemble the kernel, boot,
+//! announce readiness (M2-K5 #18/#12), then serve three inputs until SIGINT — profile-file edits (reconcile-by-id), artifact-file
 //! replacements (Mode-1 hot-swap under the `.sha256` pin sidecar), and
 //! operator `revert` lines on stdin (keyed exactly-once revert).
 
@@ -84,6 +84,32 @@ async fn main() {
                 std::process::exit(1);
             }
         };
+    // Watch BEFORE evidence (M2-K5 #18): paths canonicalize against the
+    // working directory and the file watcher arms — or refuses, with the
+    // error — before the kernel assembles and the boot reconcile writes
+    // anything; a refused start leaves no trace an operator could mistake
+    // for a running daemon.
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(refused) => {
+            tracing::error!(?refused, "the working directory is unreadable");
+            std::process::exit(1);
+        }
+    };
+    let paths = match paths.canonical(&cwd) {
+        Ok(paths) => paths,
+        Err(refused) => {
+            tracing::error!(?refused, "the profile path does not resolve");
+            std::process::exit(1);
+        }
+    };
+    let watch = match Watch::start(&paths) {
+        Ok(watch) => watch,
+        Err(refused) => {
+            tracing::error!(?refused, "file watcher unavailable");
+            std::process::exit(1);
+        }
+    };
     let daemon = match Daemon::open(paths.clone()) {
         Ok(daemon) => Arc::new(daemon),
         Err(refused) => {
@@ -98,16 +124,15 @@ async fn main() {
             std::process::exit(1);
         }
     }
-
+    // The readiness line (FINDINGS #12 minimum): one machine-readable line
+    // on stderr, only once the watcher is armed AND the boot reconcile is
+    // done — a launcher keys on this, never on boot evidence.
+    eprintln!(
+        r#"{{"jinnd":"ready","watcher":"armed","profile":{}}}"#,
+        serde_json::Value::String(paths.profile.display().to_string())
+    );
     // The watched-file lane runs as its own supervised task (R1); this
     // loop keeps stdin and the shutdown signal.
-    let watch = match Watch::start(&paths) {
-        Ok(watch) => watch,
-        Err(refused) => {
-            tracing::error!(?refused, "file watcher unavailable");
-            std::process::exit(1);
-        }
-    };
     let serving = tokio::spawn(watch.serve(Arc::clone(&daemon)));
 
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
