@@ -24,6 +24,9 @@ pub(crate) struct Desired {
     pub aim: Aim,
     pub cause: TransitionCause,
     pub disposing: bool,
+    /// Suspension requested (M2-K4): the cell stops, the entry persists.
+    /// Sticky like disposal, and outranked by it.
+    pub suspending: bool,
 }
 
 /// What has landed, as opposed to what is wanted.
@@ -77,6 +80,10 @@ pub(crate) fn plan(committed: &Committed, desired: &Desired) -> Option<Step> {
                 Some(Step::Unload {
                     cause: TransitionCause::ExplicitDispose,
                 })
+            } else if desired.suspending {
+                Some(Step::Unload {
+                    cause: TransitionCause::Suspend,
+                })
             } else if committed.active_for.as_ref() == Some(&desired.aim) {
                 None
             } else {
@@ -86,7 +93,7 @@ pub(crate) fn plan(committed: &Committed, desired: &Desired) -> Option<Step> {
             }
         }
         FiberState::Pending | FiberState::Failed => {
-            if desired.disposing {
+            if desired.disposing || desired.suspending {
                 // A disposal whose own withdrawal failed rests `Failed`: the replay
                 // is not reattempted against an unchanged scope (R9).
                 if committed.disposal_failed {
@@ -147,6 +154,7 @@ mod tests {
             aim,
             cause: TransitionCause::InitialLoad,
             disposing: false,
+            suspending: false,
         }
     }
 
@@ -155,6 +163,42 @@ mod tests {
             state,
             ..Committed::new()
         }
+    }
+
+    /// M2-K4: a suspension unloads under its own cause, a disposal outranks
+    /// it, and an idle fiber finishes either way.
+    #[test]
+    fn a_suspension_unloads_under_its_own_cause_and_a_disposal_outranks_it() {
+        let live = Committed {
+            state: FiberState::Active,
+            active_for: Some(aim(0, 0)),
+            ..Committed::new()
+        };
+        let suspending = Desired {
+            suspending: true,
+            ..desired(aim(0, 0))
+        };
+        assert_eq!(
+            plan(&live, &suspending),
+            Some(Step::Unload {
+                cause: TransitionCause::Suspend
+            })
+        );
+        let both = Desired {
+            disposing: true,
+            ..suspending.clone()
+        };
+        assert_eq!(
+            plan(&live, &both),
+            Some(Step::Unload {
+                cause: TransitionCause::ExplicitDispose
+            })
+        );
+        assert_eq!(
+            plan(&committed(FiberState::Pending), &suspending),
+            Some(Step::Finish)
+        );
+        assert_eq!(plan(&committed(FiberState::Disposed), &suspending), None);
     }
 
     #[test]

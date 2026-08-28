@@ -28,6 +28,11 @@ pub enum LedgerEventKind {
     EffectWithdrawn { label: String, clean: bool },
     /// One committed fiber lifecycle transition.
     FiberTransition(Transition),
+    /// One fiber's seat suspended (M2-K4; Law 2): its kernel registrations
+    /// released, `retained` world effects carried into the entry's live
+    /// journal for the next incarnation — what happened is "suspended",
+    /// never "withdrawn" (authorized suspend-vs-dispose facade delta).
+    FiberSuspended { retained: u64 },
     /// A service value was provided into a realm.
     ServiceProvided { service: String },
     /// A service value was withdrawn from its realm.

@@ -56,6 +56,7 @@ impl SteeringCell {
                     aim: Aim { epoch, revision: 0 },
                     cause: TransitionCause::InitialLoad,
                     disposing: false,
+                    suspending: false,
                 },
                 in_flight: None,
                 // A fresh fiber still owes its first reconciliation pass.
@@ -129,6 +130,17 @@ impl SteeringCell {
         });
     }
 
+    /// Requests suspension (M2-K4). Sticky once requested; a disposal
+    /// requested before or after it still wins the planner's choice.
+    pub(crate) fn suspend(&self) {
+        self.with(|inner| {
+            if !inner.desired.suspending {
+                inner.desired.suspending = true;
+                inner.stir();
+            }
+        });
+    }
+
     /// Records that a transition for `aim` is in flight.
     ///
     /// # Panics
@@ -169,7 +181,9 @@ impl SteeringCell {
     pub(crate) fn stale(&self) -> bool {
         self.with(|inner| match &inner.in_flight {
             None => false,
-            Some(aim) => inner.desired.disposing || *aim != inner.desired.aim,
+            Some(aim) => {
+                inner.desired.disposing || inner.desired.suspending || *aim != inner.desired.aim
+            }
         })
     }
 

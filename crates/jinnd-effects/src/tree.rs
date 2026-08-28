@@ -30,6 +30,10 @@ pub(crate) struct Record {
     /// effect stops accepting dependents and waits them out, its inverse still
     /// owed afterwards. `None` for ordinary effects.
     pub(crate) drain: Option<Disposer>,
+    /// A suspend path (M2-K4): what a SUSPEND replay runs instead of the
+    /// inverse — a world mutation's "retain, release nothing". `None` for a
+    /// kernel registration, whose inverse IS its release.
+    pub(crate) suspend: Option<Disposer>,
     pub(crate) children: Vec<Record>,
 }
 

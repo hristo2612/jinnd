@@ -25,6 +25,11 @@ pub enum TransitionCause {
     ExplicitRestart,
     ExplicitDispose,
     ParentDisposed,
+    /// The fiber's cell is stopped while its profile entry persists — daemon
+    /// shutdown: kernel registrations release, world mutations are retained
+    /// for the entry, nothing is withdrawn (M2-K4; decision log 2026-08-28;
+    /// authorized suspend-vs-dispose facade delta).
+    Suspend,
 }
 
 /// One committed transition recorded for observation and the ledger.

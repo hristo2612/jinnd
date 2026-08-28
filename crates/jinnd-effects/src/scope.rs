@@ -166,6 +166,7 @@ impl EffectScope {
             label: label.into(),
             disposer,
             drain: None,
+            suspend: None,
             children: Vec::new(),
         })
     }
@@ -292,6 +293,7 @@ mod tests {
             label: "nested".to_owned(),
             disposer: Disposer::sync(|| Ok(())),
             drain: None,
+            suspend: None,
             children: Vec::new(),
         }
     }
