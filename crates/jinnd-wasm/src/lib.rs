@@ -27,6 +27,7 @@ mod host;
 mod hostcaps;
 mod hostclock;
 mod hostfs;
+mod hostwire;
 mod instance;
 mod lane;
 mod lane_swap;
@@ -50,6 +51,7 @@ pub use handle::{
     ActivationOutcome, AlarmRecord, HostRecord, InstanceHandle, ListenRecord, Registration,
 };
 pub use host::{LoadedComponent, WasmHost};
+pub use hostcaps::{NET_CONTRACT, PROCESS_CONTRACT, registration_label};
 pub use hostclock::HostClock;
 pub use hostfs::wire::FileMeta;
 pub use hostfs::{FS_CONTRACT, HostFs, UndoAction, effect_label};

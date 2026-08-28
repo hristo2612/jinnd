@@ -107,6 +107,11 @@ impl SeatState {
                         first.get_or_insert(error);
                     }
                 }
+                // A kernel registration releases through its provider on
+                // dispose exactly as on suspend (M2-K6): kill, close.
+                Registration::Kernel(record) => {
+                    release(broker, record, ledger, &mut first).await;
+                }
                 // The broker appends the withdrawal itself (R6), so it too
                 // lands at the moment it runs.
                 Registration::Provision { contract } => broker.withdraw(peer, contract),
@@ -149,6 +154,13 @@ impl SeatState {
         for registration in self.registrations.iter().rev() {
             match registration {
                 Registration::Effect { .. } | Registration::Host(_) => {}
+                // A suspended incarnation owns no live child or socket
+                // (M2-K6): the registration releases, ledgered, and the
+                // next activate re-establishes it.
+                Registration::Kernel(record) => {
+                    let mut first = None;
+                    release(broker, record, ledger, &mut first).await;
+                }
                 Registration::Listen(record) => {
                     let topic = record.id.and_then(|id| topics.unlisten(id));
                     if let (Some((sink, fiber)), Some(topic)) = (ledger, topic) {
@@ -180,5 +192,31 @@ impl SeatState {
         }
         self.instance.dispose().await;
         retained
+    }
+}
+
+/// Releases one kernel registration through its provider (M2-K6): the
+/// withdrawal is ledgered under the registration's label as it runs, a
+/// failing release is contained and reported first-wins (R9, R11).
+async fn release(
+    broker: &Broker,
+    record: &HostRecord,
+    ledger: Option<(&dyn LedgerSink, FiberId)>,
+    first: &mut Option<KernelError>,
+) {
+    let outcome = broker
+        .withdraw_effect(&record.contract, record.effect)
+        .await;
+    if let Some((sink, fiber)) = ledger {
+        sink.append(
+            LedgerEventKind::EffectWithdrawn {
+                label: record.label.clone(),
+                clean: outcome.is_ok(),
+            },
+            Some(fiber),
+        );
+    }
+    if let Err(error) = outcome {
+        first.get_or_insert(error);
     }
 }

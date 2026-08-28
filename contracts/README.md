@@ -10,7 +10,8 @@ by `docs/constitution/01-capability-contracts.md`.
 Rules (R12): contracts are versioned; never breaking within a major version; designed
 to outlive any particular kernel implementation or host OS.
 
-Bundles: `jinn-fs` (0.2.0), `jinn-clock` (0.1.0), `jinn-ledger` (0.1.0 skeleton).
+Bundles: `jinn-fs` (0.2.0), `jinn-clock` (0.1.0), `jinn-process` (0.1.0),
+`jinn-net` (0.1.0), `jinn-ledger` (0.1.0 skeleton).
 
 ## Lifecycle classification (jinn:plugin@0.3.0, M2-K4)
 
@@ -22,8 +23,9 @@ declared in its metadata:
   durable journal across suspend (daemon shutdown) and incarnation replacement
   (reconcile, config edit, hot-swap); the successor inherits it, revertible by
   key; withdrawn LIFO only when the entry leaves the composition (dispose, I1).
-- **Kernel registration** (`jinn:clock` alarms; provisions, listeners): released
-  on suspend with no inverse run, re-established by the next `activate`.
+- **Kernel registration** (`jinn:clock` alarms; `jinn:process` children;
+  `jinn:net` listeners and connections; provisions, listeners): released on
+  suspend with no inverse run, re-established by the next `activate`.
 
 Suspend never runs a world-mutation inverse; dispose never leaves a kernel
 registration behind. Both are typed ledger events (Law 2).

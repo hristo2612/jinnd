@@ -233,8 +233,11 @@ impl FiberBody for WasmBody {
                         Registration::Alarm(alarm) => alarm.label.clone(),
                         // The broker ledgered the provide crossing itself
                         // (R6); the host provider ledgered its own effect
-                        // registration with this fiber's attribution (M2-K3).
-                        Registration::Provision { .. } | Registration::Host(_) => continue,
+                        // registration with this fiber's attribution (M2-K3;
+                        // a kernel registration's spawn/listen line, M2-K6).
+                        Registration::Provision { .. }
+                        | Registration::Host(_)
+                        | Registration::Kernel(_) => continue,
                     };
                     core.sink
                         .append(LedgerEventKind::EffectRegistered { label }, Some(fiber));

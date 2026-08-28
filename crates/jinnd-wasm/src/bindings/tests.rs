@@ -1,6 +1,6 @@
 //! R12 pin: a guest-visible semantic change to the plugin world ships
 //! with its version (M2-K4 round-2 ruling: the suspend/dispose
-//! lifecycle is contract, so the world is 0.3.0 and the bundles under
+//! lifecycle is contract, so the world is 0.4.0 and the bundles under
 //! `contracts/` mirror the classification).
 
 const WORLD: &str = include_str!("../../../../wit/plugin.wit");
@@ -9,7 +9,7 @@ const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
-    assert!(WORLD.contains("package jinn:plugin@0.3.0;"));
+    assert!(WORLD.contains("package jinn:plugin@0.4.0;"));
     assert!(WORLD.contains("Suspend ≠ dispose"));
 }
 

@@ -43,6 +43,11 @@ pub enum Registration {
     /// a `jinn:fs` write/append/remove) — withdrawn through the broker's
     /// current provider of the contract, LIFO with the rest (R5).
     Host(HostRecord),
+    /// A host-provider KERNEL REGISTRATION on this instance's behalf
+    /// (M2-K6: a `jinn:process` child, a `jinn:net` listener or
+    /// connection) — released through the broker's current provider on
+    /// suspend AND on dispose alike, never retained (M2-K4 class).
+    Kernel(HostRecord),
 }
 
 /// One host-provider effect in the journal: the contract that owns the
