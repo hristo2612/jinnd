@@ -14,16 +14,19 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use jinnd_api::{Epoch, ErrorCode, FiberId, FiberState, KernelError, Transition, TransitionCause};
+use jinnd_api::{FiberState, Transition, TransitionCause};
 use jinnd_effects::{EffectScope, ReplayReport};
 use tokio_util::sync::CancellationToken;
 
-use crate::body::{FiberBody, Setup};
-use crate::contain::contained;
+use crate::body::FiberBody;
 use crate::landing::land;
 use crate::plan::{Aim, Committed, Step, plan};
 use crate::readiness::ReadinessSignal;
 use crate::shared::Shared;
+
+mod contained;
+
+use contained::{activate, unclean};
 
 /// Everything one fiber's supervisor owns outright.
 pub(crate) struct Cell {
@@ -282,33 +285,5 @@ impl Cell {
 
     fn publish_effects(&self) {
         self.shared.published(self.scope.tree());
-    }
-}
-
-/// Runs one activation behind panic containment (R11).
-async fn activate<'a>(
-    body: &'a dyn FiberBody,
-    scope: &'a mut EffectScope,
-    fiber: FiberId,
-    epoch: &'a Epoch,
-    cancel: CancellationToken,
-) -> Result<(), KernelError> {
-    let setup = Setup::new(fiber, epoch, scope, cancel);
-    contained(fiber, move || body.activate(setup)).await
-}
-
-/// The failure an unclean withdrawal is recorded as.
-fn unclean(fiber: FiberId, report: &ReplayReport) -> KernelError {
-    let residue: Vec<&str> = report
-        .unclean()
-        .map(|effect| effect.label.as_str())
-        .collect();
-    KernelError {
-        code: ErrorCode::EffectFailed,
-        message: format!(
-            "these effects were not withdrawn cleanly: {}",
-            residue.join(", ")
-        ),
-        fiber: Some(fiber),
     }
 }

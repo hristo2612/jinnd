@@ -5,13 +5,16 @@
 //! ([`EventTarget`]): a contract call from a peer is a command like any
 //! other, which is what keeps the broker transport-agnostic.
 
-use std::sync::Arc;
-
-use jinnd_api::{ErrorCode, KernelError, KernelFuture};
+use jinnd_api::KernelError;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::peer::{Peer, PeerId};
-use crate::topics::EventTarget;
+use crate::peer::PeerId;
+
+mod command;
+mod face;
+
+pub(crate) use command::{Command, gone};
+pub(crate) use face::{InstancePeer, pair, peer_face};
 
 /// What one activation contributed — ONE journal, in registration order:
 /// the lane commits it into the fiber's live seat, so teardown withdraws
@@ -118,56 +121,6 @@ pub struct AlarmRecord {
     pub spec: crate::alarms::AlarmSpec,
     pub token: u64,
     pub id: Option<u64>,
-}
-
-pub(crate) enum Command {
-    Activate {
-        config: Vec<u8>,
-        reply: oneshot::Sender<(Result<(), KernelError>, ActivationOutcome)>,
-    },
-    Check {
-        consumer: PeerId,
-        reply: oneshot::Sender<bool>,
-    },
-    Undo {
-        token: u64,
-        reply: oneshot::Sender<Result<(), KernelError>>,
-    },
-    HandleCall {
-        caller: PeerId,
-        contract: String,
-        operation: String,
-        payload: Vec<u8>,
-        reply: oneshot::Sender<Result<Vec<u8>, KernelError>>,
-    },
-    Deliver {
-        token: u64,
-        topic: String,
-        payload: Vec<u8>,
-        reply: oneshot::Sender<Result<Vec<u8>, KernelError>>,
-    },
-    Snapshot {
-        reply: oneshot::Sender<Result<Vec<u8>, KernelError>>,
-    },
-    Restore {
-        blob: Vec<u8>,
-        reply: oneshot::Sender<Result<(), KernelError>>,
-    },
-    /// Seals the instance (M2-K4): answered once every guest entry already
-    /// in flight has returned; afterwards no activation, call, or delivery
-    /// runs the guest — only inverses and disposal.
-    Seal {
-        reply: oneshot::Sender<()>,
-    },
-    Shutdown,
-}
-
-pub(crate) fn gone() -> KernelError {
-    KernelError {
-        code: ErrorCode::PluginFailed,
-        message: "the instance is gone".to_owned(),
-        fiber: None,
-    }
 }
 
 /// A handle onto one live instance. Cloneable; the instance dies when its
@@ -282,83 +235,4 @@ impl InstanceHandle {
     pub async fn dispose(&self) {
         let _ = self.tx.send(Command::Shutdown).await;
     }
-}
-
-/// The instance as a broker peer and event target.
-pub(crate) struct InstancePeer {
-    pub(crate) handle: InstanceHandle,
-}
-
-impl Peer for InstancePeer {
-    fn call(
-        &self,
-        caller: PeerId,
-        contract: &str,
-        operation: &str,
-        payload: Vec<u8>,
-    ) -> KernelFuture<'static, Vec<u8>> {
-        let handle = self.handle.clone();
-        let (contract, operation) = (contract.to_owned(), operation.to_owned());
-        Box::pin(async move {
-            let (reply, rx) = oneshot::channel();
-            handle
-                .send(
-                    Command::HandleCall {
-                        caller,
-                        contract,
-                        operation,
-                        payload,
-                        reply,
-                    },
-                    rx,
-                )
-                .await?
-        })
-    }
-
-    fn check(&self, consumer: PeerId) -> KernelFuture<'static, bool> {
-        let handle = self.handle.clone();
-        Box::pin(async move {
-            let (reply, rx) = oneshot::channel();
-            // A dead provider is not vital; the check itself never errors.
-            Ok(handle
-                .send(Command::Check { consumer, reply }, rx)
-                .await
-                .unwrap_or(false))
-        })
-    }
-}
-
-impl EventTarget for InstancePeer {
-    fn deliver(&self, token: u64, topic: &str, payload: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
-        let handle = self.handle.clone();
-        let topic = topic.to_owned();
-        Box::pin(async move {
-            let (reply, rx) = oneshot::channel();
-            handle
-                .send(
-                    Command::Deliver {
-                        token,
-                        topic,
-                        payload,
-                        reply,
-                    },
-                    rx,
-                )
-                .await?
-        })
-    }
-}
-
-pub(crate) fn pair() -> (InstanceHandle, mpsc::Receiver<Command>) {
-    let (tx, rx) = mpsc::channel(16);
-    (InstanceHandle { tx }, rx)
-}
-
-/// The instance's own transport face, handed to the broker on `provide` and
-/// to the topic registry on `listen`.
-pub(crate) fn peer_face(handle: &InstanceHandle) -> Arc<InstancePeer> {
-    Arc::new(InstancePeer {
-        handle: handle.clone(),
-    })
 }
