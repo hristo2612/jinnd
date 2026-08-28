@@ -174,7 +174,10 @@ impl Guest for Fixture {
             // A one-shot wake that appends to a guest-kept log from
             // `handle_event` (M2-K3 round 2): an effect registered AFTER
             // activation must still join the fiber's journal.
-            "fs-on-wake" => {
+            // The FINDINGS #15 shape (M2-K4): the handler appends, dawdles
+            // mid-tick, then appends again — a dispose landing in between
+            // must seal the journal against the second append.
+            "fs-on-wake" | "fs-on-wake-busy" => {
                 clock::alarm_at(0, WAKE_TOKEN).map_err(fault)?;
                 Ok(())
             }
@@ -246,8 +249,17 @@ impl Guest for Fixture {
                 return Err(GuestFault::Failed("a malformed wake arrived".into()));
             }
             COUNTER.fetch_add(1, Ordering::SeqCst);
-            if *MODE.lock().unwrap() == "fs-on-wake" {
+            let mode = MODE.lock().unwrap().clone();
+            if mode == "fs-on-wake" {
                 fs::append("/wakes.log", b"tick\n", "").map_err(fs_fault)?;
+            }
+            if mode == "fs-on-wake-busy" {
+                fs::append("/wakes.log", b"tick\n", "").map_err(fs_fault)?;
+                let started = clock::now().map_err(fault)?;
+                while clock::now().map_err(fault)? < started + 600 {
+                    std::hint::black_box(());
+                }
+                fs::append("/wakes.log", b"tock\n", "").map_err(fs_fault)?;
             }
             return Ok(Vec::new());
         }

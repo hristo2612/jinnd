@@ -166,6 +166,7 @@ impl EffectScope {
             label: label.into(),
             disposer,
             drain: None,
+            suspend: None,
             children: Vec::new(),
         })
     }
@@ -277,12 +278,8 @@ mod tests {
             record = parent;
         }
 
-        let scope = EffectScope {
-            roots: vec![record],
-            withdrawn: Vec::new(),
-            replayed: false,
-        };
-
+        let mut scope = EffectScope::new();
+        scope.roots.push(record);
         drop(scope);
     }
 
@@ -292,6 +289,7 @@ mod tests {
             label: "nested".to_owned(),
             disposer: Disposer::sync(|| Ok(())),
             drain: None,
+            suspend: None,
             children: Vec::new(),
         }
     }

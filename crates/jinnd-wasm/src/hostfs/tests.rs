@@ -343,6 +343,8 @@ fn records_round_trip_their_header_and_prior() {
             label: "log".into(),
             key: "k1".into(),
             owner: 7,
+            entry: "scribe".into(),
+            operation: "append".into(),
         },
         prior: Prior::Length(42),
     };
@@ -575,6 +577,8 @@ async fn retention_is_bounded_in_memory_and_undo_reads_the_spill() {
             label: "big".into(),
             key: String::new(),
             owner: 7,
+            entry: String::new(),
+            operation: "write".into(),
         },
         prior: Prior::Content(b"from the spill".to_vec()),
     };
@@ -655,4 +659,39 @@ async fn a_reopened_store_rehydrates_live_inverses_and_never_reuses_an_id() {
         .unwrap_or_else(|| panic!("registered"))
         .0;
     assert!(fresh.0 >= 2 << 32, "epoch 1 ids: {}", fresh.0);
+}
+
+/// M2-K4: a record spilled before the entry-scoped header (M2-K3 wire, no
+/// entry flag) still decodes — unattributed — and the new header round
+/// trips its entry and operation.
+#[test]
+fn a_pre_entry_record_still_decodes_and_the_new_header_round_trips() {
+    let legacy = {
+        let mut bytes = vec![2u8];
+        for segment in [b"log".as_slice(), b"k1".as_slice()] {
+            bytes.extend((segment.len() as u32).to_le_bytes());
+            bytes.extend(segment);
+        }
+        bytes.extend(7u64.to_le_bytes());
+        bytes.extend(42u64.to_le_bytes());
+        bytes
+    };
+    let decoded = Record::decode(1, &legacy).unwrap_or_else(|error| panic!("{error:?}"));
+    assert_eq!(decoded.prior, Prior::Length(42));
+    assert_eq!(decoded.header.entry, "");
+    assert_eq!(decoded.header.operation, "");
+    let record = Record {
+        header: Header {
+            label: "log".into(),
+            key: String::new(),
+            owner: 7,
+            entry: "scribe".into(),
+            operation: "remove".into(),
+        },
+        prior: Prior::Absent,
+    };
+    assert_eq!(
+        Record::decode(2, &record.encode()).unwrap_or_else(|error| panic!("{error:?}")),
+        record
+    );
 }

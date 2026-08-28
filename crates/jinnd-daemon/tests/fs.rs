@@ -57,6 +57,13 @@ fn paths(home: &Home, grants: serde_json::Value, mode: &str) -> DaemonPaths {
     }
 }
 
+/// Removes the entry from the profile on disk: the true dispose (M2-K4 —
+/// shutdown suspends; only removal from the composition withdraws).
+fn remove_entry(home: &Home) {
+    std::fs::write(home.0.join("profile.json"), r#"{ "entries": [] }"#)
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
 async fn booted(paths: DaemonPaths) -> Daemon {
     let daemon = Daemon::open(paths).unwrap_or_else(|error| panic!("open: {error:?}"));
     let report = daemon
@@ -180,16 +187,18 @@ async fn the_fs_bundle_round_trips_with_revertible_inverses_from_the_spill() {
         "a distinct key is refused"
     );
 
-    // Dispose replays the fiber's WHOLE fs journal LIFO (R5, M1-P9b): the
-    // two effects a keyed revert already consumed withdraw as clean
+    // Dispose — the entry leaving the profile (M2-K4: shutdown merely
+    // SUSPENDS) — replays the fiber's WHOLE fs journal LIFO (R5, M1-P9b):
+    // the two effects a keyed revert already consumed withdraw as clean
     // no-ops, both writes restore prior absence, each withdrawal is
     // ledgered under the effect's label in strict reverse registration
     // order, and the fiber's trail leaves no orphaned inverse (the
     // verifier's round-1 probe).
+    remove_entry(&home);
     daemon
-        .shutdown()
+        .reload()
         .await
-        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+        .unwrap_or_else(|error| panic!("reload: {error:?}"));
     assert!(!data.join("log/a.txt").exists(), "write a.txt withdrawn");
     assert!(!data.join("log/b.txt").exists(), "write b.txt withdrawn");
     assert_eq!(
@@ -267,15 +276,20 @@ async fn effects_registered_after_activation_join_the_fibers_journal() {
         "the wake handler appended"
     );
     assert_eq!(inverse_files(&paths), 1);
+    remove_entry(&home);
     daemon
-        .shutdown()
+        .reload()
         .await
-        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+        .unwrap_or_else(|error| panic!("reload: {error:?}"));
     assert!(
         !paths.data.join("wakes.log").exists(),
         "dispose withdrew the late append"
     );
     assert_eq!(inverse_files(&paths), 0, "no orphaned inverse");
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }
 
 /// The COO's round-2 ruling: a well-typed path-prefix grant admits and

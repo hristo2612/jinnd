@@ -132,7 +132,8 @@ pub trait SwapSlots: Send + Sync {
 
     fn commit(&self, entry: &EntryId, prepared: Self::Prepared) -> Option<Self::Displaced>;
 
-    fn retire_displaced(&self, displaced: Self::Displaced) -> KernelFuture<'_, ()>;
+    fn retire_displaced(&self, entry: &EntryId, displaced: Self::Displaced)
+    -> KernelFuture<'_, ()>;
 
     fn discard(&self, prepared: Self::Prepared) -> KernelFuture<'_, ()>;
 }
@@ -212,7 +213,7 @@ pub async fn swap_batch<S: SwapSlots>(
             let mut displaced = Vec::new();
             for (entry, instance) in moved.take().unwrap_or_default() {
                 if let Some(seat) = slots.commit(&entry, instance) {
-                    displaced.push(seat);
+                    displaced.push((entry.clone(), seat));
                 }
                 swapped.push(entry);
             }
@@ -226,8 +227,8 @@ pub async fn swap_batch<S: SwapSlots>(
                 },
                 None,
             );
-            for seat in displaced {
-                let _ = slots.retire_displaced(seat).await;
+            for (entry, seat) in displaced {
+                let _ = slots.retire_displaced(&entry, seat).await;
             }
             return Ok(SwapOutcome {
                 swapped,

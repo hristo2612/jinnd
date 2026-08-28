@@ -107,6 +107,24 @@ impl<'a> Setup<'a> {
         self.effects.register_draining(label, drain, undo)
     }
 
+    /// Applies an effect with a suspend path (M2-K4): `undo` is the inverse
+    /// a full withdrawal runs — disposal, a failed activation's cleanup —
+    /// and `suspend` is what a suspension runs INSTEAD, releasing the
+    /// effect's kernel-held resources while its world mutation is retained
+    /// for the entry's next incarnation (decision log 2026-08-28; Law 3).
+    ///
+    /// # Errors
+    ///
+    /// As [`effect`](Setup::effect).
+    pub fn suspendable_effect(
+        &mut self,
+        label: impl Into<String>,
+        undo: Disposer,
+        suspend: Disposer,
+    ) -> Result<EffectId, KernelError> {
+        self.effects.register_suspendable(label, undo, suspend)
+    }
+
     /// Applies an effect nested under `parent`, so that withdrawing `parent`
     /// withdraws this one first.
     ///

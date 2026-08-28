@@ -72,6 +72,18 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
     let paths = parse_paths();
+    // The interrupt handler is installed BEFORE boot (M2-K4): a SIGINT that
+    // lands while the kernel assembles must reach the suspend path, never
+    // the default action — clean shutdown is a promise from the first
+    // instant, not from the first poll of the serve loop.
+    let mut interrupt =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()) {
+            Ok(signal) => signal,
+            Err(refused) => {
+                tracing::error!(?refused, "the interrupt handler did not install");
+                std::process::exit(1);
+            }
+        };
     let daemon = match Daemon::open(paths.clone()) {
         Ok(daemon) => Arc::new(daemon),
         Err(refused) => {
@@ -103,7 +115,7 @@ async fn main() {
     let mut stdin_open = true;
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
+            _ = interrupt.recv() => break,
             line = lines.next_line(), if stdin_open => match line {
                 Ok(Some(line)) if !line.trim().is_empty() => {
                     handle_line(&daemon, line.trim()).await;
@@ -115,7 +127,7 @@ async fn main() {
         }
     }
 
-    tracing::info!("SIGINT: disposing all, then quiescence, then ledger flush");
+    tracing::info!("SIGINT: suspending all, then quiescence, then ledger flush");
     serving.abort();
     match daemon.shutdown().await {
         Ok(()) => {

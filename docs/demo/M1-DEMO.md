@@ -74,8 +74,13 @@ EOF
 Observe (daemon stderr): `reconciled` with `restarted=["greeter"]` and the
 entry lines again — **clock's and scribe's uids are unchanged**; greeter's
 uid is also unchanged (a config restart is the same fiber, one clean
-unload/reload through its cell). The fresh greeter activation greeted
-again, the clock ticked, and the scribe journalled it:
+unload/reload through its cell). The restart is a SUSPENSION of the old
+incarnation, not a withdrawal (M2-K4, decision log 2026-08-28): the
+ledger shows `FiberSuspended` for greeter's fiber, its provision and
+listener released, and nothing on disk reverted — an entry's world
+mutations belong to the entry, and the successor inherits them. The
+fresh greeter activation greeted again, the clock ticked, and the scribe
+journalled it:
 
 ```sh
 cat "$DEMO/data/journal.txt"        # …hello, kernel (tick N)
@@ -164,6 +169,17 @@ ls "$DEMO/data"            # journal.txt is gone — exactly its contribution (I
 
 ## 6. Shutdown
 
-`Ctrl-C` in the daemon terminal. Observe: `SIGINT: disposing all…`, every
-fiber's withdrawal lands in the ledger, then `quiescent; ledger flushed;
-bye` and exit code 0.
+`Ctrl-C` in the daemon terminal. Observe: `SIGINT: suspending all…`, one
+`FiberSuspended` per fiber in the ledger (kernel registrations released,
+`retained` counting the world effects carried for the entry), then
+`quiescent; ledger flushed; bye` and exit code 0.
+
+**Shutdown is a suspension, not a dispose** (M2-K4; decision log
+2026-08-28, harness FINDINGS #14): the composition persists in the profile,
+so its contributions persist on disk — `journal.txt` is still there, its
+inverses still retained — exactly what a crash would have left, reached
+cleanly. Only step 5 (removing an entry from the profile) withdraws a
+contribution. Boot the daemon again over the same profile and the entries'
+journals are inherited: a later removal withdraws the whole trail, across
+both processes. Prove the equivalence yourself: `kill -9` the daemon
+instead and compare `ls -R "$DEMO/data"` — same bytes, minus the flush.

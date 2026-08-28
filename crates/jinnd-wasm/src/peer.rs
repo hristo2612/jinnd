@@ -4,7 +4,7 @@
 //! implements it natively; a Tier B process would implement it over a
 //! socket.
 
-use jinnd_api::{FiberId, KernelFuture, LedgerEventKind};
+use jinnd_api::{EntryId, FiberId, KernelFuture, LedgerEventKind};
 
 /// A caller/provider identity at the broker boundary.
 pub type PeerId = u64;
@@ -18,6 +18,14 @@ pub type HandleId = u64;
 /// the append happens before the dispatch it describes.
 pub trait LedgerSink: Send + Sync + 'static {
     fn append(&self, kind: LedgerEventKind, fiber: Option<FiberId>);
+
+    /// An append attributed to a profile ENTRY as well (M2-K4): the
+    /// entry's journal outlives its fibers, so a withdrawal from it is
+    /// recorded under the entry. Sinks that carry no entry column keep the
+    /// fiber attribution alone.
+    fn append_for(&self, kind: LedgerEventKind, _entry: Option<EntryId>, fiber: Option<FiberId>) {
+        self.append(kind, fiber);
+    }
 }
 
 /// A contract call answered by a peer — the transport seam. Implementations

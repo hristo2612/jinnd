@@ -14,16 +14,19 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use jinnd_api::{Epoch, ErrorCode, FiberId, FiberState, KernelError, Transition, TransitionCause};
+use jinnd_api::{FiberState, Transition, TransitionCause};
 use jinnd_effects::{EffectScope, ReplayReport};
 use tokio_util::sync::CancellationToken;
 
-use crate::body::{FiberBody, Setup};
-use crate::contain::contained;
+use crate::body::FiberBody;
 use crate::landing::land;
 use crate::plan::{Aim, Committed, Step, plan};
 use crate::readiness::ReadinessSignal;
 use crate::shared::Shared;
+
+mod contained;
+
+use contained::{activate, unclean};
 
 /// Everything one fiber's supervisor owns outright.
 pub(crate) struct Cell {
@@ -155,7 +158,7 @@ impl Cell {
                 // against an environment that has not moved (R9).
                 self.shared.fail(error);
                 self.publish(FiberState::Unloading, cause.clone());
-                self.withdraw().await;
+                self.withdraw(true).await;
                 self.committed.state = FiberState::Failed;
                 self.committed.active_for = None;
                 self.committed.failed_under = Some(aim);
@@ -164,14 +167,21 @@ impl Cell {
         }
     }
 
-    /// Withdraws the live activation.
+    /// Stops the live activation: a disposal withdraws the full inverse
+    /// trail; every other unload — a restart, a suspension — SUSPENDS it
+    /// (M2-K4): the entry persists, so its world mutations are retained and
+    /// only kernel registrations release. The mode is the planned step's,
+    /// decided before any inverse runs; a disposal arriving meanwhile lands
+    /// afterwards as a `Finish` over what the suspension left.
     async fn unload(&mut self, cause: TransitionCause) {
         self.publish(FiberState::Unloading, cause.clone());
-        let report = self.withdraw().await;
+        let full = cause == TransitionCause::ExplicitDispose;
+        let report = self.withdraw(full).await;
         self.committed.active_for = None;
 
-        if self.shared.steering.desired().disposing {
-            self.disposal_landed(&report);
+        let desired = self.shared.steering.desired();
+        if desired.disposing || desired.suspending {
+            self.disposal_landed(&report, cause);
         } else if report.is_clean() {
             self.committed.state = FiberState::Pending;
             self.publish(FiberState::Pending, cause);
@@ -183,25 +193,33 @@ impl Cell {
         }
     }
 
-    /// Disposes a fiber that holds no live activation.
+    /// Disposes (or suspends) a fiber that holds no live activation.
     async fn finish(&mut self) {
-        let report = self.withdraw().await;
-        self.disposal_landed(&report);
+        let cause = if self.shared.steering.desired().disposing {
+            TransitionCause::ExplicitDispose
+        } else {
+            TransitionCause::Suspend
+        };
+        let report = self
+            .withdraw(cause == TransitionCause::ExplicitDispose)
+            .await;
+        self.disposal_landed(&report, cause);
     }
 
-    /// Commits the state a disposal's withdrawal earned: `Disposed` for a clean
-    /// replay, `Failed` for an unclean one (R11) — a fiber that could not withdraw
-    /// never claims it is gone, and the failed replay is not reattempted against an
-    /// unchanged scope (R9). Either way the withdrawal has completed and reported.
-    fn disposal_landed(&mut self, report: &ReplayReport) {
+    /// Commits the state a disposal's — or a suspension's — replay earned:
+    /// `Disposed` for a clean replay, `Failed` for an unclean one (R11) — a
+    /// fiber that could not withdraw never claims it is gone, and the failed
+    /// replay is not reattempted against an unchanged scope (R9). Either
+    /// way the replay has completed and reported, under `cause`.
+    fn disposal_landed(&mut self, report: &ReplayReport, cause: TransitionCause) {
         if report.is_clean() {
             self.committed.state = FiberState::Disposed;
-            self.publish(FiberState::Disposed, TransitionCause::ExplicitDispose);
+            self.publish(FiberState::Disposed, cause);
         } else {
             self.shared.fail(unclean(self.shared.id, report));
             self.committed.state = FiberState::Failed;
             self.committed.disposal_failed = true;
-            self.publish(FiberState::Failed, TransitionCause::ExplicitDispose);
+            self.publish(FiberState::Failed, cause);
         }
     }
 
@@ -219,7 +237,11 @@ impl Cell {
     /// withdrawal cell, raised for exactly the drain-and-replay span: work an
     /// inverse spawns onto another task escapes the marker but happens-after
     /// the raise, so [`crate::Fiber::withdrawing`] still answers it truthfully.
-    async fn withdraw(&mut self) -> ReplayReport {
+    ///
+    /// `full` selects the withdrawal proper — every inverse runs — over the
+    /// suspend replay (M2-K4): suspendable effects run their suspend path,
+    /// every other effect its inverse, world mutations retained.
+    async fn withdraw(&mut self, full: bool) -> ReplayReport {
         let cancel = CancellationToken::new();
         let report = {
             let Cell {
@@ -231,7 +253,11 @@ impl Cell {
             let _span = shared.withdrawal.begin();
             let work = async {
                 scope.drain().await;
-                scope.replay().await
+                if full {
+                    scope.replay().await
+                } else {
+                    scope.suspend().await
+                }
             };
             crate::teardown::marked(land(work, signal.as_mut(), shared, &cancel)).await
         };
@@ -259,33 +285,5 @@ impl Cell {
 
     fn publish_effects(&self) {
         self.shared.published(self.scope.tree());
-    }
-}
-
-/// Runs one activation behind panic containment (R11).
-async fn activate<'a>(
-    body: &'a dyn FiberBody,
-    scope: &'a mut EffectScope,
-    fiber: FiberId,
-    epoch: &'a Epoch,
-    cancel: CancellationToken,
-) -> Result<(), KernelError> {
-    let setup = Setup::new(fiber, epoch, scope, cancel);
-    contained(fiber, move || body.activate(setup)).await
-}
-
-/// The failure an unclean withdrawal is recorded as.
-fn unclean(fiber: FiberId, report: &ReplayReport) -> KernelError {
-    let residue: Vec<&str> = report
-        .unclean()
-        .map(|effect| effect.label.as_str())
-        .collect();
-    KernelError {
-        code: ErrorCode::EffectFailed,
-        message: format!(
-            "these effects were not withdrawn cleanly: {}",
-            residue.join(", ")
-        ),
-        fiber: Some(fiber),
     }
 }

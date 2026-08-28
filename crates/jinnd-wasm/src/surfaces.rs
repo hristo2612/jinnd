@@ -9,12 +9,39 @@ use crate::instance::HostState;
 
 impl bindings::types::Host for HostState {}
 
+impl HostState {
+    /// Admits one registration into the seat's journal (M2-K4, FINDINGS
+    /// #15): refused, on the record with the fiber's attribution, once the
+    /// seat sealed for withdrawal — fail-closed, like grant admission, so a
+    /// dispose trail is exactly the fiber's contribution (I1), never a
+    /// prefix of a journal something escaped.
+    ///
+    /// # Errors
+    ///
+    /// The sealed refusal ([`jinnd_api::ErrorCode::InactiveContext`]).
+    pub(crate) fn admit(&self, what: &str) -> Result<(), jinnd_api::KernelError> {
+        if self.seat.slot.as_ref().is_none_or(|slot| !slot.sealed()) {
+            return Ok(());
+        }
+        let mut error = crate::instance::sealed_error();
+        error.message = format!("{what} {}", error.message);
+        self.seat.broker.ledger().append(
+            jinnd_api::LedgerEventKind::ErrorRecorded {
+                error: error.clone(),
+            },
+            self.seat.fiber,
+        );
+        Err(error)
+    }
+}
+
 impl bindings::effects::Host for HostState {
     async fn register(
         &mut self,
         label: String,
         token: u64,
     ) -> Result<u64, bindings::types::KernelError> {
+        self.admit("effect").map_err(bindings::wire_error)?;
         let index = self.outcome.effects().count() as u64;
         self.outcome
             .registrations
@@ -25,6 +52,7 @@ impl bindings::effects::Host for HostState {
 
 impl bindings::services::Host for HostState {
     async fn provide(&mut self, contract: String) -> Result<u64, bindings::types::KernelError> {
+        self.admit("provide").map_err(bindings::wire_error)?;
         let index = self.outcome.provisions().count() as u64;
         if self.seat.staging {
             // A staged provision is recorded, not routed (R8) — but it is
@@ -100,6 +128,7 @@ impl bindings::events::Host for HostState {
         topic: String,
         token: u64,
     ) -> Result<u64, bindings::types::KernelError> {
+        self.admit("listen").map_err(bindings::wire_error)?;
         // Subscriptions are covered by the contract grant in v0.1
         // (constitution 01 §Grants): listening on a topic requires the grant
         // of the topic's name, and the refusal is a ledger event (Law 1).

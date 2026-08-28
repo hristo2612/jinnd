@@ -79,6 +79,8 @@ pub(super) async fn dispatch(
                     label: path.trim_start_matches('/').to_owned(),
                     key,
                     owner: owner.map_or(0, |fiber| fiber.0),
+                    entry: provider.entry_of(caller).unwrap_or_default(),
+                    operation: operation.to_owned(),
                 },
                 path: &path,
             };

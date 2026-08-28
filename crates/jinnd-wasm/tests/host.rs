@@ -628,7 +628,7 @@ impl SwapSlots for Lane {
             .insert(entry.clone(), prepared.0)
     }
 
-    fn retire_displaced(&self, displaced: InstanceHandle) -> KernelFuture<'_, ()> {
+    fn retire_displaced(&self, _: &EntryId, displaced: InstanceHandle) -> KernelFuture<'_, ()> {
         Box::pin(async move {
             displaced.dispose().await;
             Ok(())
@@ -997,5 +997,115 @@ async fn a_swap_commit_carries_live_alarms_through_the_staged_outcome() {
     assert!(
         rig.alarms.cancel(new_alarms[0]),
         "the successor's alarm survived the swap, live until ITS undo"
+    );
+}
+
+/// M2-K4: a sealed seat refuses registrations on the record, and a sealed
+/// instance runs no further guest entry — inverses still run, so the
+/// journal that teardown replays is exactly the contribution (I1).
+#[tokio::test]
+async fn a_sealed_seat_refuses_registrations_and_the_instance_no_entries() {
+    let rig = rig();
+    const TOPIC: &str = "jinn:test/topic";
+    let slot = Arc::new(jinnd_wasm::SharedSlot::default());
+    let (peer, mut seat) = rig.seat(1, Duration::from_secs(5));
+    seat.slot = Some(Arc::clone(&slot));
+    rig.broker.grant(peer, TOPIC);
+    let instance = rig.host.instantiate(&rig.component, seat);
+    slot.seal();
+
+    let (outcome, contributed) = instance.activate(b"listener".to_vec()).await;
+    assert!(
+        outcome.is_err(),
+        "the listen refuses against a sealed journal"
+    );
+    assert_eq!(contributed.registrations.len(), 0, "nothing escaped");
+    assert!(
+        rig.ledger.kinds().iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::ErrorRecorded { error } if error.message.contains("sealed")
+        )),
+        "the refusal is on the record"
+    );
+
+    instance.seal().await;
+    let delivered = instance.deliver(7, TOPIC, b"ping".to_vec()).await;
+    assert_eq!(
+        delivered.err().map(|error| error.code),
+        Some(ErrorCode::InactiveContext),
+        "a sealed instance runs no handler"
+    );
+    assert!(instance.undo(1).await.is_ok(), "inverses still run");
+    instance.dispose().await;
+}
+
+/// M2-K4 ruling 4: suspension releases kernel registrations — the listener
+/// unlistens, the provision withdraws, each ledgered — and hands the world
+/// effects back once each, in registration order; guest inverses do not
+/// run (they are instance-bound, and the instance disposes).
+#[tokio::test]
+async fn suspend_releases_registrations_and_hands_back_world_effects() {
+    let rig = rig();
+    const TOPIC: &str = "jinn:test/topic";
+    let (peer, instance) = rig.spawn(1);
+    rig.broker.grant(peer, COUNTER);
+    rig.broker.grant(peer, TOPIC);
+    let (outcome, mut contributed) = instance.activate(b"interleave".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("interleave activate: {error:?}"));
+    let listen_id = contributed
+        .listens()
+        .next()
+        .and_then(|record| record.id)
+        .unwrap_or_else(|| panic!("the listener was minted an id"));
+    for effect in [41, 42, 41] {
+        contributed
+            .registrations
+            .push(jinnd_wasm::Registration::Host(jinnd_wasm::HostRecord {
+                contract: "jinn:fs".to_owned(),
+                label: format!("fs write x [effect {effect}]"),
+                effect,
+            }));
+    }
+    let seat = jinnd_wasm::SeatState::live(instance, contributed);
+    let before = rig.ledger.kinds().len();
+    let retained = seat
+        .suspend(
+            &rig.broker,
+            &rig.topics,
+            &rig.alarms,
+            peer,
+            Some((rig.ledger.as_ref() as &dyn LedgerSink, FiberId(1))),
+        )
+        .await;
+    let ids: Vec<u64> = retained.iter().map(|record| record.effect).collect();
+    assert_eq!(
+        ids,
+        vec![41, 42],
+        "world effects hand back once each, in order"
+    );
+    assert!(
+        rig.topics.unlisten(listen_id).is_none(),
+        "the listener released"
+    );
+    let trail = &rig.ledger.kinds()[before..];
+    assert!(
+        trail.contains(&LedgerEventKind::EffectWithdrawn {
+            label: "listen jinn:test/topic".to_owned(),
+            clean: true,
+        }),
+        "the release is ledgered: {trail:?}"
+    );
+    assert!(
+        trail.contains(&LedgerEventKind::ServiceWithdrawn {
+            service: COUNTER.to_owned()
+        }),
+        "the provision withdrew: {trail:?}"
+    );
+    assert!(
+        !trail.iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::EffectWithdrawn { label, .. } if label.ends_with(" effect")
+        )),
+        "no guest inverse ran or was ledgered as withdrawn: {trail:?}"
     );
 }

@@ -131,6 +131,17 @@ impl Fiber {
             .await;
     }
 
+    /// Suspends the fiber (M2-K4; decision log 2026-08-28) and resolves once
+    /// its suspend replay has completed and reported: kernel registrations
+    /// released, world mutations retained, the cell resting `Disposed`
+    /// under the `Suspend` cause — the entry's contribution persists
+    /// exactly as a crash would have left it, reached cleanly. A disposal
+    /// requested at any point still lands as one. Idempotent.
+    pub async fn suspend(&self) {
+        self.shared.steering.suspend();
+        self.quiesce().await;
+    }
+
     /// Disposes the fiber and resolves once its withdrawal has completed and
     /// reported: `Disposed` after a clean replay, `Failed` with the residue in the
     /// record when an inverse refused (R11) — never a state that hides the residue.

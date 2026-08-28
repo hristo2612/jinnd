@@ -28,6 +28,8 @@ use jinnd_api::{
 
 use crate::broker::Broker;
 use crate::broker_state::refusal;
+use crate::handle::HostRecord;
+use crate::lane::lock;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
 mod inverses;
@@ -165,6 +167,34 @@ impl HostFs {
     /// The fiber attribution of one calling peer, through the broker.
     fn attribution(&self, caller: PeerId) -> Option<FiberId> {
         self.broker().and_then(|broker| broker.attribution(caller))
+    }
+
+    /// The profile entry one calling peer acts for (M2-K4).
+    fn entry_of(&self, caller: PeerId) -> Option<String> {
+        self.broker().and_then(|broker| broker.entry_of(caller))
+    }
+
+    /// Every entry's retained journal (M2-K4): the live effects each
+    /// profile entry still owns, in registration order, as the seat records
+    /// a successor incarnation inherits — the retention store is what lets
+    /// the trail span processes. Unattributed effects belong to no journal.
+    #[must_use]
+    pub fn journals(&self) -> Vec<(String, Vec<HostRecord>)> {
+        let mut journals: BTreeMap<String, Vec<HostRecord>> = BTreeMap::new();
+        for (id, retained) in lock(&self.index).iter() {
+            if retained.consumed || retained.header.entry.is_empty() {
+                continue;
+            }
+            journals
+                .entry(retained.header.entry.clone())
+                .or_default()
+                .push(HostRecord {
+                    contract: FS_CONTRACT.to_owned(),
+                    label: effect_label(&retained.header.operation, &retained.header.label, *id),
+                    effect: *id,
+                });
+        }
+        journals.into_iter().collect()
     }
 
     /// Authorizes and resolves one caller path: post-symlink containment

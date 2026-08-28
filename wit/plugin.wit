@@ -1,10 +1,14 @@
-/// jinn:plugin@0.2.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.3.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
 /// change is strictly additive. 0.2.0 (M2-K3): the `fs` import is finalized
 /// to its contract bundle (`contracts/jinn-fs`, 0.2.0) — the bundle's
 /// `fs-error` and `idempotency-key` now cross the guest boundary verbatim.
+/// 0.3.0 (M2-K4): lifecycle semantics — suspend ≠ dispose. No signature
+/// changes; the guest-visible meaning of `activate`/`undo` under shutdown
+/// and incarnation replacement is now contract (see `lifecycle`), mirrored
+/// in every bundle's metadata under `contracts/`.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -17,7 +21,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.2.0;
+package jinn:plugin@0.3.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -282,6 +286,19 @@ interface lifecycle {
   /// The plugin body: runs exactly once per fiber, receiving the entry's
   /// serialized config (constitution 04). Effects registered here are the
   /// fiber's contribution; they are withdrawn LIFO on teardown (I1).
+  ///
+  /// Suspend ≠ dispose (M2-K4, decision log 2026-08-28): a contribution
+  /// belongs to the profile ENTRY. Only the entry's removal from the
+  /// composition withdraws it. A kernel shutdown, or an incarnation
+  /// replacement (config edit, dependency change, hot-swap), SUSPENDS the
+  /// instance instead: kernel registrations — provisions, listeners,
+  /// alarms — release and are re-established by the next `activate`;
+  /// host-provider effects (`jinn:fs` writes) are retained for the entry
+  /// and its next incarnation inherits them, revertible by key, withdrawn
+  /// LIFO at the entry's eventual dispose. A guest-side inverse (`undo`)
+  /// is instance-bound: it runs on withdrawal, never on suspension.
+  /// Once the instance's journal seals for withdrawal or suspension, every
+  /// further registration is refused (`inactive-context`, ledgered).
   activate: func(config: list<u8>) -> result<_, guest-fault>;
 
   /// Per-consumer vitality check (decision log 2026-08-25, C3 binding): the

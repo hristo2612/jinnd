@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
+use jinnd_api::{EntryId, ErrorCode, FiberId, KernelError, LedgerEventKind};
 use jinnd_fiber::Fiber;
 use jinnd_wasm::LedgerSink;
 
@@ -27,6 +27,10 @@ pub(crate) struct Sink(pub(crate) jinnd_ledger::Ledger);
 impl LedgerSink for Sink {
     fn append(&self, kind: LedgerEventKind, fiber: Option<FiberId>) {
         self.0.record(kind, None, fiber);
+    }
+
+    fn append_for(&self, kind: LedgerEventKind, entry: Option<EntryId>, fiber: Option<FiberId>) {
+        self.0.record(kind, entry, fiber);
     }
 }
 

@@ -7,10 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::{
-    EffectId, EntryId, ErrorCode, FiberId, FiberState, KernelError, LedgerEventKind, LedgerQuery,
-    LedgerRecord, ReconcileReport, RevertKey, RevertResolution,
-};
+use jinnd_api::{EntryId, ErrorCode, KernelError, LedgerEventKind, LedgerQuery, ReconcileReport};
 use jinnd_context::ContextTree;
 use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::{Document, FileStore, Loader};
@@ -18,6 +15,8 @@ use jinnd_registry::Registry;
 use jinnd_wasm::{HostClock, HostFs, LaneCore, LedgerSink};
 
 use crate::support::{SharedFibers, Sink, error, lock};
+
+mod observe;
 
 /// The daemon's whole configuration (M1-P9 card: ledger path and profile
 /// path are the only required config; the rest defaults beside the profile).
@@ -86,6 +85,13 @@ impl Daemon {
         // The jinn:clock read provider (M2-K2): time enters through the
         // same choke point; alarm machinery lives in the lane's registry.
         HostClock::register(&lane.broker)?;
+        // Every entry's retained journal crosses the process boundary
+        // through the retention store (M2-K4 ruling 3): the lane inherits
+        // it here, so a successor incarnation's dispose withdraws the
+        // whole trail and a removal-while-down withdraws at boot.
+        for (entry, records) in hostfs.journals() {
+            lane.inherit(&EntryId(entry), records);
+        }
         let tree = ContextTree::new();
         let root = tree.root();
         let registry = Registry::new();
@@ -117,7 +123,27 @@ impl Daemon {
         let document = store.load().await?.unwrap_or_default();
         self.loader
             .attach_store::<serde_json::Value>(self.paths.profile.clone(), document.clone());
-        self.apply(document).await
+        let report = self.apply(document).await?;
+        self.withdraw_orphaned_journals().await;
+        Ok(report)
+    }
+
+    /// An entry that left the profile while the daemon was down left the
+    /// composition (M2-K4; I4): its retained journal withdraws at boot,
+    /// LIFO, every withdrawal ledgered under the entry — a fresh boot of
+    /// the final configuration shows no trace of it. Entries still named
+    /// (faulted or not) keep theirs.
+    async fn withdraw_orphaned_journals(&self) {
+        let named: Vec<String> = self.entries();
+        for entry in self.lane.journaled_entries() {
+            if named.contains(&entry.0) {
+                continue;
+            }
+            if let Err(error) = self.lane.withdraw_journal(&entry, None).await {
+                self.ledger
+                    .record(LedgerEventKind::ErrorRecorded { error }, Some(entry), None);
+            }
+        }
     }
 
     /// Re-reads the profile file and reconciles by id — the file watcher's
@@ -161,116 +187,14 @@ impl Daemon {
         Ok(report)
     }
 
-    /// Keyed exactly-once revert of one recorded fs effect (Law 3): the
-    /// inverse restores the prior content, absence, or length from the
-    /// retention store; the witness reads the file back. Receipts land in
-    /// the ledger either way.
-    ///
-    /// # Errors
-    ///
-    /// An effect this daemon's provider does not own, a distinct key for an
-    /// already-claimed effect, or a storage refusal.
-    pub async fn revert(
-        &self,
-        effect: EffectId,
-        key: &str,
-    ) -> Result<RevertResolution, KernelError> {
-        // The provider that captured the write's inverse builds the action
-        // (Law 3, M2-K1 seam); this daemon feeds it to the ledger's keyed
-        // exactly-once protocol.
-        let (witness, inverse) = self.hostfs.undo_action(effect).ok_or_else(|| {
-            error(
-                ErrorCode::EffectFailed,
-                format!("no revertible effect {}", effect.0),
-            )
-        })?;
-        let resolution = self
-            .revert
-            .revert(
-                effect,
-                RevertKey(key.to_owned()),
-                witness,
-                inverse,
-                None,
-                None,
-            )
-            .await?;
-        // Consumption reclaims the spilled inverse (M2-K3 retention): only
-        // once the ledger holds the branch `Reverted`, so a crash between
-        // completion and reclaim resumes from the record, never re-runs.
-        if resolution == RevertResolution::Reverted {
-            self.hostfs.reclaim(effect).await?;
-        }
-        Ok(resolution)
-    }
-
-    /// Every live (unconsumed) fs effect — write, append, remove — in id
-    /// order.
-    #[must_use]
-    pub fn fs_effects(&self) -> Vec<(EffectId, String)> {
-        self.hostfs.effects()
-    }
-
-    /// The fiber currently hosting `entry`, if any.
-    #[must_use]
-    pub fn entry_fiber(&self, entry: &str) -> Option<FiberId> {
-        self.loader.entry_fiber(&EntryId(entry.to_owned()))
-    }
-
-    /// The last committed state of one loader-owned fiber.
-    #[must_use]
-    pub fn fiber_state(&self, fiber: FiberId) -> Option<FiberState> {
-        self.loader.fiber_state(fiber)
-    }
-
-    /// The committed entry ids, for operator status output.
-    #[must_use]
-    pub fn entries(&self) -> Vec<String> {
-        self.loader
-            .persisted::<serde_json::Value>()
-            .map(|profile| {
-                profile
-                    .entries
-                    .iter()
-                    .map(|entry| entry.id.0.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// The whole ledger stream, in sequence order.
-    ///
-    /// # Errors
-    ///
-    /// Storage refusals.
-    pub async fn ledger_events(&self) -> Result<Vec<LedgerRecord>, KernelError> {
-        self.ledger
-            .events(LedgerQuery::default())
-            .await
-            .map_err(storage)
-    }
-
-    /// Emits every committed fiber transition the ledger has not yet seen
-    /// (R6: transitions are ledger events; ordered, unreceipted lane).
-    pub fn sync_transitions(&self) {
-        let mut fibers = lock(&self.fibers);
-        for tracked in fibers.values_mut() {
-            let transitions = tracked.fiber.record().transitions;
-            for transition in transitions.iter().skip(tracked.recorded) {
-                self.ledger.record(
-                    LedgerEventKind::FiberTransition(transition.clone()),
-                    None,
-                    Some(tracked.fiber.id()),
-                );
-            }
-            tracked.recorded = transitions.len();
-        }
-    }
-
-    /// Graceful shutdown (M1-P9 card): dispose every fiber (each seat's
-    /// withdrawal is ledgered), reach quiescence, then flush the ledger —
-    /// the barrier is a read through the single writer, so every event sent
-    /// before it is durably committed when this returns `Ok`.
+    /// Graceful shutdown (M1-P9 card; M2-K4 ruling 2: shutdown = SUSPEND):
+    /// suspend every fiber — kernel registrations release, world mutations
+    /// stay on disk for the entries that persist in the profile, each
+    /// suspension a typed ledger event — reach quiescence, then flush the
+    /// ledger: the barrier is a read through the single writer, so every
+    /// event sent before it is durably committed when this returns `Ok`.
+    /// Crash and clean shutdown agree on the disk outcome; only the clean
+    /// path reaches quiescence and flushes.
     ///
     /// # Errors
     ///
@@ -283,7 +207,7 @@ impl Daemon {
             .map(|tracked| Arc::clone(&tracked.fiber))
             .collect();
         for fiber in &handles {
-            fiber.dispose().await;
+            fiber.suspend().await;
         }
         self.loader.quiesce().await;
         self.sync_transitions();

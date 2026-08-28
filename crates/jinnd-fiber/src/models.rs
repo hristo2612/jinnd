@@ -21,7 +21,9 @@ use jinnd_api::{
 use crate::plan::Aim;
 use crate::steering::SteeringCell;
 
-fn aim(revision: u64) -> Aim {
+mod suspend;
+
+pub(super) fn aim(revision: u64) -> Aim {
     Aim {
         epoch: None,
         revision,
@@ -61,7 +63,7 @@ fn absorb_into(cell: &SteeringCell, epoch: Option<Epoch>, cancelled: &AtomicBool
 /// next round, and the writer's wake-up is what guarantees there is one. What
 /// the cell owes is modelled below: no update is lost, and staleness is never
 /// invented.
-fn round(cell: &SteeringCell) -> (bool, Aim) {
+pub(super) fn round(cell: &SteeringCell) -> (bool, Aim) {
     cell.launch(aim(0));
     let stale = cell.stale();
     cell.land();
