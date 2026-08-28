@@ -34,7 +34,7 @@ mod topics;
 
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
-pub use handle::{ActivationOutcome, InstanceHandle, ListenRecord};
+pub use handle::{ActivationOutcome, InstanceHandle, ListenRecord, Registration};
 pub use host::{LoadedComponent, WasmHost};
 pub use instance::Seat;
 pub use peer::{HandleId, LedgerSink, Peer, PeerId};

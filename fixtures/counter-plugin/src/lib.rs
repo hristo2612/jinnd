@@ -5,8 +5,10 @@
 //! asserts the broker refuses an ungranted resolve; `trap` panics; `spin`
 //! never returns; `grumpy-undo` registers an effect whose inverse fails
 //! loudly (it proves an undo replay RAN); `flaky-restore` refuses every
-//! handoff (it fails a swap's health gate on demand). State is one counter,
-//! handed across Mode-1 swaps via snapshot/restore.
+//! handoff (it fails a swap's health gate on demand); `interleave` registers
+//! effects, a provision, and a listener deliberately interleaved (the LIFO
+//! teardown probe). State is one counter, handed across Mode-1 swaps via
+//! snapshot/restore.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -76,6 +78,15 @@ impl Guest for Fixture {
             "fs" => {
                 let answer = fs::read("/probe").map_err(fault)?;
                 *STASH.lock().unwrap() = answer;
+                Ok(())
+            }
+            // Registrations of every category, deliberately interleaved: the
+            // seat's teardown must replay this exact journal in reverse.
+            "interleave" => {
+                effects::register("first effect", 1).map_err(fault)?;
+                services::provide(COUNTER_CONTRACT).map_err(fault)?;
+                jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
+                effects::register("second effect", 2).map_err(fault)?;
                 Ok(())
             }
             "fs-denied" => match fs::read("/probe") {

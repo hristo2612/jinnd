@@ -16,8 +16,8 @@ use jinnd_fiber::{Fiber, FiberBody, Setup};
 use jinnd_loader::host::{LaneHandle, Rebind, config_of};
 use jinnd_loader::{PackageLane, SpawnRequest};
 use jinnd_wasm::{
-    Broker, LedgerSink, LoadedComponent, LocalTopics, NoRealms, PeerId, Seat, SeatState,
-    SharedSlot, SwapCore, WasmHost,
+    Broker, LedgerSink, LoadedComponent, LocalTopics, NoRealms, PeerId, Registration, Seat,
+    SeatState, SharedSlot, SwapCore, WasmHost,
 };
 
 use crate::seat::{SeatConfig, seat_config};
@@ -154,21 +154,16 @@ impl FiberBody for WasmBody {
             // the seat, success or failure alike (I1) — and each landed
             // registration is a ledger event (Law 2).
             let (outcome, contributed) = handle.activate(config).await;
-            for (label, _) in &contributed.effects {
-                state.sink.append(
-                    LedgerEventKind::EffectRegistered {
-                        label: label.clone(),
-                    },
-                    Some(fiber),
-                );
-            }
-            for listen in &contributed.listens {
-                state.sink.append(
-                    LedgerEventKind::EffectRegistered {
-                        label: format!("listen {}", listen.topic),
-                    },
-                    Some(fiber),
-                );
+            for registration in &contributed.registrations {
+                let label = match registration {
+                    Registration::Effect { label, .. } => label.clone(),
+                    Registration::Listen(listen) => format!("listen {}", listen.topic),
+                    // The broker ledgered the provide crossing itself (R6).
+                    Registration::Provision { .. } => continue,
+                };
+                state
+                    .sink
+                    .append(LedgerEventKind::EffectRegistered { label }, Some(fiber));
             }
             if let Some(previous) = self.slot.install(SeatState::live(handle, contributed)) {
                 previous.instance.dispose().await;

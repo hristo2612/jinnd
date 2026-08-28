@@ -43,8 +43,8 @@ async fn unwind(
     fiber: FiberId,
     sink: &dyn LedgerSink,
 ) {
-    for (_, token) in outcome.effects.iter().rev() {
-        if let Err(error) = instance.undo(*token).await {
+    for (_, token) in outcome.effects().rev() {
+        if let Err(error) = instance.undo(token).await {
             sink.append(LedgerEventKind::ErrorRecorded { error }, Some(fiber));
         }
     }

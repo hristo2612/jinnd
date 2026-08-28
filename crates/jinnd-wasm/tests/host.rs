@@ -163,7 +163,10 @@ async fn activation_collects_guest_effects_and_undo_replays_over_the_boundary() 
     let (_, instance) = rig.spawn(1);
     let (outcome, contributed) = instance.activate(b"plain".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("activate: {error:?}"));
-    assert_eq!(contributed.effects, vec![("fixture effect".to_owned(), 1)]);
+    assert_eq!(
+        contributed.effects().collect::<Vec<_>>(),
+        vec![("fixture effect", 1)]
+    );
     instance
         .undo(1)
         .await
@@ -302,7 +305,7 @@ async fn listening_is_grant_gated_and_a_granted_listener_receives_deliveries() {
     rig.broker.grant(granted_peer, TOPIC);
     let (outcome, contributed) = granted.activate(b"listener".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("listener activate: {error:?}"));
-    assert_eq!(contributed.listens.len(), 1);
+    assert_eq!(contributed.listens().count(), 1);
 
     // Ungranted listener is refused; the guest observes the refusal and the
     // denial is recorded (constitution 01: subscriptions are covered by the
@@ -394,7 +397,7 @@ async fn a_trapping_guest_deactivates_only_its_own_instance() {
     let (_, sibling) = rig.spawn(2);
     let (outcome, contributed) = sibling.activate(b"plain".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("sibling: {error:?}"));
-    assert_eq!(contributed.effects.len(), 1);
+    assert_eq!(contributed.effects().count(), 1);
 
     // The trapped instance is gone, and says so instead of hanging.
     let late = trapping.undo(1).await;
@@ -475,6 +478,48 @@ async fn disposal_withdraws_exactly_the_instance_contribution() {
     assert_eq!(answer, 0u64.to_le_bytes().to_vec());
 }
 
+/// M1-P9b (R5, Law 2, LAW §3): the seat's teardown is ONE LIFO replay of the
+/// interleaved registration journal — never per-category loops — and every
+/// withdrawal is ledgered at the moment it runs, so the recorded dispose
+/// trail is strictly reverse of the registration sequence.
+#[tokio::test]
+async fn retire_replays_the_whole_contribution_in_reverse_registration_order() {
+    let rig = rig();
+    let (peer, instance) = rig.spawn(1);
+    rig.broker.grant(peer, COUNTER);
+    rig.broker.grant(peer, "jinn:test/topic");
+    let (outcome, contributed) = instance.activate(b"interleave".to_vec()).await;
+    outcome.unwrap_or_else(|error| panic!("interleave activate: {error:?}"));
+    let seat = jinnd_wasm::SeatState::live(instance, contributed);
+    let before = rig.ledger.kinds().len();
+    seat.retire(
+        &rig.broker,
+        &rig.topics,
+        peer,
+        Some((rig.ledger.as_ref() as &dyn LedgerSink, FiberId(1))),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("retire: {error:?}"));
+    let trail: Vec<String> = rig.ledger.kinds()[before..]
+        .iter()
+        .filter_map(|kind| match kind {
+            LedgerEventKind::EffectWithdrawn { label, clean: true } => Some(label.clone()),
+            LedgerEventKind::ServiceWithdrawn { service } => Some(format!("provide {service}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        trail,
+        vec![
+            "second effect".to_owned(),
+            "listen jinn:test/topic".to_owned(),
+            format!("provide {COUNTER}"),
+            "first effect".to_owned(),
+        ],
+        "teardown is one LIFO replay of the interleaved journal"
+    );
+}
+
 #[tokio::test]
 async fn the_vitality_seam_answers_per_consumer_over_the_broker() {
     let rig = rig();
@@ -549,8 +594,8 @@ impl SwapSlots for Lane {
                 Err(error) => Err(error),
             };
             if let Err(error) = healthy {
-                for (_, token) in contributed.effects.iter().rev() {
-                    let _ = fresh.undo(*token).await;
+                for (_, token) in contributed.effects().rev() {
+                    let _ = fresh.undo(token).await;
                 }
                 fresh.dispose().await;
                 return Err(error);
@@ -578,8 +623,8 @@ impl SwapSlots for Lane {
         Box::pin(async move {
             // Replay the staged effects in reverse before disposal (R5, I1).
             let (instance, contributed) = prepared;
-            for (_, token) in contributed.effects.iter().rev() {
-                let _ = instance.undo(*token).await;
+            for (_, token) in contributed.effects().rev() {
+                let _ = instance.undo(token).await;
             }
             instance.dispose().await;
             Ok(())
