@@ -19,7 +19,7 @@ wit_bindgen::generate!({
 });
 
 use exports::jinn::plugin::lifecycle::{Guest, GuestFault};
-use jinn::plugin::{effects, fs, services};
+use jinn::plugin::{clock, effects, fs, services};
 
 /// The counter contract this fixture provides.
 const COUNTER_CONTRACT: &str = "jinn:test/counter";
@@ -30,6 +30,10 @@ const SECRET_CONTRACT: &str = "jinn:test/secret";
 /// The topic `listener` mode subscribes to (granted) and `eavesdrop` mode is
 /// refused (ungranted).
 const TOPIC: &str = "jinn:test/topic";
+/// Where `jinn:clock` wakes arrive (wit/plugin.wit `interface clock`).
+const WAKE_TOPIC: &str = "jinn:clock/alarm";
+/// The token the clock modes request their alarms under.
+const WAKE_TOKEN: u64 = 11;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static PICKY: AtomicBool = AtomicBool::new(false);
@@ -95,6 +99,38 @@ impl Guest for Fixture {
                     "an ungranted host-fs read was not refused".into(),
                 )),
             },
+            // Reads the granted clock and stashes the 8-byte LE instant.
+            "clock-now" => {
+                let reading = clock::now().map_err(fault)?;
+                *STASH.lock().unwrap() = reading.to_le_bytes().to_vec();
+                Ok(())
+            }
+            // Provides the counter, then asks for a periodic wake at the
+            // default floor; each typed wake bumps the counter (see
+            // `handle_event`), so the host can watch time arriving.
+            "clock-alarm" => {
+                services::provide(COUNTER_CONTRACT).map_err(fault)?;
+                clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+                Ok(())
+            }
+            // A one-shot at instant 0 — already past, wakes once immediately.
+            "clock-at" => {
+                services::provide(COUNTER_CONTRACT).map_err(fault)?;
+                clock::alarm_at(0, WAKE_TOKEN).map_err(fault)?;
+                Ok(())
+            }
+            "clock-denied" => match (clock::now(), clock::alarm_every(300, WAKE_TOKEN)) {
+                (Err(_), Err(_)) => Ok(()),
+                _ => Err(GuestFault::Failed(
+                    "an ungranted clock call was not refused".into(),
+                )),
+            },
+            "clock-fast" => match clock::alarm_every(1, WAKE_TOKEN) {
+                Err(_) => Ok(()),
+                Ok(_) => Err(GuestFault::Failed(
+                    "a period finer than the floor was not refused".into(),
+                )),
+            },
             other => {
                 effects::register("fixture effect", 1).map_err(fault)?;
                 if other == "provider" || other == "picky" {
@@ -126,7 +162,16 @@ impl Guest for Fixture {
         Ok(())
     }
 
-    fn handle_event(_token: u64, _topic: String, payload: Vec<u8>) -> Result<Vec<u8>, GuestFault> {
+    fn handle_event(token: u64, topic: String, payload: Vec<u8>) -> Result<Vec<u8>, GuestFault> {
+        // A typed clock wake: right token, right topic, 8-byte LE instant —
+        // anything else on the wake topic is a contract violation.
+        if topic == WAKE_TOPIC {
+            if token != WAKE_TOKEN || payload.len() != 8 {
+                return Err(GuestFault::Failed("a malformed wake arrived".into()));
+            }
+            COUNTER.fetch_add(1, Ordering::SeqCst);
+            return Ok(Vec::new());
+        }
         Ok(payload)
     }
 
