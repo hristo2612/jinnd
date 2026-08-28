@@ -2,8 +2,8 @@
 //! authority (M2-K2 round-3 ruling; Law 1, constitution 01 §Grants). The
 //! judgment is FAIL-CLOSED: every scoped grant validates against its
 //! contract bundle's declared scope type (contracts/*/metadata.toml
-//! `[scope]`), and a scope that is malformed, of the wrong type, or
-//! unenforceable in v0.1 REFUSES the grant with a recorded per-entry error —
+//! `[scope]`), and a scope that is malformed or of the wrong type REFUSES
+//! the grant with a recorded per-entry error —
 //! never dropped silently, never narrowed, and above all never widened into
 //! an unscoped grant. Authority handling has no benign-default path (R9).
 
@@ -92,32 +92,34 @@ fn refused(message: String) -> KernelError {
 /// THE fail-closed judgment on one grant (round-3 ruling). A bare grant
 /// admits (the contract's root/default scope — unchanged v0.1 semantics).
 /// A scoped grant admits only when its scope validates against the
-/// contract's declared scope type AND v0.1 can enforce it; everything else
-/// refuses with an error naming exactly why.
+/// contract's declared scope type — the clock's rate floor (M2-K2) and the
+/// fs's path prefix (M2-K3 round 2, which RETIRED the K2-era "path scopes
+/// are v0.1-unenforceable → refuse" branch: the provider now enforces them
+/// per call on the resolved path); everything else refuses with an error
+/// naming exactly why.
 ///
 /// # Errors
 ///
-/// A typed refusal for a malformed, wrong-type, undeclared, or
-/// v0.1-unenforceable scope.
+/// A typed refusal for a malformed, wrong-type, or undeclared scope.
 fn admit(grant: &Grant) -> Result<(), KernelError> {
     let Some(scope) = &grant.scope else {
         return Ok(());
     };
     let contract = &grant.contract;
     match (declared(contract), scope) {
-        // The one scope type v0.1 enforces: the clock's rate floor.
         (Declared::Rate, ScopeValue::Rate(_)) => Ok(()),
         (Declared::Rate, wrote) => Err(refused(format!(
             "grant refused: {contract} declares scope type rate; scope {wrote} is not a rate"
         ))),
-        // Well-typed, but v0.1 cannot enforce a per-entry path scope (the
-        // fs provider holds one containment root per assembly; per-entry
-        // fs scoping is M2-K3) — admitting it would hand out root-wide
-        // authority under a scoped label. Refuse honestly instead.
-        (Declared::PathPrefix, ScopeValue::Path(path)) => Err(refused(format!(
-            "grant refused: {contract} scope {path:?} is declared path-prefix, \
-             which v0.1 cannot enforce per entry; refusing rather than widening"
-        ))),
+        // A containment path: rooted at the provider's root, normal
+        // components only — a traversing scope is not a prefix.
+        (Declared::PathPrefix, ScopeValue::Path(path)) => crate::hostfs::scope::lexical(path)
+            .map(|_| ())
+            .map_err(|_| {
+                refused(format!(
+                    "grant refused: {contract} scope {path:?} is not a containment path"
+                ))
+            }),
         (Declared::PathPrefix, wrote) => Err(refused(format!(
             "grant refused: {contract} declares scope type path-prefix; \
              scope {wrote} is not a path"
@@ -218,16 +220,20 @@ mod tests {
         );
     }
 
-    /// A well-typed `path-prefix` scope is still unenforceable in v0.1 (the
-    /// fs provider holds one containment root per assembly; per-entry fs
-    /// scoping is M2-K3) — admitting it would hand out root-wide authority
-    /// under a scoped label, which IS the widening hazard. Refuse honestly.
+    /// M2-K3 round 2 (COO ruling): a well-typed `path-prefix` scope admits
+    /// — the fs provider enforces it per call on the resolved path — and
+    /// a traversing "scope" is no containment path: it refuses.
     #[test]
-    fn a_well_typed_path_scope_refuses_as_unenforceable_in_v01() {
-        let message = refusal_of(only(scoped("jinn:fs", ScopeValue::Path("/data".into()))));
+    fn a_well_typed_path_scope_admits_and_a_traversing_one_refuses() {
+        let verdict = only(scoped("jinn:fs", ScopeValue::Path("/data".into())));
         assert!(
-            message.contains("enforce"),
-            "the refusal says v0.1 cannot enforce it: {message}"
+            verdict.is_ok(),
+            "the path-prefix scope is enforceable: {verdict:?}"
+        );
+        let message = refusal_of(only(scoped("jinn:fs", ScopeValue::Path("../up".into()))));
+        assert!(
+            message.contains("containment"),
+            "the refusal names the shape: {message}"
         );
     }
 
@@ -243,7 +249,7 @@ mod tests {
         }
     }
 
-    /// The enforced v0.1 scope: a rate floor on the clock admits.
+    /// The clock's rate floor admits.
     #[test]
     fn a_rate_scope_on_the_clock_admits() {
         let verdict = only(scoped("jinn:clock", ScopeValue::Rate(1000)));

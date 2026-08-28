@@ -25,6 +25,7 @@ use jinnd_loader::{PackageLane, SpawnRequest};
 use crate::alarms::{Alarms, clock_floor};
 use crate::broker::Broker;
 use crate::broker_state::refusal;
+use crate::grants::ScopeValue;
 use crate::grants::admission;
 pub use crate::grants::{Grant, SeatSpec};
 use crate::handle::Registration;
@@ -164,8 +165,15 @@ impl FiberBody for WasmBody {
                 core.sink
                     .append(LedgerEventKind::ErrorRecorded { error }, Some(fiber));
             }
+            // An admitted path-prefix scope travels to the broker (M2-K3
+            // round 2): the provider enforces it per call.
             for grant in &admitted {
-                core.broker.grant(peer, &grant.contract);
+                match &grant.scope {
+                    Some(ScopeValue::Path(scope)) => {
+                        core.broker.grant_scoped(peer, &grant.contract, scope);
+                    }
+                    _ => core.broker.grant(peer, &grant.contract),
+                }
             }
             // The entry's granted `jinn:clock` resolution floor (M2-K2,
             // R9): grants scope alarm resolution per entry — read off the
@@ -245,8 +253,9 @@ impl FiberBody for WasmBody {
                         // registration is a ledger event like any other.
                         Registration::Alarm(alarm) => alarm.label.clone(),
                         // The broker ledgered the provide crossing itself
-                        // (R6).
-                        Registration::Provision { .. } => continue,
+                        // (R6); the host provider ledgered its own effect
+                        // registration with this fiber's attribution (M2-K3).
+                        Registration::Provision { .. } | Registration::Host(_) => continue,
                     };
                     core.sink
                         .append(LedgerEventKind::EffectRegistered { label }, Some(fiber));

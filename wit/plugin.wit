@@ -1,8 +1,13 @@
-/// jinn:plugin@0.1.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.2.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
-/// change is strictly additive.
+/// change is strictly additive. 0.2.0 (M2-K3): the `fs` import is finalized
+/// to its contract bundle (`contracts/jinn-fs`, 0.2.0) — the bundle's
+/// `fs-error` and `idempotency-key` now cross the guest boundary verbatim.
+/// A 0.x minor is semver's compatibility boundary (cargo's own reading);
+/// the only 0.1.0 guests are the in-tree fixtures and the harness, which
+/// adopts through its pin-bump procedure.
 ///
 /// Law 1: everything is a plugin behind a typed capability contract; there is
 /// no other way for a plugin to affect the world. A Tier A component's only
@@ -12,7 +17,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.1.0;
+package jinn:plugin@0.2.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -126,20 +131,68 @@ interface events {
 /// single dispatch point under the contract name `jinn:fs` — grant check →
 /// ledger append → dispatch to the contract's live provider — so an
 /// ungranted call is refused and the refusal is a ledger event (Law 1
-/// mechanical closure; constitution 01 §Grants). Effect classes and
-/// inverse obligations live in the contract bundle (constitution 01).
+/// mechanical closure; constitution 01 §Grants). This interface IS the
+/// contract bundle `contracts/jinn-fs` (0.2.0) as seen from the guest:
+/// same operations, same `fs-error`, same idempotency keys (R12 — the
+/// bundle is the product; this file binds it into the world). A grant may
+/// carry a `path-prefix` scope: every operation is authorized against the
+/// caller's granted subtree on the FULLY RESOLVED path (after symlink
+/// resolution; an unresolvable path is refused) — a path beside the scope
+/// answers `denied`, on the record (M2-K3).
 interface fs {
-  use types.{kernel-error};
+  /// One directory entry or stat answer (contract bundle `file-meta`).
+  /// Broker wire (M2-K3): u32-LE length of the path's UTF-8 bytes, the
+  /// path bytes, u64-LE size, u64-LE modified-ms (unix ms), one is-dir
+  /// byte; a `list` answer is these records back to back.
+  record file-meta { path: string, size: u64, modified-ms: u64, is-dir: bool }
+
+  /// The bundle's error, verbatim: `not-found` is the TYPED absence answer
+  /// of every read and of `remove` (callers classify by case, never by
+  /// folding a message); `denied` is a grant or scope refusal (a ledger
+  /// event); `io` carries every other contained failure — the provider's
+  /// own, or the kernel boundary's (no live provider, inactive context).
+  variant fs-error { not-found, denied, io(string) }
 
   /// Reads one file. Effect class: read.
   /// Broker wire: operation `read`, payload = the path's UTF-8 bytes.
-  read: func(path: string) -> result<list<u8>, kernel-error>;
+  read: func(path: string) -> result<list<u8>, fs-error>;
+
+  /// Lists one directory's entries (names relative to it, sorted). Effect
+  /// class: read.
+  /// Broker wire: operation `list`, payload = the path's UTF-8 bytes.
+  %list: func(path: string) -> result<list<file-meta>, fs-error>;
+
+  /// Describes one path. Effect class: read.
+  /// Broker wire: operation `meta`, payload = the path's UTF-8 bytes.
+  meta: func(path: string) -> result<file-meta, fs-error>;
 
   /// Writes one file. Effect class: revertible — the provider registers the
-  /// inverse (constitution 03).
-  /// Broker wire: operation `write`, payload = u32-LE length of the path's
-  /// UTF-8 bytes, the path bytes, then the data.
-  write: func(path: string, data: list<u8>) -> result<_, kernel-error>;
+  /// inverse (constitution 03): restore prior content or absence. The
+  /// forward operation runs under keyed exactly-once semantics (03 §Act):
+  /// a repeated delivery of the same non-empty `idempotency-key` from the
+  /// same fiber answers the recorded effect without applying the mutation
+  /// again; an empty key claims no idempotency. The registered effect
+  /// joins the calling fiber's journal: teardown withdraws it LIFO with the
+  /// rest of the fiber's contribution (R5, I1).
+  /// Broker wire: operation `write`, payload = u32-LE length + path bytes,
+  /// u32-LE length + key bytes, then the data; answer = the 8-byte LE
+  /// effect id.
+  write: func(path: string, bytes: list<u8>, idempotency-key: string)
+    -> result<_, fs-error>;
+
+  /// Appends to one file, creating it. Effect class: revertible — inverse
+  /// = truncate to the prior length, or restore prior absence (the shape
+  /// for guest-kept logs). Keyed and journaled as `write`.
+  /// Broker wire: operation `append`, payload and answer as `write`.
+  append: func(path: string, bytes: list<u8>, idempotency-key: string)
+    -> result<_, fs-error>;
+
+  /// Removes one file. Effect class: revertible — inverse = restore the
+  /// prior content. A missing path answers `not-found` and registers no
+  /// effect. Keyed and journaled as `write`.
+  /// Broker wire: operation `remove`, payload = u32-LE length + path
+  /// bytes, u32-LE length + key bytes; answer as `write`.
+  remove: func(path: string, idempotency-key: string) -> result<_, fs-error>;
 }
 
 /// Base host-provider contract `jinn:process` (R7). Same grant discipline

@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use jinnd_api::{EntryId, ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
+use crate::broker::Broker;
 use crate::broker_state::refusal;
-use crate::handle::{ActivationOutcome, InstanceHandle};
+use crate::handle::{ActivationOutcome, InstanceHandle, Registration};
 use crate::instance::Seat;
 use crate::lane::{DEADLINE, LaneCore, lock};
 use crate::peer::{LedgerSink, PeerId};
@@ -33,20 +34,33 @@ pub(crate) struct Staged {
 }
 
 /// Withdraws a staged-but-never-committed instance: its staged effects
-/// REPLAY in reverse through the instance that registered them, then the
+/// REPLAY in reverse — guest inverses through the instance that registered
+/// them, host-provider effects (M2-K3) through the broker — then the
 /// instance disposes (round-3 ruling; R5, I1 — a raw dispose that skips
-/// `outcome.effects` leaves an off-tree contribution). Staged provisions
-/// and listens were recorded, never routed (staging seat), so the guest
-/// inverses are the whole contribution to withdraw. A failing inverse is
-/// contained and recorded, never silent (R6, R11).
+/// the journal leaves an off-tree contribution). Staged provisions and
+/// listens were recorded, never routed (staging seat), so the inverses are
+/// the whole contribution to withdraw. A failing inverse is contained and
+/// recorded, never silent (R6, R11).
 async fn unwind(
     instance: InstanceHandle,
     outcome: ActivationOutcome,
     fiber: FiberId,
+    broker: &Broker,
     sink: &dyn LedgerSink,
 ) {
-    for (_, token) in outcome.effects().rev() {
-        if let Err(error) = instance.undo(token).await {
+    for registration in outcome.registrations.iter().rev() {
+        let withdrawn = match registration {
+            Registration::Effect { token, .. } => instance.undo(*token).await,
+            Registration::Host(record) => {
+                broker
+                    .withdraw_effect(&record.contract, record.effect)
+                    .await
+            }
+            Registration::Provision { .. } | Registration::Listen(_) | Registration::Alarm(_) => {
+                continue;
+            }
+        };
+        if let Err(error) = withdrawn {
             sink.append(LedgerEventKind::ErrorRecorded { error }, Some(fiber));
         }
     }
@@ -125,7 +139,14 @@ impl SwapSlots for LaneSlots {
                 Err(refused) => Err(refused),
             };
             if let Err(refused) = healthy {
-                unwind(staged, contributed, fiber, self.core.sink.as_ref()).await;
+                unwind(
+                    staged,
+                    contributed,
+                    fiber,
+                    &self.core.broker,
+                    self.core.sink.as_ref(),
+                )
+                .await;
                 return Err(refused);
             }
             Ok(Staged {
@@ -174,6 +195,7 @@ impl SwapSlots for LaneSlots {
                 staged.instance,
                 staged.outcome,
                 staged.fiber,
+                &self.core.broker,
                 self.core.sink.as_ref(),
             )
             .await;

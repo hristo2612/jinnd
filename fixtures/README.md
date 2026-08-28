@@ -9,7 +9,9 @@ tests always exercise the real pin-by-hash admission path (Law 5).
 
 Implements the `jinn:plugin` world (`wit/plugin.wit`) via `wit-bindgen`.
 Its `activate` mode comes from the entry config (UTF-8): `plain`,
-`provider`, `picky`, `caller`, `ungranted`, `trap`, `spin` — one fixture,
+`provider`, `picky`, `caller`, `ungranted`, `trap`, `spin`, the clock modes,
+and the `jinn:fs` bundle probes `fs-bundle` / `fs-bundle-denied` /
+`fs-scope-probe` / `fs-on-wake` (M2-K3) — one fixture,
 each containment and broker behavior selectable per entry.
 
 ## Build

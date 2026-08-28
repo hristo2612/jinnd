@@ -3,7 +3,10 @@
 //! counter contract; `picky` provides it with a per-consumer vitality
 //! opinion; `caller` resolves and calls a granted contract; `ungranted`
 //! asserts the broker refuses an ungranted resolve; `trap` panics; `spin`
-//! never returns; `grumpy-undo` registers an effect whose inverse fails
+//! never returns; `fs-bundle` / `fs-bundle-denied` / `fs-scope-probe` drive
+//! the `jinn:fs` bundle under a root, no, and a path-prefix grant, and
+//! `fs-on-wake` appends from a wake handler (M2-K3);
+//! `grumpy-undo` registers an effect whose inverse fails
 //! loudly (it proves an undo replay RAN); `flaky-restore` refuses every
 //! handoff (it fails a swap's health gate on demand); `interleave` registers
 //! effects, a provision, and a listener deliberately interleaved (the LIFO
@@ -44,6 +47,10 @@ fn fault(error: jinn::plugin::types::KernelError) -> GuestFault {
     GuestFault::Failed(format!("{error:?}"))
 }
 
+fn fs_fault(error: fs::FsError) -> GuestFault {
+    GuestFault::Failed(format!("{error:?}"))
+}
+
 struct Fixture;
 
 impl Guest for Fixture {
@@ -80,7 +87,7 @@ impl Guest for Fixture {
                 )),
             },
             "fs" => {
-                let answer = fs::read("/probe").map_err(fault)?;
+                let answer = fs::read("/probe").map_err(fs_fault)?;
                 *STASH.lock().unwrap() = answer;
                 Ok(())
             }
@@ -99,6 +106,57 @@ impl Guest for Fixture {
                     "an ungranted host-fs read was not refused".into(),
                 )),
             },
+            // The full jinn:fs bundle (M2-K3): keyed write, append, meta,
+            // list, remove, and the typed not-found; stashes the listing.
+            "fs-bundle" => {
+                fs::write("/log/a.txt", b"one\n", "k-a1").map_err(fs_fault)?;
+                fs::append("/log/a.txt", b"two\n", "k-a2").map_err(fs_fault)?;
+                fs::write("/log/b.txt", b"bee", "k-b1").map_err(fs_fault)?;
+                let meta = fs::meta("/log/a.txt").map_err(fs_fault)?;
+                if meta.size != 8 || meta.is_dir || meta.modified_ms == 0 {
+                    return Err(GuestFault::Failed(format!("meta misdescribes: {meta:?}")));
+                }
+                let listed = fs::list("/log").map_err(fs_fault)?;
+                let names: Vec<String> = listed.iter().map(|m| m.path.clone()).collect();
+                fs::remove("/log/b.txt", "k-b2").map_err(fs_fault)?;
+                for absent in [fs::read("/log/b.txt").map(|_| ()), fs::meta("/missing").map(|_| ())] {
+                    match absent {
+                        Err(fs::FsError::NotFound) => {}
+                        other => {
+                            return Err(GuestFault::Failed(format!(
+                                "absence was not the typed not-found: {other:?}"
+                            )))
+                        }
+                    }
+                }
+                *STASH.lock().unwrap() = names.join(",").into_bytes();
+                Ok(())
+            }
+            // Every new op refuses without a grant (M2-K3, red-first).
+            "fs-bundle-denied" => {
+                let refused = fs::list("/").is_err()
+                    && fs::meta("/x").is_err()
+                    && fs::append("/x", b"y", "").is_err()
+                    && fs::remove("/x", "").is_err();
+                if refused {
+                    Ok(())
+                } else {
+                    Err(GuestFault::Failed(
+                        "an ungranted fs bundle op was not refused".into(),
+                    ))
+                }
+            }
+            // A path-prefix grant of `/log` (M2-K3 round 2): the scoped
+            // write admits, the write beside the scope is the typed denial.
+            "fs-scope-probe" => {
+                fs::write("/log/in.txt", b"in", "").map_err(fs_fault)?;
+                match fs::write("/other/out.txt", b"out", "") {
+                    Err(fs::FsError::Denied) => Ok(()),
+                    other => Err(GuestFault::Failed(format!(
+                        "a write beside the scope was not the typed denial: {other:?}"
+                    ))),
+                }
+            }
             // Reads the granted clock and stashes the 8-byte LE instant.
             "clock-now" => {
                 let reading = clock::now().map_err(fault)?;
@@ -111,6 +169,13 @@ impl Guest for Fixture {
             "clock-alarm" => {
                 services::provide(COUNTER_CONTRACT).map_err(fault)?;
                 clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+                Ok(())
+            }
+            // A one-shot wake that appends to a guest-kept log from
+            // `handle_event` (M2-K3 round 2): an effect registered AFTER
+            // activation must still join the fiber's journal.
+            "fs-on-wake" => {
+                clock::alarm_at(0, WAKE_TOKEN).map_err(fault)?;
                 Ok(())
             }
             // A one-shot at instant 0 — already past, wakes once immediately.
@@ -181,6 +246,9 @@ impl Guest for Fixture {
                 return Err(GuestFault::Failed("a malformed wake arrived".into()));
             }
             COUNTER.fetch_add(1, Ordering::SeqCst);
+            if *MODE.lock().unwrap() == "fs-on-wake" {
+                fs::append("/wakes.log", b"tick\n", "").map_err(fs_fault)?;
+            }
             return Ok(Vec::new());
         }
         Ok(payload)

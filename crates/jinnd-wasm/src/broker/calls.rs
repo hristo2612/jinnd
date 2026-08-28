@@ -144,6 +144,37 @@ impl Broker {
         }
     }
 
+    /// Withdraws one host-provider effect through its CURRENT provider
+    /// (M2-K3 round 2; R5, M1-P9b): the owning seat's LIFO journal replay
+    /// lands here for every `Registration::Host`. No ledger line of its own
+    /// — the seat appends the withdrawal at the moment it runs (Law 2).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::MissingDependency`] when no provider is live; the
+    /// provider's own refusal (an unknown effect, a failing inverse).
+    pub fn withdraw_effect(&self, contract: &str, effect: u64) -> KernelFuture<'static, ()> {
+        let provider = {
+            let state = self.lock();
+            state
+                .providers
+                .get(contract)
+                .map(|provider| Arc::clone(&provider.callable))
+        };
+        match provider {
+            None => {
+                let contract = contract.to_owned();
+                Box::pin(async move {
+                    Err(refusal(
+                        ErrorCode::MissingDependency,
+                        format!("{contract} has no live provider to withdraw effect {effect}"),
+                    ))
+                })
+            }
+            Some(callable) => callable.withdraw(effect),
+        }
+    }
+
     /// One per-consumer vitality check (C3): routed to the providing peer,
     /// per notify — the seam shape is expressible over the broker, so a WASM
     /// provider answers a check call like any contract crossing.

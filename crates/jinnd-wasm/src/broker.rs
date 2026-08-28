@@ -50,18 +50,54 @@ impl Broker {
             id,
             PeerRecord {
                 fiber,
-                grants: std::collections::HashSet::new(),
+                grants: std::collections::HashMap::new(),
             },
         );
         id
+    }
+
+    /// The fiber `peer` is attributed to, for a native provider ledgering
+    /// an effect on a caller's behalf (R4: effects are charged to the
+    /// caller by construction).
+    #[must_use]
+    pub fn attribution(&self, peer: PeerId) -> Option<FiberId> {
+        self.lock().fiber_of(peer)
     }
 
     /// Grants `peer` the named contract (constitution 01: grants arrive from
     /// the profile/policy side; requests are not grants).
     pub fn grant(&self, peer: PeerId, contract: &str) {
         if let Some(record) = self.lock().peers.get_mut(&peer) {
-            record.grants.insert(contract.to_owned());
+            record.grants.insert(contract.to_owned(), Vec::new());
         }
+    }
+
+    /// Grants `peer` the named contract under one path-prefix `scope`
+    /// (M2-K3 round 2; constitution 01 §Grants attenuation). Scopes
+    /// accumulate; a root grant already held stays root.
+    pub fn grant_scoped(&self, peer: PeerId, contract: &str, scope: &str) {
+        if let Some(record) = self.lock().peers.get_mut(&peer) {
+            match record.grants.get_mut(contract) {
+                Some(scopes) if scopes.is_empty() => {}
+                Some(scopes) => scopes.push(scope.to_owned()),
+                None => {
+                    record
+                        .grants
+                        .insert(contract.to_owned(), vec![scope.to_owned()]);
+                }
+            }
+        }
+    }
+
+    /// The path-prefix scopes `peer` holds `contract` under — `None` when
+    /// ungranted, empty when root — for a provider enforcing its declared
+    /// scope type per call (R4: the caller's scope travels with the call).
+    #[must_use]
+    pub fn scopes(&self, peer: PeerId, contract: &str) -> Option<Vec<String>> {
+        self.lock()
+            .peers
+            .get(&peer)
+            .and_then(|record| record.grants.get(contract).cloned())
     }
 
     /// THE grant check, shared by every granted surface — resolve, provide,

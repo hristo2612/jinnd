@@ -29,9 +29,21 @@ pub fn wire_error(error: jinnd_api::KernelError) -> types::KernelError {
             types::KernelError::ProviderFailed(error.message)
         }
         ErrorCode::EffectFailed => types::KernelError::GrantRefused(error.message),
+        ErrorCode::NotFound => types::KernelError::ProviderFailed(error.message),
         ErrorCode::DependencyCycle | ErrorCode::InvalidProfile | ErrorCode::DuplicateProvision => {
             types::KernelError::Invalid(error.message)
         }
+    }
+}
+
+/// Maps a facade error onto the `jinn:fs` bundle's own error (M2-K3, R12):
+/// typed absence, a grant or scope denial, or the contained `io` failure —
+/// the provider's own or the kernel boundary's.
+pub fn fs_error(error: jinnd_api::KernelError) -> fs::FsError {
+    match error.code {
+        ErrorCode::NotFound => fs::FsError::NotFound,
+        ErrorCode::EffectFailed => fs::FsError::Denied,
+        _ => fs::FsError::Io(error.message),
     }
 }
 

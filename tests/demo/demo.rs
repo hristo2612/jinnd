@@ -169,7 +169,46 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
         .unwrap_or_else(|error| panic!("journal: {error:?}"));
     assert!(journal.contains("hello, rollback (tick"));
 
-    // Step 4 — dispose one plugin: the ledger shows exactly what was undone.
+    // Step 4 — keyed revert with receipts: revert the last journal append;
+    // the file returns to its prior length and the ledger shows the
+    // intent → completed → resolved receipt trail.
+    let (effect, path) = daemon
+        .fs_effects()
+        .pop()
+        .unwrap_or_else(|| panic!("the journal writes registered revertible effects"));
+    assert!(path.ends_with("journal.txt"));
+    let before = std::fs::read_to_string(data.join("journal.txt"))
+        .unwrap_or_else(|error| panic!("journal: {error:?}"));
+    let resolution = daemon
+        .revert(effect, "demo-revert")
+        .await
+        .unwrap_or_else(|error| panic!("the revert protocol runs: {error:?}"));
+    assert_eq!(resolution, RevertResolution::Reverted);
+    let after = std::fs::read_to_string(data.join("journal.txt"))
+        .unwrap_or_else(|error| panic!("journal: {error:?}"));
+    assert_ne!(before, after, "the last write is undone");
+    assert!(
+        !after.contains("hello, rollback"),
+        "the reverted write's line is gone: {after:?}"
+    );
+    let kinds = ledger_kinds(&daemon).await;
+    let trail: Vec<&LedgerEventKind> = kinds
+        .iter()
+        .filter(|kind| {
+            matches!(
+                kind,
+                LedgerEventKind::RevertIntent { .. }
+                    | LedgerEventKind::RevertCompleted { .. }
+                    | LedgerEventKind::RevertResolved { .. }
+            )
+        })
+        .collect();
+    assert_eq!(trail.len(), 3, "intent, completed, resolved: {trail:?}");
+
+    // Step 5 — dispose one plugin: the ledger shows exactly what was undone
+    // — the fiber's WHOLE journal, LIFO: its guest effect, its listener,
+    // and every jinn:fs append it made (M2-K3, R5). The journal file is
+    // back to its prior absence: exactly the scribe's contribution (I1).
     support::remove_profile_entry(&profile, "scribe");
     let report = daemon
         .reload()
@@ -225,42 +264,22 @@ async fn the_m1_acceptance_demo_runs_headlessly() {
         withdrawn, reversed,
         "the dispose trail replays the scribe's registrations LIFO"
     );
-
-    // Step 5 — keyed revert with receipts: revert the last journal write;
-    // the file returns to its prior content and the ledger shows the
-    // intent → completed → resolved receipt trail.
-    let (effect, path) = daemon
-        .fs_effects()
-        .pop()
-        .unwrap_or_else(|| panic!("the journal writes registered revertible effects"));
-    assert!(path.ends_with("journal.txt"));
-    let before = std::fs::read_to_string(data.join("journal.txt"))
-        .unwrap_or_else(|error| panic!("journal: {error:?}"));
-    let resolution = daemon
-        .revert(effect, "demo-revert")
-        .await
-        .unwrap_or_else(|error| panic!("the revert protocol runs: {error:?}"));
-    assert_eq!(resolution, RevertResolution::Reverted);
-    let after = std::fs::read_to_string(data.join("journal.txt"))
-        .unwrap_or_else(|error| panic!("journal: {error:?}"));
-    assert_ne!(before, after, "the last write is undone");
     assert!(
-        !after.contains("hello, rollback"),
-        "the reverted write's line is gone: {after:?}"
+        kinds.iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::EffectWithdrawn { label, clean: true }
+                if label.starts_with("fs append journal.txt")
+        )),
+        "the scribe's journal appends withdraw with its trail (M2-K3)"
     );
-    let kinds = ledger_kinds(&daemon).await;
-    let trail: Vec<&LedgerEventKind> = kinds
-        .iter()
-        .filter(|kind| {
-            matches!(
-                kind,
-                LedgerEventKind::RevertIntent { .. }
-                    | LedgerEventKind::RevertCompleted { .. }
-                    | LedgerEventKind::RevertResolved { .. }
-            )
-        })
-        .collect();
-    assert_eq!(trail.len(), 3, "intent, completed, resolved: {trail:?}");
+    assert!(
+        !data.join("journal.txt").exists(),
+        "dispose withdrew exactly the scribe's contribution: the journal is gone"
+    );
+    assert!(
+        daemon.fs_effects().is_empty(),
+        "no fs effect outlives the fiber that registered it"
+    );
 
     // Shutdown: dispose all, quiescence, ledger flushed — and the flush
     // barrier's outcome is reported, never assumed (round-2 major).

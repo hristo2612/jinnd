@@ -1,24 +1,40 @@
-// jinn:fs@0.1.0 — SKELETON (seeded at M0 ratification; finalized in M1)
+// jinn:fs@0.2.0 — the base host-provider file contract (M2-K3: finalized to
+// its declared bundle; additive over 0.1.0 per R12: `meta` and `append` are
+// new, `remove` is reclassified revertible, nothing is removed or reshaped).
 // Base host-provider contract implemented by the kernel (01 §Mechanical closure).
 // Demonstrates the scoped-grant pattern: grants carry a path-prefix scope with a
-// decidable subset predicate (01 §Contract anatomy).
-package jinn:fs@0.1.0;
+// decidable subset predicate (01 §Contract anatomy), enforced per call on the
+// fully resolved path. The plugin world's `fs` import (wit/plugin.wit, 0.2.0)
+// carries this interface verbatim — operations, `fs-error`, idempotency keys.
+package jinn:fs@0.2.0;
 
 interface files {
   record file-meta { path: string, size: u64, modified-ms: u64, is-dir: bool }
+  // `not-found` is the TYPED absence answer of every read and of `remove`:
+  // callers classify it by case, never by folding an io message.
   variant fs-error { not-found, denied, io(string) }
 
   // effect = read
-  list: func(path: string) -> result<list<file-meta>, fs-error>;
+  %list: func(path: string) -> result<list<file-meta>, fs-error>;
   read: func(path: string) -> result<list<u8>, fs-error>;
+  meta: func(path: string) -> result<file-meta, fs-error>;
 
   // effect = revertible: inverse obligation = restore prior content/absence.
-  // Provider implements keyed exactly-once semantics (03 §The protocol).
+  // Provider implements keyed exactly-once semantics (03 §The protocol): a
+  // repeated delivery of the same non-empty key from the same fiber answers
+  // the recorded effect without mutating again; an empty key claims none.
   write: func(path: string, bytes: list<u8>, idempotency-key: string)
     -> result<_, fs-error>;
 
-  // effect = irreversible in v0.1 (no trash abstraction yet): confirmation flow
-  // applies (03 §Irreversible effects).
+  // effect = revertible: inverse obligation = truncate to the prior length,
+  // or restore prior absence. The shape for guest-kept logs (append is
+  // O(1) per record; a rewrite-per-append pattern is retired).
+  append: func(path: string, bytes: list<u8>, idempotency-key: string)
+    -> result<_, fs-error>;
+
+  // effect = revertible (0.2.0; irreversible in 0.1.0): inverse obligation =
+  // restore the prior content. A missing path answers `not-found` and
+  // registers no effect.
   remove: func(path: string, idempotency-key: string) -> result<_, fs-error>;
 }
 

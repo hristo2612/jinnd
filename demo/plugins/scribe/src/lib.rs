@@ -24,6 +24,10 @@ fn fault(error: jinn::plugin::types::KernelError) -> GuestFault {
     GuestFault::Failed(format!("{error:?}"))
 }
 
+fn fs_fault(error: fs::FsError) -> GuestFault {
+    GuestFault::Failed(format!("{error:?}"))
+}
+
 struct Scribe;
 
 impl Guest for Scribe {
@@ -44,12 +48,12 @@ impl Guest for Scribe {
     }
 
     fn handle_event(_token: u64, _topic: String, payload: Vec<u8>) -> Result<Vec<u8>, GuestFault> {
+        // One journaled append per announcement (M2-K3: O(1) per record;
+        // the inverse truncates to the prior length).
         let journal = JOURNAL.lock().unwrap().clone();
-        let prior = fs::read(&journal).unwrap_or_default();
-        let mut next = prior;
-        next.extend_from_slice(&payload);
-        next.push(b'\n');
-        fs::write(&journal, &next).map_err(fault)?;
+        let mut line = payload.clone();
+        line.push(b'\n');
+        fs::append(&journal, &line, "").map_err(fs_fault)?;
         Ok(payload)
     }
 

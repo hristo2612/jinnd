@@ -9,16 +9,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use jinnd_api::{ErrorCode, FiberId, KernelError};
+use jinnd_api::{FiberId, KernelError};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use wasmtime::Store;
 
-use crate::bindings::{Plugin, PluginPre, lifecycle};
+use crate::bindings::{Plugin, PluginPre};
 use crate::broker::Broker;
 use crate::handle::{ActivationOutcome, Command, InstanceHandle, gone, pair, peer_face};
 use crate::peer::PeerId;
 use crate::selector::RealmOracle;
+use crate::settle::{Settled, hung, settle, trapped};
 use crate::topics::LocalTopics;
 
 /// How often a guest yields back to the executor, in fuel units.
@@ -78,51 +79,6 @@ pub(crate) fn spawn(
     let face = peer_face(&handle);
     tokio::spawn(run(engine, pre, seat, face, rx));
     handle
-}
-
-fn trapped(trap: &wasmtime::Error) -> KernelError {
-    KernelError {
-        code: ErrorCode::PluginFailed,
-        message: format!("guest trapped: {trap:#}"),
-        fiber: None,
-    }
-}
-
-fn hung() -> KernelError {
-    KernelError {
-        code: ErrorCode::PluginFailed,
-        message: "guest exceeded its call deadline".to_owned(),
-        fiber: None,
-    }
-}
-
-fn faulted(fault: lifecycle::GuestFault) -> KernelError {
-    let lifecycle::GuestFault::Failed(message) = fault;
-    KernelError {
-        code: ErrorCode::PluginFailed,
-        message,
-        fiber: None,
-    }
-}
-
-/// Flattens one guest call: deadline, trap, and guest fault each become a
-/// contained kernel error; deadline and trap also end the instance.
-enum Settled<T> {
-    Ok(T),
-    Fault(KernelError),
-    Dead(KernelError),
-}
-
-async fn settle<T>(
-    deadline: Duration,
-    call: impl Future<Output = wasmtime::Result<Result<T, lifecycle::GuestFault>>>,
-) -> Settled<T> {
-    match timeout(deadline, call).await {
-        Err(_) => Settled::Dead(hung()),
-        Ok(Err(trap)) => Settled::Dead(trapped(&trap)),
-        Ok(Ok(Err(fault))) => Settled::Fault(faulted(fault)),
-        Ok(Ok(Ok(value))) => Settled::Ok(value),
-    }
 }
 
 async fn run(
@@ -219,7 +175,9 @@ async fn serve(
             } => {
                 let call =
                     guest.call_handle_call(&mut *store, caller, &contract, &operation, &payload);
-                match settle(deadline, call).await {
+                let settled = settle(deadline, call).await;
+                commit_late(store);
+                match settled {
                     Settled::Ok(answer) => drop(reply.send(Ok(answer))),
                     Settled::Fault(error) => drop(reply.send(Err(error))),
                     Settled::Dead(error) => {
@@ -235,7 +193,9 @@ async fn serve(
                 reply,
             } => {
                 let call = guest.call_handle_event(&mut *store, token, &topic, &payload);
-                match settle(deadline, call).await {
+                let settled = settle(deadline, call).await;
+                commit_late(store);
+                match settled {
                     Settled::Ok(answer) => drop(reply.send(Ok(answer))),
                     Settled::Fault(error) => drop(reply.send(Err(error))),
                     Settled::Dead(error) => {
@@ -268,6 +228,26 @@ async fn serve(
                 }
             }
         }
+    }
+}
+
+/// Commits registrations a guest made outside its activation (from a
+/// `handle-event` or `handle-call`) into the live seat's journal (M2-K3
+/// round 2; R5, I1): an effect registered late is withdrawn LIFO with the
+/// rest, never orphaned in the store. With no seat installed yet they
+/// wait for the next drain.
+fn commit_late(store: &mut Store<HostState>) {
+    let data = store.data_mut();
+    if data.outcome.registrations.is_empty() {
+        return;
+    }
+    let late = std::mem::take(&mut data.outcome.registrations);
+    if let Some(slot) = &data.seat.slot {
+        if let Some(kept) = slot.extend(late) {
+            data.outcome.registrations = kept;
+        }
+    } else {
+        data.outcome.registrations = late;
     }
 }
 
