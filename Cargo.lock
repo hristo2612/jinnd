@@ -543,7 +543,6 @@ version = "0.0.1"
 dependencies = [
  "jinnd-api",
  "jinnd-context",
- "jinnd-effects",
  "jinnd-fiber",
  "jinnd-ledger",
  "jinnd-loader",
@@ -650,8 +649,13 @@ name = "jinnd-wasm"
 version = "0.0.1"
 dependencies = [
  "jinnd-api",
+ "jinnd-context",
+ "jinnd-effects",
+ "jinnd-fiber",
+ "jinnd-loader",
  "loom",
  "tokio",
+ "tracing",
  "wasmtime",
  "wit-component",
 ]
