@@ -43,7 +43,8 @@ pub(crate) fn seat_config(value: &serde_json::Value) -> SeatSpec {
 /// One profile grant entry (constitution 04 §Format): a bare contract name,
 /// or `{ contract, scope }`. The scope decodes by written shape — a
 /// non-negative integer to [`ScopeValue::Rate`], a string to
-/// [`ScopeValue::Path`], anything else carried as [`ScopeValue::Malformed`]
+/// [`ScopeValue::Path`], arrays and objects to their structural shapes
+/// (M2-K6), anything else carried as [`ScopeValue::Malformed`]
 /// — and the admission point validates it against the contract's declared
 /// scope type. An entry unreadable as a grant at all is the fault string
 /// the admission point refuses on the record.
@@ -77,6 +78,16 @@ fn scope_value(value: &serde_json::Value) -> ScopeValue {
             None => ScopeValue::Malformed(value.to_string()),
         },
         serde_json::Value::String(path) => ScopeValue::Path(path.clone()),
+        // The policy shapes (M2-K6): read structurally, judged at admission.
+        serde_json::Value::Array(items) => {
+            ScopeValue::List(items.iter().map(scope_value).collect())
+        }
+        serde_json::Value::Object(fields) => ScopeValue::Map(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), scope_value(value)))
+                .collect(),
+        ),
         other => ScopeValue::Malformed(other.to_string()),
     }
 }

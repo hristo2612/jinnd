@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use jinnd_api::{ErrorCode, FiberId, KernelError};
 
+use crate::grants::GrantScope;
 use crate::peer::{HandleId, Peer, PeerId};
 
 pub(crate) struct PeerRecord {
@@ -14,10 +15,10 @@ pub(crate) struct PeerRecord {
     /// The profile entry the peer acts for (M2-K4): a host provider keys
     /// the retained inverse to the ENTRY, whose journal outlives fibers.
     pub(crate) entry: Option<String>,
-    /// Per granted contract, the path-prefix scopes the grant carries; an
-    /// empty list is the root scope (a bare grant, or one that widened a
-    /// scoped grant — root is the explicit maximum, never a default).
-    pub(crate) grants: HashMap<String, Vec<String>>,
+    /// Per granted contract, the typed authority the grant carries
+    /// (M2-K6): root, path-prefix subtrees, or a process/net policy.
+    /// Root is the explicit maximum, never a default.
+    pub(crate) grants: HashMap<String, GrantScope>,
 }
 
 /// One live provision. `generation` is the identity of THIS provision of the

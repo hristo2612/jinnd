@@ -1,0 +1,82 @@
+# Contract-bundle metadata for jinn:process@0.1.0 (M2-K6)
+
+[contract]
+name    = "jinn:process"
+version = "0.1.0"
+
+[scope]
+type   = "process-policy"
+# Decidable subset predicate the kernel evaluates for attenuation (01 §Grants):
+# a scope is `{ exec = [<absolute path prefix>...], env = "inherit-none" |
+# [<variable name>...] }`. subset(a, b) := every exec prefix of a sits under
+# one of b, and a's env allowlist is a subset of b's (inherit-none is the
+# minimum). FAIL-CLOSED (M2-K2 law): a scope of any other shape or type
+# REFUSES the grant with a ledgered per-entry error. A grant with no scope
+# holds the EMPTY policy — no executable, no inherited variable: default
+# deny, never a widened authority. Enforcement is per call on the FULLY
+# RESOLVED executable path (post-symlink, K3 doctrine): a link out of the
+# allowlist is refused on the record.
+# Profile syntax (04 §Format): `{ contract = "jinn:process", scope = { exec =
+# ["/bin/cat"], env = "inherit-none" } }`.
+subset = "exec-prefix-containment-and-env-allowlist-subset"
+
+[operations.run]
+effect      = "kernel-registration"
+sensitivity = "personal"
+# Released by the child's completion; bounded: killed at the bound AND
+# reaped on the record (ProcessKilled then ProcessExited, or a typed
+# ProcessReapPending until the host task lands the exit).
+inverse     = "kill-and-reap"
+# The HARD total-output cap (R9): stdout is collected through the same
+# bounded ring as the long-lived edition into a total of at most this many
+# bytes; past it the answer is the typed `output-truncated` (ledger
+# `ProcessOutputTruncated`), the host's read end is cut, the child killed
+# and reaped. The collector is owned by the call: never a task, never a
+# pipe, outlives the answer — a descendant holding the pipe gets EPIPE.
+output-cap-bytes = 1048576
+
+[operations.spawn]
+effect      = "kernel-registration"
+sensitivity = "personal"
+# Inverse obligation: kill the child (SIGKILL) and reap it — after the
+# inverse completes no process of that handle exists in the process table.
+inverse     = "kill-and-reap"
+
+[operations.write-stdin]
+effect      = "data-plane"
+sensitivity = "personal"
+
+[operations.close-stdin]
+effect      = "data-plane"
+sensitivity = "personal"
+
+[operations.read]
+effect      = "data-plane"
+sensitivity = "personal"
+
+[operations.wait]
+effect      = "read"
+sensitivity = "public"
+
+[operations.kill]
+effect      = "data-plane"
+sensitivity = "public"
+
+[equality]
+# Observational equivalence: the set of live children held under the
+# granted scope. Stream bytes, exits, and signals are ledger history (02),
+# never service state — data-plane traffic is not ledgered (decision log
+# 2026-08-25), only spawn / exit / kill.
+relation = "live-child-set-under-scope"
+
+[notes]
+# Lifecycle class (jinn:plugin@0.4.0, M2-K6): spawned processes are KERNEL
+# REGISTRATIONS, not world mutations — suspend (daemon shutdown) and
+# incarnation replacement KILL them (a suspended incarnation cannot own a
+# live child), ledgered; the next `activate` re-spawns. Dispose kills them
+# as part of the LIFO trail and leaves no zombie: the host reaps.
+lifecycle = "kernel-registration-killed-on-suspend-respawned-on-activate"
+# Every spawn, exit, and kill is a ledger event with entry attribution
+# (Law 2). Reads are non-blocking (`would-block`), buffers are bounded,
+# `wait` is capped at 1000ms (R1, R9). Wake shape in v0.1: the guest
+# polls, typically from a `jinn:clock` alarm handler (README).

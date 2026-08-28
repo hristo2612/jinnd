@@ -51,7 +51,7 @@ async fn unwind(
     for registration in outcome.registrations.iter().rev() {
         let withdrawn = match registration {
             Registration::Effect { token, .. } => instance.undo(*token).await,
-            Registration::Host(record) => {
+            Registration::Host(record) | Registration::Kernel(record) => {
                 broker
                     .withdraw_effect(&record.contract, record.effect)
                     .await

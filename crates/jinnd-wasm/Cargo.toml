@@ -26,9 +26,19 @@ jinnd-effects = { path = "../jinnd-effects" }
 jinnd-fiber = { path = "../jinnd-fiber" }
 jinnd-loader = { path = "../jinnd-loader" }
 loom = { version = "0.7.2", optional = true }
-tokio = { version = "1.47.1", features = ["fs", "macros", "rt", "sync", "time"] }
+# `process`/`net`/`io-util`: the jinn:process and jinn:net base host
+# providers (M2-K6; R7) — tokio features, no new crate.
+tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 # The moved jinn:fs provider's operator log line (AGENTS.md preferred set).
 tracing = "0.1"
+
+# Typed signal delivery for `jinn:process.kill` (M2-K6). This crate is
+# forbid(unsafe_code); the one libc `kill(2)` call lives in this vetted
+# wrapper (feature `signal` only) rather than in an unsafe block in the
+# kernel — R10: zero kernel LOC for the syscall, R11: containment lint
+# untouched. libc itself is already in the tree (tokio).
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "async"] }
 
 [dev-dependencies]

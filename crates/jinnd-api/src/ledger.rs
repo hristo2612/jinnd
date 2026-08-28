@@ -76,6 +76,36 @@ pub enum LedgerEventKind {
         failures: u32,
         emitter: u64,
     },
+    /// One `jinn:process` child spawned by its calling plugin (M2-K6; Law
+    /// 2): a kernel registration, attributed to the calling fiber/entry
+    /// via the record's columns. `pid` is the host process id.
+    ProcessSpawned {
+        handle: u64,
+        command: String,
+        pid: u32,
+    },
+    /// The host reaped one `jinn:process` child; a signal termination is
+    /// the negated signal number (M2-K6).
+    ProcessExited { handle: u64, code: i32 },
+    /// One signal delivered to a `jinn:process` child — by the guest, or
+    /// by the kernel releasing the registration (M2-K6).
+    ProcessKilled { handle: u64, signal: String },
+    /// The kernel killed a `jinn:process` child and its reap did not land
+    /// within the bound (M2-K6 round 2; Law 2): never silent — the host
+    /// task finishes the reap and `ProcessExited` follows when it lands.
+    ProcessReapPending { handle: u64 },
+    /// One `jinn:process` `run` produced more than the bundle's declared
+    /// total-output cap (M2-K6 round 3; R9): the answer is a typed
+    /// truncation, the read end is cut, the child killed and reaped.
+    ProcessOutputTruncated { handle: u64, cap: u64 },
+    /// One `jinn:net` loopback listener bound (M2-K6): a kernel
+    /// registration, attributed like a spawn.
+    NetListening { handle: u64, port: u16 },
+    /// One connection accepted on a `jinn:net` listener (M2-K6).
+    NetAccepted { listener: u64, handle: u64 },
+    /// One `jinn:net` listener or connection closed — by the guest, or by
+    /// the kernel releasing the registration (M2-K6).
+    NetClosed { handle: u64 },
     /// One `jinn:clock` alarm wake delivered to its requesting plugin
     /// (M2-K2; Law 2): every wake is a ledger event, attributed to the
     /// requesting fiber via the record's columns.

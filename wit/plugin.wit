@@ -1,4 +1,4 @@
-/// jinn:plugin@0.3.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.4.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
@@ -8,7 +8,11 @@
 /// 0.3.0 (M2-K4): lifecycle semantics — suspend ≠ dispose. No signature
 /// changes; the guest-visible meaning of `activate`/`undo` under shutdown
 /// and incarnation replacement is now contract (see `lifecycle`), mirrored
-/// in every bundle's metadata under `contracts/`.
+/// in every bundle's metadata under `contracts/`. 0.4.0 (M2-K6): the
+/// `process` and `net` imports gain their long-lived editions — additive
+/// over 0.3.0 (`run` and `request` unchanged in shape) and bound to the
+/// contract bundles `contracts/jinn-process` and `contracts/jinn-net`,
+/// whose `process-error` / `net-error` cross the guest boundary verbatim.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -21,7 +25,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.3.0;
+package jinn:plugin@0.4.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -199,26 +203,153 @@ interface fs {
   remove: func(path: string, idempotency-key: string) -> result<_, fs-error>;
 }
 
-/// Base host-provider contract `jinn:process` (R7). Same grant discipline
-/// and broker choke point as `fs`.
+/// Base host-provider contract `jinn:process` (R7; M2-K6 long-lived
+/// edition, contract bundle `contracts/jinn-process` 0.1.0). Same grant
+/// discipline and broker choke point as `fs`. A grant carries a typed
+/// `process-policy` scope — an executable allowlist by canonical path
+/// prefix plus an environment policy — enforced per call on the FULLY
+/// RESOLVED executable (post-symlink); a bare grant allows nothing
+/// (default deny). A spawned process is a KERNEL REGISTRATION (lifecycle
+/// class): killed and ledgered on suspend and on dispose alike, never
+/// retained — a plugin re-spawns in `activate`. Every host call here is
+/// non-blocking or bounded (R1): reads answer `would-block`, `wait` is
+/// capped at 1000ms, the guest polls (a `jinn:clock` alarm is the wake
+/// shape in v0.1; see the bundle README).
 interface process {
-  use types.{kernel-error};
+  /// The bundle's own error, verbatim (R3, R12; round 4): `not-found` is
+  /// an unknown or foreign handle, `denied` a ledgered grant refusal,
+  /// `invalid` a malformed request, `failed` every contained failure —
+  /// the provider's own or the kernel boundary's — and `output-truncated`
+  /// is `run` past the bundle's `output-cap-bytes`, matched by case.
+  variant process-error { not-found, denied(string), failed(string), invalid(string), output-truncated }
 
-  /// Runs one command to completion, answering its output bytes.
+  /// The caller-scoped identity of one spawned child (R4: minted for the
+  /// spawning instance; a handle used by another peer is refused).
+  type process-handle = u64;
+
+  /// A child's output stream.
+  enum child-stream { stdout, stderr }
+
+  /// One non-blocking read: bytes now, nothing yet, or the stream's end.
+  variant read-result { data(list<u8>), would-block, eof }
+
+  /// One bounded wait: the exit status (a signal termination is the
+  /// negated signal number), or still running at the cap.
+  variant wait-result { exited(s32), running }
+
+  /// The signals a guest may deliver.
+  enum signal { interrupt, terminate, kill }
+
+  /// Runs one command to completion (bounded at the guest deadline's
+  /// order; the child is killed at the bound and reaped on the record),
+  /// answering its stdout bytes — collected through a bounded buffer
+  /// under the bundle's `output-cap-bytes`; past it the call fails typed
+  /// `output-truncated` (R9), never a silent prefix.
+  /// Effect class: kernel registration, released by completion.
   /// Broker wire: operation `run`, payload = for the command and then each
-  /// argument, a u32-LE byte length followed by the UTF-8 bytes.
-  run: func(command: string, args: list<string>) -> result<list<u8>, kernel-error>;
+  /// argument, a u32-LE byte length followed by the UTF-8 bytes; answer =
+  /// one tag byte (0 data then the bytes, 3 output-truncated).
+  run: func(command: string, args: list<string>) -> result<list<u8>, process-error>;
+
+  /// Spawns one long-lived child with piped stdin/stdout/stderr. `command`
+  /// is an absolute path; `env` are the child's explicit variables — the
+  /// grant's env policy decides what else it inherits. Effect class:
+  /// kernel registration (killed on suspend/dispose, ledgered).
+  /// Broker wire: operation `spawn`, payload = u32-LE argc, u32-LE envc,
+  /// then u32-LE-length-prefixed segments: command, cwd (empty = none),
+  /// the args, and each env name and value; answer = 8-byte LE handle.
+  spawn: func(command: string, args: list<string>, cwd: option<string>,
+    env: list<tuple<string, string>>) -> result<process-handle, process-error>;
+
+  /// Offers bytes to the child's stdin without blocking; answers how many
+  /// were accepted (re-offer the rest). Broker wire: operation
+  /// `write-stdin`, payload = 8-byte LE handle then the bytes; answer =
+  /// u32-LE accepted count.
+  write-stdin: func(handle: process-handle, bytes: list<u8>) -> result<u32, process-error>;
+
+  /// Closes the child's stdin (its EOF). Broker wire: operation
+  /// `close-stdin`, payload = 8-byte LE handle.
+  close-stdin: func(handle: process-handle) -> result<_, process-error>;
+
+  /// Takes up to `max` buffered bytes of one stream. The host pumps each
+  /// stream into a BOUNDED buffer: a guest that never reads applies
+  /// backpressure to the child, never unbounded host memory (R9).
+  /// Broker wire: operation `read`, payload = 8-byte LE handle, one
+  /// stream byte (0 stdout, 1 stderr), u32-LE max; answer = one tag byte
+  /// (0 data, 1 would-block, 2 eof) then the data.
+  read: func(handle: process-handle, which: child-stream, max: u32)
+    -> result<read-result, process-error>;
+
+  /// Waits up to `timeout-ms` (capped at 1000) for the child's exit.
+  /// Broker wire: operation `wait`, payload = 8-byte LE handle, u64-LE
+  /// timeout; answer = one tag byte (0 exited, 1 running) then i32-LE.
+  wait: func(handle: process-handle, timeout-ms: u64) -> result<wait-result, process-error>;
+
+  /// Delivers one signal; the exit lands as a ledger event when the host
+  /// reaps the child. Broker wire: operation `kill`, payload = 8-byte LE
+  /// handle then one signal byte (0 interrupt, 1 terminate, 2 kill).
+  kill: func(handle: process-handle, signal: signal) -> result<_, process-error>;
 }
 
-/// Base host-provider contract `jinn:net` (R7). Same grant discipline and
-/// broker choke point as `fs`.
+/// Base host-provider contract `jinn:net` (R7; M2-K6 server edition,
+/// contract bundle `contracts/jinn-net` 0.1.0). Same grant discipline and
+/// broker choke point as `fs`. A grant carries a typed `net-policy`
+/// scope — a bind port range (loopback only in v0.1) and an outbound host
+/// allowlist; a bare grant allows nothing (default deny). Listeners and
+/// connections are KERNEL REGISTRATIONS: closed on suspend and on
+/// dispose, ledgered; a plugin re-listens in `activate`. Every call is
+/// non-blocking (R1): `accept` and `read` answer `would-block`, `write`
+/// answers what the socket accepted.
 interface net {
-  use types.{kernel-error};
+  /// The bundle's own error, verbatim (R3, R12; round 4): `not-found` is
+  /// an unknown or foreign handle, `denied` a ledgered grant refusal,
+  /// `invalid` a malformed request or address, `failed` every contained
+  /// failure — the provider's own or the kernel boundary's.
+  variant net-error { not-found, denied(string), failed(string), invalid(string) }
 
-  /// Performs one request, answering the response body.
+  /// A caller-scoped listener or connection identity (R4).
+  type net-handle = u64;
+
+  /// One non-blocking accept.
+  variant accept-result { connection(net-handle), would-block }
+
+  /// One non-blocking read: bytes now, nothing yet, or the peer's close.
+  variant read-result { data(list<u8>), would-block, eof }
+
+  /// Performs one request, answering the response body. NOT PROVIDED in
+  /// v0.1 (the kernel carries no HTTP client, R10): the provider answers a
+  /// typed `failed`; the outbound allowlist scope is admitted
+  /// for the edition that consumes it (see the bundle README).
   /// Broker wire: operation `request`, payload = u32-LE length + method
   /// bytes, u32-LE length + url bytes, then the body.
-  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, kernel-error>;
+  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;
+
+  /// Binds one loopback listener at `addr` (`ip:port`); a non-loopback
+  /// address or a port outside the granted range is refused on the
+  /// record. Effect class: kernel registration. Broker wire: operation
+  /// `listen`, payload = the address's UTF-8 bytes; answer = 8-byte LE
+  /// handle.
+  listen: func(addr: string) -> result<net-handle, net-error>;
+
+  /// Takes one pending connection, if any. The connection is a kernel
+  /// registration of its own. Broker wire: operation `accept`, payload =
+  /// 8-byte LE listener; answer = one tag byte (0 connection, 1
+  /// would-block) then the 8-byte LE connection handle.
+  accept: func(listener: net-handle) -> result<accept-result, net-error>;
+
+  /// Reads up to `max` bytes now available. Broker wire: operation
+  /// `read`, payload = 8-byte LE connection, u32-LE max; answer = one tag
+  /// byte (0 data, 1 would-block, 2 eof) then the data.
+  read: func(connection: net-handle, max: u32) -> result<read-result, net-error>;
+
+  /// Writes what the socket accepts now; answers the count (re-offer the
+  /// rest). Broker wire: operation `write`, payload = 8-byte LE
+  /// connection then the bytes; answer = u32-LE count.
+  write: func(connection: net-handle, bytes: list<u8>) -> result<u32, net-error>;
+
+  /// Closes one listener or connection — the registration's release,
+  /// ledgered. Broker wire: operation `close`, payload = 8-byte LE handle.
+  close: func(handle: net-handle) -> result<_, net-error>;
 }
 
 /// Host capability contract `jinn:clock` (M2-K2; contract bundle

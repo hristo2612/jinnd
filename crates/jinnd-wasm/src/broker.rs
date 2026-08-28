@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
 
 use crate::broker_state::{PeerRecord, Provider, refusal};
+use crate::grants::GrantScope;
 use crate::peer::{HandleId, LedgerSink, Peer, PeerId};
 
 use crate::broker_state::{Handle, State};
@@ -93,23 +94,26 @@ impl Broker {
     /// Grants `peer` the named contract (constitution 01: grants arrive from
     /// the profile/policy side; requests are not grants).
     pub fn grant(&self, peer: PeerId, contract: &str) {
-        if let Some(record) = self.lock().peers.get_mut(&peer) {
-            record.grants.insert(contract.to_owned(), Vec::new());
-        }
+        self.grant_with(peer, contract, GrantScope::Root);
     }
 
     /// Grants `peer` the named contract under one path-prefix `scope`
     /// (M2-K3 round 2; constitution 01 §Grants attenuation). Scopes
     /// accumulate; a root grant already held stays root.
     pub fn grant_scoped(&self, peer: PeerId, contract: &str, scope: &str) {
+        self.grant_with(peer, contract, GrantScope::Paths(vec![scope.to_owned()]));
+    }
+
+    /// Grants `peer` the named contract under one ADMITTED typed
+    /// authority (M2-K6): path subtrees accumulate, root stays root, a
+    /// process/net policy is the grant's whole authority.
+    pub fn grant_with(&self, peer: PeerId, contract: &str, scope: GrantScope) {
         if let Some(record) = self.lock().peers.get_mut(&peer) {
-            match record.grants.get_mut(contract) {
-                Some(scopes) if scopes.is_empty() => {}
-                Some(scopes) => scopes.push(scope.to_owned()),
-                None => {
-                    record
-                        .grants
-                        .insert(contract.to_owned(), vec![scope.to_owned()]);
+            match (record.grants.get_mut(contract), scope) {
+                (Some(GrantScope::Root), _) => {}
+                (Some(GrantScope::Paths(held)), GrantScope::Paths(more)) => held.extend(more),
+                (_, scope) => {
+                    record.grants.insert(contract.to_owned(), scope);
                 }
             }
         }
@@ -120,6 +124,16 @@ impl Broker {
     /// scope type per call (R4: the caller's scope travels with the call).
     #[must_use]
     pub fn scopes(&self, peer: PeerId, contract: &str) -> Option<Vec<String>> {
+        self.policy(peer, contract).map(|scope| match scope {
+            GrantScope::Paths(paths) => paths,
+            _ => Vec::new(),
+        })
+    }
+
+    /// The typed authority `peer` holds `contract` under (M2-K6), `None`
+    /// when ungranted.
+    #[must_use]
+    pub fn policy(&self, peer: PeerId, contract: &str) -> Option<GrantScope> {
         self.lock()
             .peers
             .get(&peer)

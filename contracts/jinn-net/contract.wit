@@ -1,0 +1,43 @@
+// jinn:net@0.1.0 (M2-K6) — the base host-provider network contract.
+// Host capability contract supplied by the kernel (01 §Mechanical closure):
+// `request` is the outbound one-shot (NOT PROVIDED in v0.1 — no HTTP client
+// in the kernel, R10; answered as a typed failure), the server edition
+// listens on loopback and serves connections. Listeners and connections are
+// KERNEL REGISTRATIONS (metadata `lifecycle`): closed and ledgered on
+// suspend and on dispose; a plugin re-listens in `activate`. Every call is
+// non-blocking (R1). The plugin world's `net` import (wit/plugin.wit,
+// 0.4.0) carries this interface verbatim with the broker wire beside each
+// operation; this bundle is the contract of record (R12).
+package jinn:net@0.1.0;
+
+interface net {
+  // `not-found`: an unknown or foreign handle. Callers classify by case:
+  // the plugin world's `net` import answers this variant verbatim.
+  variant net-error { not-found, denied(string), failed(string), invalid(string) }
+
+  type net-handle = u64;
+  variant accept-result { connection(net-handle), would-block }
+  variant read-result { data(list<u8>), would-block, eof }
+
+  // Outbound one-shot; authorized against the scope's outbound host
+  // allowlist by the edition that provides it.
+  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;
+
+  // effect = kernel registration: inverse obligation = close. Loopback
+  // only in v0.1; the port must sit in the granted bind range.
+  listen: func(addr: string) -> result<net-handle, net-error>;
+
+  // effect = kernel registration (the connection): inverse = close.
+  accept: func(listener: net-handle) -> result<accept-result, net-error>;
+
+  read: func(connection: net-handle, max: u32) -> result<read-result, net-error>;
+  // Answers the accepted count (re-offer the rest).
+  write: func(connection: net-handle, bytes: list<u8>) -> result<u32, net-error>;
+
+  // The registration's release (listener or connection).
+  close: func(handle: net-handle) -> result<_, net-error>;
+}
+
+world net-provider {
+  export net;
+}

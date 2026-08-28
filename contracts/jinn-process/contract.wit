@@ -1,0 +1,59 @@
+// jinn:process@0.1.0 (M2-K6) — the base host-provider process contract.
+// Host capability contract supplied by the kernel (01 §Mechanical closure):
+// `run` is the one-shot convenience, the long-lived edition spawns a child
+// with piped streams. A spawned process is a KERNEL REGISTRATION (see
+// metadata `lifecycle`): killed and ledgered on suspend and on dispose,
+// never retained — a plugin re-spawns in `activate`. Every host call is
+// non-blocking or bounded (R1). The plugin world's `process` import
+// (wit/plugin.wit, 0.4.0) carries this interface verbatim, with the broker
+// wire declared beside each operation; this bundle is the contract of
+// record (R12), with effect classes, scope type, and equality in
+// `metadata.toml`.
+package jinn:process@0.1.0;
+
+interface process {
+  // `not-found`: an unknown or foreign handle. `output-truncated`: `run`
+  // produced more than the metadata's `output-cap-bytes` (R9) — cut,
+  // killed, reaped; never a silent prefix. Callers classify by case: the
+  // plugin world's `process` import answers this variant verbatim.
+  variant process-error { not-found, denied(string), failed(string), invalid(string), output-truncated }
+
+  type process-handle = u64;
+  enum child-stream { stdout, stderr }
+  variant read-result { data(list<u8>), would-block, eof }
+  // A signal termination is the negated signal number.
+  variant wait-result { exited(s32), running }
+  enum signal { interrupt, terminate, kill }
+
+  // effect = kernel registration released by completion. Bounded in time
+  // AND output: killed at the bound (the guest deadline's order) and
+  // reaped on the record; stdout capped at `output-cap-bytes`. A torn
+  // pipe is `failed`, never an empty success.
+  run: func(command: string, args: list<string>) -> result<list<u8>, process-error>;
+
+  // effect = kernel registration: inverse obligation = kill-and-reap.
+  // `command` is an absolute path, authorized post-symlink against the
+  // grant's executable allowlist; `env` are the child's explicit variables,
+  // the grant's env policy decides what else it inherits (default: nothing).
+  spawn: func(command: string, args: list<string>, cwd: option<string>,
+    env: list<tuple<string, string>>) -> result<process-handle, process-error>;
+
+  // Non-blocking; answers the accepted count (re-offer the rest).
+  write-stdin: func(handle: process-handle, bytes: list<u8>) -> result<u32, process-error>;
+  close-stdin: func(handle: process-handle) -> result<_, process-error>;
+
+  // Non-blocking, from a BOUNDED per-stream buffer (R9): an unread stream
+  // backpressures the child, never the host's memory.
+  read: func(handle: process-handle, which: child-stream, max: u32)
+    -> result<read-result, process-error>;
+
+  // Bounded at 1000ms whatever `timeout-ms` says (R1).
+  wait: func(handle: process-handle, timeout-ms: u64) -> result<wait-result, process-error>;
+
+  // The exit lands as a ledger event when the host reaps the child.
+  kill: func(handle: process-handle, signal: signal) -> result<_, process-error>;
+}
+
+world process-provider {
+  export process;
+}

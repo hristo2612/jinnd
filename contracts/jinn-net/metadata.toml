@@ -1,0 +1,64 @@
+# Contract-bundle metadata for jinn:net@0.1.0 (M2-K6)
+
+[contract]
+name    = "jinn:net"
+version = "0.1.0"
+
+[scope]
+type   = "net-policy"
+# Decidable subset predicate the kernel evaluates for attenuation (01 §Grants):
+# a scope is `{ bind = [<low port>, <high port>], outbound = [<host>...] }`,
+# both keys optional. subset(a, b) := a's bind range sits inside b's and a's
+# outbound hosts are a subset of b's. Bind is LOOPBACK ONLY in v0.1: a
+# non-loopback address refuses on the record whatever the range. FAIL-CLOSED
+# (M2-K2 law): any other scope shape or type REFUSES the grant with a
+# ledgered per-entry error. A grant with no scope holds the EMPTY policy —
+# no bind range, no outbound host: default deny.
+# Profile syntax (04 §Format): `{ contract = "jinn:net", scope = { bind =
+# [7800, 7899] } }`.
+subset = "bind-range-containment-and-outbound-host-subset"
+
+[operations.request]
+effect      = "read"
+sensitivity = "personal"
+# NOT PROVIDED in v0.1 (R10: no HTTP client in the kernel). The provider
+# answers a typed failure; the outbound allowlist is admitted and carried
+# for the edition that consumes it.
+
+[operations.listen]
+effect      = "kernel-registration"
+sensitivity = "public"
+inverse     = "close-listener"
+
+[operations.accept]
+effect      = "kernel-registration"
+sensitivity = "public"
+inverse     = "close-connection"
+
+[operations.read]
+effect      = "data-plane"
+sensitivity = "personal"
+
+[operations.write]
+effect      = "data-plane"
+sensitivity = "personal"
+
+[operations.close]
+effect      = "data-plane"
+sensitivity = "public"
+
+[equality]
+# Observational equivalence: the set of live listeners and connections held
+# under the granted scope. Bytes are data plane (never ledgered, decision
+# log 2026-08-25); listen / accept / close are ledger history (02).
+relation = "live-socket-set-under-scope"
+
+[notes]
+# Lifecycle class (jinn:plugin@0.4.0, M2-K6): listeners and connections are
+# KERNEL REGISTRATIONS — suspend and incarnation replacement close them
+# (ledgered); the next `activate` re-listens. Dispose closes them in the
+# LIFO trail.
+lifecycle = "kernel-registration-closed-on-suspend-relistened-on-activate"
+# Every listen, accept, and close is a ledger event with entry attribution
+# (Law 2). accept/read answer `would-block`, write answers the accepted
+# count (R1). Out of scope in v0.1: TLS, non-loopback listening, UDP.

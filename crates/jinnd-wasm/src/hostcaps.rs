@@ -15,6 +15,10 @@ use crate::hostfs::{FS_CONTRACT, effect_label};
 use crate::instance::{HostState, Seat};
 use crate::topics::EventTarget;
 
+mod procnet;
+
+pub use procnet::{NET_CONTRACT, PROCESS_CONTRACT, registration_label};
+
 /// One u32-LE length-prefixed segment followed by the free tail — the wire
 /// shape `wit/plugin.wit` declares for multi-field operations.
 fn prefixed(segments: &[&[u8]], tail: &[u8]) -> Vec<u8> {
@@ -152,35 +156,6 @@ impl bindings::fs::Host for HostState {
         idempotency_key: String,
     ) -> Result<(), bindings::fs::FsError> {
         fs_effect(self, "remove", &path, &idempotency_key, &[]).await
-    }
-}
-
-impl bindings::process::Host for HostState {
-    async fn run(
-        &mut self,
-        command: String,
-        args: Vec<String>,
-    ) -> Result<Vec<u8>, bindings::types::KernelError> {
-        let mut segments: Vec<&[u8]> = vec![command.as_bytes()];
-        segments.extend(args.iter().map(String::as_bytes));
-        dispatch(&self.seat, "jinn:process", "run", prefixed(&segments, &[])).await
-    }
-}
-
-impl bindings::net::Host for HostState {
-    async fn request(
-        &mut self,
-        method: String,
-        url: String,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, bindings::types::KernelError> {
-        dispatch(
-            &self.seat,
-            "jinn:net",
-            "request",
-            prefixed(&[method.as_bytes(), url.as_bytes()], &body),
-        )
-        .await
     }
 }
 

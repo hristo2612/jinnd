@@ -71,7 +71,7 @@ impl SeatState {
                 Registration::Provision { contract } => provisions.push(contract.clone()),
                 Registration::Listen(record) => listens.extend(record.id),
                 Registration::Alarm(record) => alarms.extend(record.id),
-                Registration::Effect { .. } | Registration::Host(_) => {}
+                Registration::Effect { .. } | Registration::Host(_) | Registration::Kernel(_) => {}
             }
         }
         (provisions, listens, alarms)
