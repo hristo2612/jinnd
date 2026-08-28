@@ -131,6 +131,17 @@ impl Guest for Fixture {
                     "a period finer than the floor was not refused".into(),
                 )),
             },
+            // One bus emit through the daemon path — the DispatchTrace probe.
+            "emitter" => {
+                jinn::plugin::events::emit(
+                    TOPIC,
+                    jinn::plugin::types::DispatchMode::Emit,
+                    &jinn::plugin::types::Selector::All,
+                    b"ping",
+                )
+                .map_err(fault)?;
+                Ok(())
+            }
             other => {
                 effects::register("fixture effect", 1).map_err(fault)?;
                 if other == "provider" || other == "picky" {

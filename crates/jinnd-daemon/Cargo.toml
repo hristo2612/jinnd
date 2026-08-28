@@ -45,3 +45,9 @@ tokio = { version = "1.47.1", features = [
     "sync",
     "time",
 ] }
+
+[dev-dependencies]
+# Encodes the checked-in fixture SOURCE to a component for the end-to-end
+# clock test (M2-K2), exactly as the jinnd-wasm host suite does — no
+# artifact binary is ever checked in.
+wit-component = "0.233.0"

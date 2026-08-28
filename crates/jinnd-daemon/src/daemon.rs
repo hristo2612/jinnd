@@ -15,7 +15,7 @@ use jinnd_context::ContextTree;
 use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::{Document, FileStore, Loader};
 use jinnd_registry::Registry;
-use jinnd_wasm::{HostFs, LaneCore, LedgerSink};
+use jinnd_wasm::{HostClock, HostFs, LaneCore, LedgerSink};
 
 use crate::support::{SharedFibers, Sink, error, lock};
 
@@ -74,6 +74,9 @@ impl Daemon {
         let lane = Arc::new(LaneCore::new(Arc::clone(&sink))?);
         let hostfs = Arc::new(HostFs::new(paths.data.clone(), sink));
         hostfs.register(&lane.broker)?;
+        // The jinn:clock read provider (M2-K2): time enters through the
+        // same choke point; alarm machinery lives in the lane's registry.
+        HostClock::register(&lane.broker)?;
         let tree = ContextTree::new();
         let root = tree.root();
         let registry = Registry::new();
