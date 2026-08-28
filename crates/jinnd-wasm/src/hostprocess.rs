@@ -26,6 +26,8 @@ use crate::peer::{LedgerSink, Peer, PeerId};
 mod child;
 mod ops;
 mod reap;
+#[cfg(all(test, not(feature = "loom")))]
+mod reap_tests;
 mod ring;
 #[cfg(all(test, feature = "loom"))]
 mod ring_tests;

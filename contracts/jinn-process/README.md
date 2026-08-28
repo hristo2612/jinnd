@@ -34,9 +34,8 @@ future edition, added when a consumer needs it.
 
 `ProcessSpawned { handle, command, pid }`, `ProcessExited { handle, code }`
 (a signal termination is the negated signal number), `ProcessKilled {
-handle, signal }` — with the calling entry's attribution. A kill the kernel
-delivers is never half a story: `run` past its bound kills the child and
-reaps it inside the guest deadline, `ProcessKilled` then `ProcessExited`;
-a child not reaped within that bound is `ProcessReapPending { handle }` on
-the record and its `ProcessExited` follows from the host task when the reap
-lands. Stream bytes are data plane and are not ledgered.
+handle, signal }` — with the calling entry's attribution. A kernel kill is
+never half a story: `run` past its bound shows `ProcessKilled` then
+`ProcessExited`; a child not reaped inside the guest deadline is
+`ProcessReapPending { handle }` until the host task lands its exit. Stream
+bytes are data plane and are not ledgered.

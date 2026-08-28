@@ -18,8 +18,7 @@ use crate::peer::PeerId;
 
 impl HostProcess {
     /// The one-shot: spawn, collect stdout, bounded; at the bound the child
-    /// is killed AND reaped on the record (Law 2: a kill is never half a
-    /// story) and the call refuses.
+    /// is killed AND reaped on the record (Law 2) and the call refuses.
     pub(super) async fn run(&self, caller: PeerId, payload: &[u8]) -> Result<Vec<u8>, KernelError> {
         let (command, args) = decode_run(payload)?;
         let (program, scope) = self.authorize(caller, &command).await?;
@@ -66,8 +65,7 @@ impl HostProcess {
                 ErrorCode::PluginFailed,
                 format!("process run {command:?}: {error}"),
             )),
-            // Killed at the bound, then reaped on the record — within the
-            // guest deadline, or pending there and finished by the host task.
+            // Killed at the bound, then reaped on the record (reap.rs).
             Err(_) => {
                 self.core.sink.append(
                     LedgerEventKind::ProcessKilled {
