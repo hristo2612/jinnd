@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use jinnd_api::{EntryId, ErrorCode, FiberId, KernelFuture, LedgerEventKind, SwapPhaseKind};
 use jinnd_wasm::{
-    Broker, InstanceHandle, LedgerSink, LoadedComponent, LocalTopics, NoRealms, Peer, PeerId, Seat,
-    SwapSlots, WasmHost, swap_batch,
+    Alarms, Broker, DEFAULT_MIN_PERIOD_MS, InstanceHandle, LedgerSink, LoadedComponent,
+    LocalTopics, NoRealms, Peer, PeerId, Seat, SwapSlots, WasmHost, swap_batch,
 };
 
 struct Recording {
@@ -43,6 +43,7 @@ struct Rig {
     host: WasmHost,
     broker: Arc<Broker>,
     topics: Arc<LocalTopics>,
+    alarms: Arc<Alarms>,
     ledger: Arc<Recording>,
     component: LoadedComponent,
 }
@@ -57,10 +58,15 @@ fn rig() -> Rig {
     let component = host
         .load(bytes, &hash, ledger.as_ref())
         .unwrap_or_else(|error| panic!("fixture refused: {error:?}"));
+    let alarms = Arc::new(Alarms::new(
+        ledger.clone() as Arc<dyn LedgerSink>,
+        DEFAULT_MIN_PERIOD_MS,
+    ));
     Rig {
         host,
         broker,
         topics: Arc::new(LocalTopics::default()),
+        alarms,
         ledger,
         component,
     }
@@ -74,6 +80,7 @@ impl Rig {
             Seat {
                 broker: Arc::clone(&self.broker),
                 topics: Arc::clone(&self.topics),
+                alarms: Arc::clone(&self.alarms),
                 oracle: Arc::new(NoRealms),
                 peer,
                 fiber: Some(FiberId(fiber)),
@@ -324,6 +331,7 @@ async fn listening_is_grant_gated_and_a_granted_listener_receives_deliveries() {
             DispatchMode::Serial,
             &Selector::All,
             b"ping".to_vec(),
+            None,
             &NoRealms,
         )
         .await;
@@ -495,6 +503,7 @@ async fn retire_replays_the_whole_contribution_in_reverse_registration_order() {
     seat.retire(
         &rig.broker,
         &rig.topics,
+        &rig.alarms,
         peer,
         Some((rig.ledger.as_ref() as &dyn LedgerSink, FiberId(1))),
     )

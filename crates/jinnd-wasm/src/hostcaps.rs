@@ -5,8 +5,13 @@
 //! closure, Law 2). The wire encodings are declared in `wit/plugin.wit`,
 //! next to each operation — the contract files are the product (R12).
 
+use std::sync::Arc;
+
+use crate::alarms::{AlarmSpec, ArmRequest, CLOCK_CONTRACT};
 use crate::bindings;
+use crate::handle::{AlarmRecord, Registration};
 use crate::instance::{HostState, Seat};
+use crate::topics::EventTarget;
 
 /// One u32-LE length-prefixed segment followed by the free tail — the wire
 /// shape `wit/plugin.wit` declares for multi-field operations.
@@ -83,6 +88,84 @@ impl bindings::net::Host for HostState {
             prefixed(&[method.as_bytes(), url.as_bytes()], &body),
         )
         .await
+    }
+}
+
+/// One alarm request (M2-K2): grant-checked and floor-validated where
+/// failing is allowed, recorded in the activation journal as an effect
+/// whose undo cancels (R5). A staged request is recorded, not armed —
+/// the swap commit arms it against the new instance's own face (R8).
+fn alarm(
+    state: &mut HostState,
+    spec: AlarmSpec,
+    token: u64,
+) -> Result<u64, bindings::types::KernelError> {
+    state
+        .seat
+        .broker
+        .check_grant(state.seat.peer, CLOCK_CONTRACT)
+        .map_err(bindings::wire_error)?;
+    state
+        .seat
+        .alarms
+        .validate(&spec)
+        .map_err(bindings::wire_error)?;
+    let label = spec.label();
+    if state.seat.staging {
+        state
+            .outcome
+            .registrations
+            .push(Registration::Alarm(AlarmRecord {
+                label,
+                spec,
+                token,
+                id: None,
+            }));
+        return Ok(0);
+    }
+    // The delivery target is THIS instance's own face, like a listener's:
+    // a token pairs with the instance that minted it.
+    let id = state.seat.alarms.arm(ArmRequest {
+        spec,
+        token,
+        fiber: state.seat.fiber,
+        target: Arc::clone(&state.face) as Arc<dyn EventTarget>,
+    });
+    state
+        .outcome
+        .registrations
+        .push(Registration::Alarm(AlarmRecord {
+            label,
+            spec,
+            token,
+            id: Some(id),
+        }));
+    Ok(id)
+}
+
+impl bindings::clock::Host for HostState {
+    async fn now(&mut self) -> Result<u64, bindings::types::KernelError> {
+        let answer = dispatch(&self.seat, CLOCK_CONTRACT, "now", Vec::new()).await?;
+        let mut bytes = [0u8; 8];
+        let taken = answer.len().min(8);
+        bytes[..taken].copy_from_slice(&answer[..taken]);
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    async fn alarm_at(
+        &mut self,
+        instant_ms: u64,
+        token: u64,
+    ) -> Result<u64, bindings::types::KernelError> {
+        alarm(self, AlarmSpec::At(instant_ms), token)
+    }
+
+    async fn alarm_every(
+        &mut self,
+        period_ms: u64,
+        token: u64,
+    ) -> Result<u64, bindings::types::KernelError> {
+        alarm(self, AlarmSpec::Every(period_ms), token)
     }
 }
 

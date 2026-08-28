@@ -22,6 +22,7 @@ use jinnd_fiber::{Fiber, FiberBody, Setup, WatchReadiness};
 use jinnd_loader::host::{LaneHandle, Rebind, config_of};
 use jinnd_loader::{PackageLane, SpawnRequest};
 
+use crate::alarms::{Alarms, DEFAULT_MIN_PERIOD_MS};
 use crate::broker::Broker;
 use crate::handle::Registration;
 use crate::host::{LoadedComponent, WasmHost};
@@ -66,6 +67,9 @@ pub(crate) struct Roster {
 pub struct LaneCore {
     pub broker: Arc<Broker>,
     pub topics: Arc<LocalTopics>,
+    /// The `jinn:clock` alarm registry (M2-K2): one per assembly, wakes
+    /// ledgered on the same sink.
+    pub alarms: Arc<Alarms>,
     pub host: WasmHost,
     pub sink: Arc<dyn LedgerSink>,
     pub packages: Mutex<HashMap<String, Arc<Mutex<LoadedComponent>>>>,
@@ -86,6 +90,7 @@ impl LaneCore {
             // The byte-lane tap (M2-K2; Law 2): every emit through this
             // assembly's port lands one DispatchTrace on the same sink.
             topics: Arc::new(LocalTopics::traced(Arc::clone(&sink))),
+            alarms: Arc::new(Alarms::new(Arc::clone(&sink), DEFAULT_MIN_PERIOD_MS)),
             host: WasmHost::new()?,
             sink,
             packages: Mutex::new(HashMap::new()),
@@ -147,6 +152,7 @@ impl FiberBody for WasmBody {
                 Seat {
                     broker: Arc::clone(&core.broker),
                     topics: Arc::clone(&core.topics),
+                    alarms: Arc::clone(&core.alarms),
                     oracle: Arc::new(NoRealms),
                     peer,
                     fiber: Some(fiber),
@@ -187,7 +193,7 @@ impl FiberBody for WasmBody {
                     let ledger = trail.then_some((owner.sink.as_ref(), fiber));
                     let retired = match slot.take() {
                         Some(seat) => {
-                            seat.retire(&owner.broker, &owner.topics, peer, ledger)
+                            seat.retire(&owner.broker, &owner.topics, &owner.alarms, peer, ledger)
                                 .await
                         }
                         None => Ok(()),
@@ -207,6 +213,9 @@ impl FiberBody for WasmBody {
                     let label = match registration {
                         Registration::Effect { label, .. } => label.clone(),
                         Registration::Listen(listen) => format!("listen {}", listen.topic),
+                        // An alarm request IS an effect (M2-K2, R5); its
+                        // registration is a ledger event like any other.
+                        Registration::Alarm(alarm) => alarm.label.clone(),
                         // The broker ledgered the provide crossing itself
                         // (R6).
                         Registration::Provision { .. } => continue,

@@ -105,6 +105,7 @@ impl SwapSlots for LaneSlots {
                 Seat {
                     broker: Arc::clone(&self.core.broker),
                     topics: Arc::clone(&self.core.topics),
+                    alarms: Arc::clone(&self.core.alarms),
                     oracle: Arc::new(NoRealms),
                     peer,
                     fiber: Some(fiber),
@@ -145,6 +146,7 @@ impl SwapSlots for LaneSlots {
             staged.outcome,
             &self.core.broker,
             &self.core.topics,
+            &self.core.alarms,
             staged.peer,
             Some(staged.fiber),
             staged.context,

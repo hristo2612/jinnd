@@ -28,6 +28,9 @@ const FUEL_YIELD_INTERVAL: u64 = 10_000;
 pub struct Seat {
     pub broker: Arc<Broker>,
     pub topics: Arc<LocalTopics>,
+    /// The lane's alarm registry (M2-K2): `jinn:clock` alarm requests arm
+    /// here, wakes deliver to the requesting instance's own face.
+    pub alarms: Arc<crate::alarms::Alarms>,
     pub oracle: Arc<dyn RealmOracle>,
     /// The broker identity this instance calls and provides as.
     pub peer: PeerId,
