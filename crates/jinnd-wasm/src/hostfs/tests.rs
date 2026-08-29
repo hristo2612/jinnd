@@ -739,3 +739,55 @@ async fn a_read_only_grant_refuses_every_mutation_on_the_record() {
         "no inverse for a refused mutation"
     );
 }
+
+/// M2-K8 (harness #22): `write` and `append` commit by stage + fsync +
+/// rename, so a reader racing a large write observes either the old
+/// document or the new one — never a prefix or a truncation. Red-first
+/// against the in-place write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reader_racing_a_large_write_never_sees_a_torn_document() {
+    let rig = Arc::new(rig("torn"));
+    const SIZE: usize = 8 << 20;
+    rig.ok("write", write_wire("/big.bin", &vec![b'A'; SIZE]))
+        .await;
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let path = rig.data("big.bin");
+    let readers: Vec<_> = (0..6)
+        .map(|_| {
+            let (path, done) = (path.clone(), Arc::clone(&done));
+            std::thread::spawn(move || {
+                let mut torn = Vec::new();
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    let bytes = std::fs::read(&path)
+                        .unwrap_or_else(|error| panic!("the document is always present: {error}"));
+                    let whole = (bytes.len() == SIZE || bytes.len() == SIZE + 64)
+                        && bytes.iter().all(|byte| *byte == bytes[0]);
+                    if !whole {
+                        torn.push(bytes.len());
+                    }
+                }
+                torn
+            })
+        })
+        .collect();
+    for round in 0..12u8 {
+        let fill = if round % 2 == 0 { b'B' } else { b'A' };
+        rig.ok("write", write_wire("/big.bin", &vec![fill; SIZE]))
+            .await;
+        rig.ok("append", write_wire("/big.bin", &vec![fill; 64]))
+            .await;
+    }
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let torn: Vec<usize> = readers
+        .into_iter()
+        .flat_map(|reader| reader.join().unwrap_or_else(|_| panic!("reader panicked")))
+        .collect();
+    assert!(torn.is_empty(), "torn reads observed (lengths): {torn:?}");
+    assert_eq!(
+        std::fs::read_dir(rig.data(""))
+            .map(|entries| entries.flatten().count())
+            .unwrap_or(0),
+        1,
+        "no staged file is left behind"
+    );
+}

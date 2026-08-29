@@ -69,6 +69,9 @@ pub(crate) struct Retention {
 
 const EPOCH_FILE: &str = "epoch";
 const INVERSE_SUFFIX: &str = ".inverse";
+/// The staged-file suffix: never parses as an inverse id, and a guest's
+/// own `<name>` and `<name>.jinnd-stage` never collide with each other.
+const STAGE_SUFFIX: &str = ".jinnd-stage";
 
 fn io(detail: &str, refused: &std::io::Error) -> KernelError {
     refusal(
@@ -77,15 +80,50 @@ fn io(detail: &str, refused: &std::io::Error) -> KernelError {
     )
 }
 
+/// The staging name beside `target` (M2-K8, harness #22): a sibling in the
+/// same directory, so the rename is one atomic replace.
+fn staged_beside(target: &Path) -> PathBuf {
+    let mut name = target
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    name.push(STAGE_SUFFIX);
+    target.with_file_name(name)
+}
+
 /// Writes `bytes` durably at `target`: staged beside it, fsynced, renamed,
 /// and the parent directory fsynced so the rename is on disk too.
 fn commit_sync(dir: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let staged = target.with_extension("tmp");
+    let staged = staged_beside(target);
     let mut file = std::fs::File::create(&staged)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     std::fs::rename(&staged, target)?;
     std::fs::File::open(dir)?.sync_all()
+}
+
+/// The async twin of [`commit_sync`] (M2-K8, harness #22): the ONE commit
+/// shape the retention store AND the data-plane `write`/`append` share —
+/// a reader racing the commit sees the old document or the new one, never
+/// a prefix. The parent directory must exist. A failed commit leaves no
+/// staged file behind.
+pub(crate) async fn commit_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let staged = staged_beside(target);
+    let write = async {
+        let mut file = tokio::fs::File::create(&staged).await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        tokio::fs::rename(&staged, target).await?;
+        match target.parent() {
+            Some(dir) => tokio::fs::File::open(dir).await?.sync_all().await,
+            None => Ok(()),
+        }
+    };
+    let outcome = write.await;
+    if outcome.is_err() {
+        let _ = tokio::fs::remove_file(&staged).await;
+    }
+    outcome
 }
 
 impl Retention {
@@ -135,16 +173,9 @@ impl Retention {
     ///
     /// Any storage refusal — the caller must then REFUSE its effect.
     pub(crate) async fn persist(&self, id: u64, record: &Record) -> Result<(), KernelError> {
-        let target = self.path(id);
-        let staged = target.with_extension("tmp");
-        let write = async {
-            let mut file = tokio::fs::File::create(&staged).await?;
-            file.write_all(&record.encode()).await?;
-            file.sync_all().await?;
-            tokio::fs::rename(&staged, &target).await?;
-            tokio::fs::File::open(&self.dir).await?.sync_all().await
-        };
-        write.await.map_err(|refused| io("persist", &refused))
+        commit_atomic(&self.path(id), &record.encode())
+            .await
+            .map_err(|refused| io("persist", &refused))
     }
 
     /// Reads the inverse back (the undo path).
