@@ -27,6 +27,7 @@ use crate::readiness::ReadinessSignal;
 use crate::shared::Shared;
 
 mod contained;
+mod landed;
 
 use contained::{activate, unclean};
 
@@ -144,11 +145,7 @@ impl Cell {
 
         match outcome {
             Ok(()) => {
-                self.shared.steering.commit(|committed| {
-                    committed.state = FiberState::Active;
-                    committed.active_for = Some(aim);
-                    committed.failed_under = None;
-                });
+                self.activated(aim);
                 self.publish_effects();
                 self.sync_signal();
                 if self.next_step().is_none() {
@@ -162,11 +159,7 @@ impl Cell {
                 self.shared.fail(error);
                 self.publish(FiberState::Unloading, cause.clone());
                 self.withdraw(true).await;
-                self.shared.steering.commit(|committed| {
-                    committed.state = FiberState::Failed;
-                    committed.active_for = None;
-                    committed.failed_under = Some(aim);
-                });
+                self.activation_failed(aim);
                 self.publish(FiberState::Failed, cause);
             }
         }
@@ -182,24 +175,15 @@ impl Cell {
         self.publish(FiberState::Unloading, cause.clone());
         let full = cause == TransitionCause::ExplicitDispose;
         let report = self.withdraw(full).await;
-        self.shared
-            .steering
-            .commit(|committed| committed.active_for = None);
-
         let desired = self.shared.steering.desired();
         if desired.disposing || desired.suspending {
             self.disposal_landed(&report, cause);
         } else if report.is_clean() {
-            self.shared
-                .steering
-                .commit(|committed| committed.state = FiberState::Pending);
+            self.unloaded();
             self.publish(FiberState::Pending, cause);
         } else {
             self.shared.fail(unclean(self.shared.id, &report));
-            self.shared.steering.commit(|committed| {
-                committed.state = FiberState::Failed;
-                committed.failed_under = Some(desired.aim.clone());
-            });
+            self.unload_failed(&desired.aim);
             self.publish(FiberState::Failed, cause);
         }
     }
@@ -215,27 +199,6 @@ impl Cell {
             .withdraw(cause == TransitionCause::ExplicitDispose)
             .await;
         self.disposal_landed(&report, cause);
-    }
-
-    /// Commits the state a disposal's — or a suspension's — replay earned:
-    /// `Disposed` for a clean replay, `Failed` for an unclean one (R11) — a
-    /// fiber that could not withdraw never claims it is gone, and the failed
-    /// replay is not reattempted against an unchanged scope (R9). Either
-    /// way the replay has completed and reported, under `cause`.
-    fn disposal_landed(&mut self, report: &ReplayReport, cause: TransitionCause) {
-        if report.is_clean() {
-            self.shared
-                .steering
-                .commit(|committed| committed.state = FiberState::Disposed);
-            self.publish(FiberState::Disposed, cause);
-        } else {
-            self.shared.fail(unclean(self.shared.id, report));
-            self.shared.steering.commit(|committed| {
-                committed.state = FiberState::Failed;
-                committed.disposal_failed = true;
-            });
-            self.publish(FiberState::Failed, cause);
-        }
     }
 
     /// Drains this activation's scope, replays it, and starts the next one
