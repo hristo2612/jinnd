@@ -111,6 +111,9 @@ enum Declared {
     /// `entry-ids`: the profile entries a patch may target (jinn:profile,
     /// M2-K7); `*` only when written.
     EntryIds,
+    /// `key-prefix`: the key-name prefixes a keystore grant admits
+    /// (jinn:keystore, M2-K8); a bare grant admits no key.
+    KeyPrefix,
     /// The bundle declares no scope (jinn:ledger, jinn:introspect).
     NoScope,
     /// No shipped bundle declares a scope type for this contract.
@@ -124,6 +127,7 @@ fn declared(contract: &str) -> Declared {
         PROCESS_CONTRACT => Declared::ProcessPolicy,
         NET_CONTRACT => Declared::NetPolicy,
         PROFILE_CONTRACT => Declared::EntryIds,
+        KEYSTORE_CONTRACT => Declared::KeyPrefix,
         "jinn:ledger" | INTROSPECT_CONTRACT => Declared::NoScope,
         _ => Declared::Undeclared,
     }
@@ -234,6 +238,7 @@ fn admit(grant: &Grant) -> Result<(), KernelError> {
         (Declared::ProcessPolicy, wrote) => policy::process_scope(contract, wrote).map(|_| ()),
         (Declared::NetPolicy, wrote) => policy::net_scope(contract, wrote).map(|_| ()),
         (Declared::EntryIds, wrote) => policy::entry_scope(contract, wrote).map(|_| ()),
+        (Declared::KeyPrefix, wrote) => policy::key_scope(contract, wrote).map(|_| ()),
         (Declared::NoScope, wrote) => Err(refused(format!(
             "grant refused: {contract} declares no scope type; scope {wrote} cannot validate"
         ))),
@@ -270,6 +275,13 @@ pub(crate) fn authority(grant: &Grant) -> GrantScope {
             scope
                 .as_ref()
                 .and_then(|wrote| policy::entry_scope(contract, wrote).ok())
+                .unwrap_or_default(),
+        ),
+        // A bare keystore grant admits NO key (default deny, M2-K8).
+        (Declared::KeyPrefix, scope) => GrantScope::Keys(
+            scope
+                .as_ref()
+                .and_then(|wrote| policy::key_scope(contract, wrote).ok())
                 .unwrap_or_default(),
         ),
         (_, Some(ScopeValue::Path(path))) => GrantScope::Paths(vec![path.clone()]),

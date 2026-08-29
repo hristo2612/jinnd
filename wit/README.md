@@ -1,9 +1,12 @@
-# The plugin world — `jinn:plugin@0.4.0`
+# The plugin world — `jinn:plugin@0.5.0`
 
 Version history (additive within 0.x, R12): 0.1.0 M1-P8 world; 0.2.0 M2-K3
 `fs` finalized to its bundle; 0.3.0 M2-K4 lifecycle semantics (suspend ≠
 dispose — kernel registrations release on suspend, world mutations are
-entry-scoped and withdrawn only at dispose).
+entry-scoped and withdrawn only at dispose); 0.4.0 M2-K6 `process`/`net`
+long-lived editions; 0.5.0 M2-K8 `keystore` finalized to its bundle
+(`delete`, `list`, `keystore-error`), grants gain an `ops` attenuation, and
+`jinn:profile` 0.2.0 (non-blocking `patch-entry`, `entry`/`document` reads).
 
 WIT interface files for the Tier A (WASM component) plugin world: lifecycle
 entry points, effect registration, service provide/inject, event emit/listen,

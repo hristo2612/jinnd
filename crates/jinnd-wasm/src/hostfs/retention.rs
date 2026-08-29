@@ -50,7 +50,8 @@ pub(crate) struct Header {
     pub(crate) operation: String,
 }
 
-/// One spilled inverse: its header and what to restore.
+/// One spilled inverse: its header and what to restore. The keystore
+/// provider spills its (sealed) priors through the same store (M2-K8).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Record {
     pub(crate) header: Header,

@@ -50,13 +50,14 @@ impl SeatState {
         }
     }
 
-    /// The host-provider effect ids this seat holds (M2-K4), in order.
+    /// The host-provider effects this seat holds (M2-K4), in order, as
+    /// (contract, effect id) — ids are per provider (M2-K8).
     #[must_use]
-    pub fn host_effects(&self) -> Vec<u64> {
+    pub fn host_effects(&self) -> Vec<(String, u64)> {
         self.registrations
             .iter()
             .filter_map(|registration| match registration {
-                Registration::Host(record) => Some(record.effect),
+                Registration::Host(record) => Some((record.contract.clone(), record.effect)),
                 _ => None,
             })
             .collect()

@@ -24,7 +24,7 @@ wit_bindgen::generate!({
 });
 
 use exports::jinn::plugin::lifecycle::{Guest, GuestFault};
-use jinn::plugin::{clock, effects, fs, net, process, services};
+use jinn::plugin::{clock, effects, fs, keystore, net, process, services};
 
 /// The counter contract this fixture provides.
 const COUNTER_CONTRACT: &str = "jinn:test/counter";
@@ -64,6 +64,69 @@ fn process_fault(error: process::ProcessError) -> GuestFault {
 
 fn net_fault(error: net::NetError) -> GuestFault {
     GuestFault::Failed(format!("{error:?}"))
+}
+
+fn keystore_fault(error: keystore::KeystoreError) -> GuestFault {
+    GuestFault::Failed(format!("{error:?}"))
+}
+
+/// The secret the keystore modes store: the daemon test greps the ledger
+/// file, the sealed store, and the inverses for these bytes (zero hits).
+const SECRET: &[u8] = b"sk-live-0xDEADBEEF-fixture-secret";
+
+/// The M2-K8 keystore modes: `keystore` drives the whole bundle under an
+/// `engines/` prefix grant and leaves one key in place for the dispose
+/// probe; `keystore-readonly` asserts the `ops: [get, list]` attenuation.
+fn keystore_mode(mode: &str) -> Result<(), GuestFault> {
+    match mode {
+        "keystore" => {
+            keystore::put("engines/openai", SECRET).map_err(keystore_fault)?;
+            if keystore::get("engines/openai").map_err(keystore_fault)? != SECRET {
+                return Err(GuestFault::Failed("the value did not round-trip".into()));
+            }
+            let names = keystore::list().map_err(keystore_fault)?;
+            match keystore::put("smtp/password", b"beside-the-prefix") {
+                Err(keystore::KeystoreError::Denied(_)) => {}
+                other => {
+                    return Err(GuestFault::Failed(format!(
+                        "a key beside the granted prefix was not denied: {other:?}"
+                    )))
+                }
+            }
+            keystore::put("engines/kept", b"kept-0xCAFEBABE-value").map_err(keystore_fault)?;
+            keystore::delete("engines/openai").map_err(keystore_fault)?;
+            match keystore::get("engines/openai") {
+                Err(keystore::KeystoreError::NotFound) => {}
+                other => {
+                    return Err(GuestFault::Failed(format!(
+                        "absence was not the typed not-found: {other:?}"
+                    )))
+                }
+            }
+            fs::write("/keystore.out", names.join(",").as_bytes(), "").map_err(fs_fault)
+        }
+        "keystore-readonly" => {
+            match keystore::get("engines/none") {
+                Err(keystore::KeystoreError::NotFound) => {}
+                other => return Err(GuestFault::Failed(format!("get: {other:?}"))),
+            }
+            let denied = matches!(
+                keystore::put("engines/x", b"v"),
+                Err(keystore::KeystoreError::Denied(_))
+            ) && matches!(
+                keystore::delete("engines/x"),
+                Err(keystore::KeystoreError::Denied(_))
+            );
+            if denied {
+                Ok(())
+            } else {
+                Err(GuestFault::Failed(
+                    "a mutation under a read-only keystore grant was not denied".into(),
+                ))
+            }
+        }
+        other => Err(GuestFault::Failed(format!("unknown keystore mode {other}"))),
+    }
 }
 
 /// Spins until `condition` answers `Some`, or the clock says `budget_ms`
@@ -344,6 +407,9 @@ impl Guest for Fixture {
         if mode == "introspect" || mode == "ledger-read" || mode.starts_with("profile-patch") {
             return operator_mode(mode, arg);
         }
+        if mode.starts_with("keystore") {
+            return keystore_mode(mode);
+        }
         match mode {
             "trap" => panic!("fixture trap mode"),
             "spin" => loop {
@@ -432,6 +498,23 @@ impl Guest for Fixture {
                 } else {
                     Err(GuestFault::Failed(
                         "an ungranted fs bundle op was not refused".into(),
+                    ))
+                }
+            }
+            // A read-only fs grant (M2-K8 #24): reads answer, every
+            // mutation is the typed denial.
+            "fs-readonly" => {
+                if let Err(fs::FsError::Denied) = fs::read("/doc.txt") {
+                    return Err(GuestFault::Failed("a read under a read-only grant was denied".into()));
+                }
+                let denied = matches!(fs::write("/doc.txt", b"x", ""), Err(fs::FsError::Denied))
+                    && matches!(fs::append("/doc.txt", b"x", ""), Err(fs::FsError::Denied))
+                    && matches!(fs::remove("/doc.txt", ""), Err(fs::FsError::Denied));
+                if denied {
+                    Ok(())
+                } else {
+                    Err(GuestFault::Failed(
+                        "a mutation under a read-only fs grant was not denied".into(),
                     ))
                 }
             }

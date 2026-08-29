@@ -1,0 +1,37 @@
+// jinn:keystore@0.1.0 (M2-K8, harness #5 remainder) — the base host-provider
+// secret store. Implemented by the kernel (01 §Mechanical closure); reached
+// as the plugin world's `keystore` import (wit/plugin.wit 0.5.0 carries this
+// interface verbatim). Sensitivity class SECRET (02 §Redaction): a value
+// never lands in the ledger, in an error message, or in plaintext on disk —
+// the ledger records that a secret crossed, its NAME and its digest.
+package jinn:keystore@0.1.0;
+
+interface secrets {
+  // `not-found` is the TYPED absence answer of `get` and `delete` (callers
+  // classify by case, never by folding a message); `denied` is a grant,
+  // scope, or operation-class refusal (a ledger event); `invalid` is a
+  // malformed key name; `failed` carries every other contained failure —
+  // the store's own or the kernel boundary's. No variant carries a value.
+  variant keystore-error { not-found, denied(string), failed(string), invalid(string) }
+
+  // effect = read. Ledgered as `KeystoreAccessed { get, key, digest }`.
+  get: func(key: string) -> result<list<u8>, keystore-error>;
+
+  // effect = revertible: inverse obligation = restore the prior value, or
+  // prior absence. The inverse is retained SEALED (same at-rest cipher as
+  // the store) in the provider's retention store before the mutation
+  // commits (durable-before-commit-refuse-otherwise, as jinn:fs).
+  put: func(key: string, value: list<u8>) -> result<_, keystore-error>;
+
+  // effect = revertible: inverse obligation = restore the prior value. A
+  // missing key answers `not-found` and registers no effect.
+  delete: func(key: string) -> result<_, keystore-error>;
+
+  // effect = read. Names only — the key names under the caller's granted
+  // prefixes, sorted. Never a value.
+  %list: func() -> result<list<string>, keystore-error>;
+}
+
+world keystore-provider {
+  export secrets;
+}

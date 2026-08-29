@@ -117,6 +117,17 @@ pub enum LedgerEventKind {
     /// intent — no fs inverse, no fiber journal entry. `entry` is the
     /// patched entry; `by` names the editing entry (or the calling peer).
     ProfilePatched { entry: EntryId, by: String },
+    /// One `jinn:keystore` crossing (M2-K8, harness #5 remainder; Law 2,
+    /// constitution 02 §Redaction — sensitivity class SECRET): the record
+    /// carries the KEY NAME and the value's SHA-256 digest, never the
+    /// value. `digest` is `None` when no value crossed (an absent key, a
+    /// delete). Attributed to the calling entry/fiber via the columns.
+    /// (Authorized M2-K8 additive facade delta.)
+    KeystoreAccessed {
+        operation: String,
+        key: String,
+        digest: Option<String>,
+    },
     /// One consumption receipt for a `jinn:ledger` read (constitution 02,
     /// family 2; M2-K7 #20): the delivered sequence span and count,
     /// attributed to the reading entry/fiber — and excluded from that

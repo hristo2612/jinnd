@@ -19,7 +19,10 @@ impl LaneCore {
         // journals the same id again, and the entry's journal keeps ONE —
         // the trail is the contribution, never a contribution twice.
         for record in records {
-            if !journal.iter().any(|held| held.effect == record.effect) {
+            if !journal
+                .iter()
+                .any(|held| held.effect == record.effect && held.contract == record.contract)
+            {
                 journal.push(record);
             }
         }
@@ -27,9 +30,13 @@ impl LaneCore {
 
     /// Forgets effects the live seat's own trail just withdrew: a keyed
     /// replay's id may sit in both, and it withdraws exactly once.
-    pub(super) fn release(&self, entry: &EntryId, withdrawn: &[u64]) {
+    pub(super) fn release(&self, entry: &EntryId, withdrawn: &[(String, u64)]) {
         if let Some(journal) = lock(&self.journals).get_mut(entry) {
-            journal.retain(|record| !withdrawn.contains(&record.effect));
+            journal.retain(|record| {
+                !withdrawn.iter().any(|(contract, effect)| {
+                    *effect == record.effect && *contract == record.contract
+                })
+            });
         }
     }
 

@@ -1,0 +1,66 @@
+# Contract-bundle metadata for jinn:keystore@0.1.0 (M2-K8)
+
+[contract]
+name    = "jinn:keystore"
+version = "0.1.0"
+
+[scope]
+type   = "key-prefix"
+# Decidable subset predicate the kernel evaluates for attenuation (01 §Grants):
+# a scope is a non-empty list of non-empty key-name prefixes (one string is
+# accepted as a one-element list); subset(a, b) := every prefix of a starts
+# with some prefix of b. Enforced per call on the key name. FAIL-CLOSED
+# (M2-K2 law): any other shape refuses the grant with a ledgered per-entry
+# error; a grant with NO scope admits NO key (default deny — secrets never
+# ride on a bare grant).
+# Profile syntax (04 §Format): `{ contract = "jinn:keystore", scope =
+# ["engines/", "smtp."] }`; a read-only consumer adds `ops = ["get", "list"]`
+# (operation-class attenuation, contracts/README.md).
+subset = "key-prefix-containment"
+ops    = "declared-operation-subset"
+
+[operations.get]
+effect      = "read"
+sensitivity = "secret"
+
+[operations.put]
+effect      = "revertible"
+sensitivity = "secret"
+# Inverse obligation (03): restore the key's prior value, or prior absence.
+# Witness: the key now reads as the retained (sealed) prior, or is absent.
+inverse     = "restore-prior-value-or-absence"
+
+[operations.delete]
+effect      = "revertible"
+sensitivity = "secret"
+# Inverse obligation (03): restore the removed value.
+inverse     = "restore-prior-value"
+
+[operations.list]
+effect      = "read"
+sensitivity = "personal"   # names only; a value never crosses here
+
+[equality]
+# Observational equivalence: the same key names bound to the same value
+# bytes under the granted prefixes. Storage layout, nonces, and file
+# identity are NOT observable state.
+relation = "name-value-map-under-scope"
+
+[retention]
+# As jinn:fs (M2-K3): the inverse is made durable BEFORE the mutation
+# commits or the effect is REFUSED on the record; the retained prior is
+# SEALED with the store's at-rest cipher — never plaintext on disk.
+policy    = "durable-before-commit-refuse-otherwise"
+reclaim   = "on-completed-revert"
+sealed    = "prior-values-encrypted-at-rest"
+# Lifecycle class (jinn:plugin@0.3.0, M2-K4): put/delete are WORLD
+# MUTATIONS scoped to the profile entry — retained across suspend and
+# incarnation replacement, withdrawn LIFO only at the entry's dispose.
+lifecycle = "entry-scoped-survives-suspend-withdrawn-on-dispose"
+
+[ledger]
+# Law 2 + 02 §Redaction: every call is a ledgered contract call; the
+# provider's own record is `KeystoreAccessed { operation, key, digest }` —
+# the KEY NAME and the value's SHA-256 digest (absent when no value
+# crossed). The value is never a payload, a label, or an error message.
+record = "key-name-and-digest-never-value"

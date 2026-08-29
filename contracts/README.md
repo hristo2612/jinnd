@@ -10,9 +10,11 @@ by `docs/constitution/01-capability-contracts.md`.
 Rules (R12): contracts are versioned; never breaking within a major version; designed
 to outlive any particular kernel implementation or host OS.
 
-Bundles: `jinn-fs` (0.2.0), `jinn-clock` (0.1.0), `jinn-process` (0.1.0),
-`jinn-net` (0.1.0, readiness wake M2-K7), `jinn-ledger` (0.1.0, finalized
-M2-K7), `jinn-introspect` (0.1.0), `jinn-profile` (0.1.0).
+Bundles: `jinn-fs` (0.2.0; atomic commits M2-K8), `jinn-clock` (0.1.0),
+`jinn-process` (0.1.0), `jinn-net` (0.1.0, readiness wake M2-K7),
+`jinn-ledger` (0.1.0, finalized M2-K7), `jinn-introspect` (0.1.0),
+`jinn-profile` (0.2.0; non-blocking patch and reads M2-K8), `jinn-keystore`
+(0.1.0, M2-K8).
 
 ## Operation-class attenuation (M2-K8)
 

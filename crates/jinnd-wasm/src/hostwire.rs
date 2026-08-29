@@ -99,6 +99,12 @@ impl<'a> Reader<'a> {
     pub fn rest(self) -> &'a [u8] {
         self.wire
     }
+
+    /// Nothing left.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.wire.is_empty()
+    }
 }
 
 /// Decodes a `spawn` request: argc, envc, then command, cwd, args, env.

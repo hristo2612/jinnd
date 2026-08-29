@@ -50,6 +50,9 @@ pub enum GrantScope {
     /// target; `"*"` means every entry, only when written. Empty (a bare
     /// grant) patches nothing.
     Entries(Vec<String>),
+    /// `key-prefix` (`jinn:keystore`, M2-K8): the key-name prefixes the
+    /// grant admits. Empty (a bare grant) admits no key.
+    Keys(Vec<String>),
 }
 
 impl GrantScope {
@@ -59,6 +62,16 @@ impl GrantScope {
     pub fn admits_entry(&self, entry: &str) -> bool {
         match self {
             Self::Entries(ids) => ids.iter().any(|id| id == "*" || id == entry),
+            _ => false,
+        }
+    }
+
+    /// Whether a `key-prefix` scope admits `key` (fail-closed: any other
+    /// scope shape, and the empty allowlist, admit nothing).
+    #[must_use]
+    pub fn admits_key(&self, key: &str) -> bool {
+        match self {
+            Self::Keys(prefixes) => prefixes.iter().any(|prefix| key.starts_with(prefix)),
             _ => false,
         }
     }
@@ -152,6 +165,25 @@ pub(super) fn entry_scope(contract: &str, scope: &ScopeValue) -> Result<Vec<Stri
         )));
     }
     Ok(ids)
+}
+
+/// Parses one `key-prefix` scope (M2-K8): a non-empty list of non-empty
+/// key-name prefixes, or one prefix string.
+///
+/// # Errors
+///
+/// A typed refusal for any other shape.
+pub(super) fn key_scope(contract: &str, scope: &ScopeValue) -> Result<Vec<String>, KernelError> {
+    let prefixes = match scope {
+        ScopeValue::Path(prefix) => vec![prefix.clone()],
+        other => strings(contract, "key-prefix", other)?,
+    };
+    if prefixes.is_empty() || prefixes.iter().any(String::is_empty) {
+        return Err(refused(format!(
+            "grant refused: {contract} scope must name at least one non-empty key prefix, wrote {scope}"
+        )));
+    }
+    Ok(prefixes)
 }
 
 /// Parses one `net-policy` scope (`{ bind, outbound }`).

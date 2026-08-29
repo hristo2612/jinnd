@@ -9,8 +9,25 @@ const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
-    assert!(WORLD.contains("package jinn:plugin@0.4.0;"));
+    // 0.5.0 (M2-K8): the keystore import finalized to its bundle.
+    assert!(WORLD.contains("package jinn:plugin@0.5.0;"));
     assert!(WORLD.contains("Suspend ≠ dispose"));
+}
+
+/// M2-K8 (R3/R12): the `keystore` import answers its bundle's error on
+/// its own wire, verbatim, and carries the bundle's four operations.
+#[test]
+fn keystore_import_mirrors_its_bundle() {
+    const KEYSTORE: &str = include_str!("../../../../contracts/jinn-keystore/contract.wit");
+    let declared = KEYSTORE
+        .lines()
+        .find(|line| line.trim_start().starts_with("variant keystore-error"))
+        .unwrap_or_else(|| panic!("keystore-error declared in the bundle"))
+        .trim();
+    assert!(WORLD.contains(declared), "the world carries {declared} verbatim");
+    for operation in ["get:", "put:", "delete:", "%list:"] {
+        assert!(KEYSTORE.contains(operation) && WORLD.contains(operation));
+    }
 }
 
 #[test]

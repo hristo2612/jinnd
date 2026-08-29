@@ -80,6 +80,22 @@ impl From<jinnd_api::KernelError> for net::NetError {
     }
 }
 
+/// Maps a facade error onto the `jinn:keystore` bundle's own error
+/// (M2-K8, R3/R12): typed absence, a grant or scope denial, a malformed
+/// key, or the contained failure. Messages name keys, never values.
+impl From<jinnd_api::KernelError> for keystore::KeystoreError {
+    fn from(error: jinnd_api::KernelError) -> Self {
+        match error.code {
+            ErrorCode::NotFound => Self::NotFound,
+            ErrorCode::EffectFailed => Self::Denied(error.message),
+            ErrorCode::DependencyCycle
+            | ErrorCode::InvalidProfile
+            | ErrorCode::DuplicateProvision => Self::Invalid(error.message),
+            _ => Self::Failed(error.message),
+        }
+    }
+}
+
 /// The wire selector, evaluated kernel-side only (C4).
 pub fn api_selector(selector: types::Selector) -> crate::selector::Selector {
     match selector {
