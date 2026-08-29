@@ -23,4 +23,6 @@ field names.
 Every read is one `ContractCall { contract: "jinn:introspect", operation }`
 with the caller's entry and fiber attribution. Riding with this bundle
 (finding 19): the ledger's `entry` column is filled for every attributable
-event, and `GrantRefused` carries the typed refusal `reason`.
+event, and `GrantRefused` carries the typed refusal `reason` (the closed
+`RefusalReason` class: not-granted, scope-mismatch, not-loopback,
+unresolvable, foreign-handle) with the prose `detail` beside it.

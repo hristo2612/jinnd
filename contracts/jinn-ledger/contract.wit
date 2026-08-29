@@ -11,17 +11,20 @@ package jinn:ledger@0.1.0;
 interface reader {
   // One recorded event as the kernel keeps it (R6): the monotonic id (the
   // ordering authority), the writer's wall-clock stamp, the attributed
-  // profile entry and fiber, the typed kind (serialized as JSON, the
-  // `LedgerEventKind` schema of the kernel facade), and the kind's
-  // sensitivity class (`public` | `personal`) so an exporter can redact
-  // (02 §Redaction: personal is verbatim locally; secret is never stored).
-  // v0.1 records no causal parent; it is a v0.2 column.
+  // profile entry and fiber, the kind's canonical NAME (a variant of the
+  // kernel facade's `LedgerEventKind`, e.g. `ArtifactLoaded`), the kind's
+  // fields as JSON text (`{"hash":"..."}`; `null` for a field-less kind),
+  // and the kind's sensitivity class (`public` | `personal`) so an
+  // exporter can redact (02 §Redaction: personal is verbatim locally;
+  // secret is never stored). v0.1 records no causal parent; it is a v0.2
+  // column.
   record event {
     id: u64,
     wall-ms: u64,
     entry: option<string>,
     fiber: option<u64>,
     kind: string,
+    payload: string,
     sensitivity: string,
   }
 
@@ -36,6 +39,8 @@ interface reader {
   read-range: func(from-id: u64, limit: u32) -> page;
 
   // Effect class: read. The highest committed sequence (0 when empty).
+  // Ledgered like every read: its receipt is `LedgerConsumed { first:
+  // seq, last: seq, count: 0 }` — the consulted mark, nothing delivered.
   // Broker wire: operation `last-seq`, empty payload; answer = u64-LE.
   last-seq: func() -> u64;
 }

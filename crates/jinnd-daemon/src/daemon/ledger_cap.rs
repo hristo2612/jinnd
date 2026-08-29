@@ -1,10 +1,12 @@
 //! The `jinn:ledger` reader (M2-K7, harness #20; contract bundle
 //! `contracts/jinn-ledger`, constitution 02): paged reads of the
 //! append-only stream and the high-water sequence, behind the same choke
-//! point as every provider. Every delivery appends a CONSUMPTION RECEIPT
-//! (02 family 2) attributed to the reader, and the reader's own receipts
-//! are excluded from its feed — a read never feeds itself. Each delivered
-//! event carries its sensitivity class so an exporter can redact (02
+//! point as every provider. EVERY read appends a CONSUMPTION RECEIPT (02
+//! family 2) attributed to the reader — a page's delivered span, a
+//! `last-seq`'s consulted mark — and the reader's own receipts are
+//! excluded from its feed: a read never feeds itself. Each delivered
+//! event is the bundle's declared shape (kind name + JSON-text payload)
+//! and carries its sensitivity class so an exporter can redact (02
 //! §Redaction: personal is verbatim locally, secret is never stored).
 
 use std::sync::Arc;
@@ -42,15 +44,33 @@ fn sensitivity(kind: &LedgerEventKind) -> &'static str {
     }
 }
 
+/// The bundle's `event` exactly as declared (R12: the wire carries the
+/// contract's shape): `kind` is the canonical kind name, `payload` its
+/// fields as JSON text.
 fn event(record: &LedgerRecord) -> serde_json::Value {
+    let (kind, payload) = split_kind(&record.kind);
     serde_json::json!({
         "id": record.sequence,
         "wall-ms": record.timestamp,
         "entry": record.entry.as_ref().map(|entry| entry.0.clone()),
         "fiber": record.fiber.map(|fiber| fiber.0),
-        "kind": serde_json::to_value(&record.kind).unwrap_or(serde_json::Value::Null),
+        "kind": kind,
+        "payload": payload,
         "sensitivity": sensitivity(&record.kind),
     })
+}
+
+/// A kind is externally tagged: one key naming the variant over its
+/// fields (a field-less variant would be a bare name over `null`).
+fn split_kind(kind: &LedgerEventKind) -> (String, String) {
+    match serde_json::to_value(kind) {
+        Ok(serde_json::Value::Object(fields)) if fields.len() == 1 => fields
+            .into_iter()
+            .next()
+            .map_or_else(Default::default, |(name, value)| (name, value.to_string())),
+        Ok(serde_json::Value::String(name)) => (name, "null".to_owned()),
+        _ => ("Unrepresentable".to_owned(), "null".to_owned()),
+    }
 }
 
 impl HostLedger {
@@ -73,7 +93,7 @@ impl HostLedger {
     /// One page: `from-id` (u64-LE) and `limit` (u32-LE, clamped to
     /// 1..=500); the answer is the bundle's `page` record. The reader's
     /// own receipts are dropped from the delivery; the receipt for this
-    /// delivery lands after it, under the reader's attribution.
+    /// read lands after it, under the reader's attribution.
     async fn read_range(&self, caller: PeerId, payload: Vec<u8>) -> Result<Vec<u8>, KernelError> {
         let (fiber, entry) = self.callers.attribution(caller);
         let mut reader = Reader::new(&payload, "ledger read-range");
@@ -85,25 +105,41 @@ impl HostLedger {
             .iter()
             .filter(|record| !own_receipt(record, fiber, entry.as_ref()))
             .collect();
-        if let (Some(first), Some(last)) = (delivered.first(), delivered.last()) {
-            self.ledger.record(
-                LedgerEventKind::LedgerConsumed {
-                    first: first.sequence,
-                    last: last.sequence,
-                    count: u32::try_from(delivered.len()).unwrap_or(u32::MAX),
-                },
-                entry,
-                fiber,
-            );
-        }
+        // Every read is on the record: the delivered span, or — for an
+        // empty page — the consulted position with nothing delivered.
+        let (first, last) = match (delivered.first(), delivered.last()) {
+            (Some(first), Some(last)) => (first.sequence, last.sequence),
+            _ => (from, from),
+        };
+        self.ledger.record(
+            LedgerEventKind::LedgerConsumed {
+                first,
+                last,
+                count: u32::try_from(delivered.len()).unwrap_or(u32::MAX),
+            },
+            entry,
+            fiber,
+        );
         let events: Vec<serde_json::Value> = delivered.iter().map(|record| event(record)).collect();
         Ok(json(
             &serde_json::json!({ "events": events, "next-from": next }),
         ))
     }
 
-    async fn last_seq(&self) -> Result<Vec<u8>, KernelError> {
+    /// The high-water mark. Its receipt IS the record of the read: the
+    /// consulted sequence as `first` and `last`, zero events delivered.
+    async fn last_seq(&self, caller: PeerId) -> Result<Vec<u8>, KernelError> {
+        let (fiber, entry) = self.callers.attribution(caller);
         let last = self.ledger.last_sequence().await.map_err(storage)?;
+        self.ledger.record(
+            LedgerEventKind::LedgerConsumed {
+                first: last,
+                last,
+                count: 0,
+            },
+            entry,
+            fiber,
+        );
         Ok(last.to_le_bytes().to_vec())
     }
 }
@@ -132,7 +168,7 @@ impl Peer for LedgerPeer {
         Box::pin(async move {
             match operation.as_str() {
                 "read-range" => provider.read_range(caller, payload).await,
-                "last-seq" => provider.last_seq().await,
+                "last-seq" => provider.last_seq(caller).await,
                 other => Err(unknown(LEDGER_CONTRACT, other)),
             }
         })

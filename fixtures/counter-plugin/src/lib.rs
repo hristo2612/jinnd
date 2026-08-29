@@ -15,8 +15,8 @@
 //! teardown probe). State is one counter, handed across Mode-1 swaps via
 //! snapshot/restore.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 wit_bindgen::generate!({
     path: "../../wit",
@@ -68,7 +68,10 @@ fn net_fault(error: net::NetError) -> GuestFault {
 
 /// Spins until `condition` answers `Some`, or the clock says `budget_ms`
 /// passed (a guest has no sleep; polling is the v0.1 wake shape, M2-K6).
-fn poll<T>(budget_ms: u64, mut condition: impl FnMut() -> Result<Option<T>, GuestFault>) -> Result<T, GuestFault> {
+fn poll<T>(
+    budget_ms: u64,
+    mut condition: impl FnMut() -> Result<Option<T>, GuestFault>,
+) -> Result<T, GuestFault> {
     let started = clock::now().map_err(fault)?;
     loop {
         if let Some(found) = condition()? {
@@ -83,13 +86,15 @@ fn poll<T>(budget_ms: u64, mut condition: impl FnMut() -> Result<Option<T>, Gues
 /// Drains one child stream until EOF (M2-K6), bounded by the clock.
 fn drain(handle: u64, which: process::ChildStream, budget_ms: u64) -> Result<Vec<u8>, GuestFault> {
     let mut collected = Vec::new();
-    poll(budget_ms, || match process::read(handle, which, 4096).map_err(process_fault)? {
-        process::ReadResult::Data(bytes) => {
-            collected.extend(bytes);
-            Ok(None)
+    poll(budget_ms, || {
+        match process::read(handle, which, 4096).map_err(process_fault)? {
+            process::ReadResult::Data(bytes) => {
+                collected.extend(bytes);
+                Ok(None)
+            }
+            process::ReadResult::WouldBlock => Ok(None),
+            process::ReadResult::Eof => Ok(Some(())),
         }
-        process::ReadResult::WouldBlock => Ok(None),
-        process::ReadResult::Eof => Ok(Some(())),
     })?;
     Ok(collected)
 }
@@ -109,9 +114,11 @@ fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
             }
             process::close_stdin(child).map_err(process_fault)?;
             let echoed = drain(child, process::ChildStream::Stdout, 3000)?;
-            let status = poll(3000, || match process::wait(child, 1000).map_err(process_fault)? {
-                process::WaitResult::Exited(code) => Ok(Some(code)),
-                process::WaitResult::Running => Ok(None),
+            let status = poll(3000, || {
+                match process::wait(child, 1000).map_err(process_fault)? {
+                    process::WaitResult::Exited(code) => Ok(Some(code)),
+                    process::WaitResult::Running => Ok(None),
+                }
             })?;
             if status != 0 {
                 return Err(GuestFault::Failed(format!("cat exited {status}")));
@@ -123,11 +130,14 @@ fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
             Ok(())
         }
         "proc-kill" => {
-            let child = process::spawn("/bin/sleep", &["30".to_owned()], None, &[]).map_err(process_fault)?;
+            let child = process::spawn("/bin/sleep", &["30".to_owned()], None, &[])
+                .map_err(process_fault)?;
             process::kill(child, process::Signal::Terminate).map_err(process_fault)?;
-            let status = poll(3000, || match process::wait(child, 1000).map_err(process_fault)? {
-                process::WaitResult::Exited(code) => Ok(Some(code)),
-                process::WaitResult::Running => Ok(None),
+            let status = poll(3000, || {
+                match process::wait(child, 1000).map_err(process_fault)? {
+                    process::WaitResult::Exited(code) => Ok(Some(code)),
+                    process::WaitResult::Running => Ok(None),
+                }
             })?;
             fs::write("/proc-kill.out", status.to_string().as_bytes(), "").map_err(fs_fault)
         }
@@ -143,7 +153,9 @@ fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
         }
         "proc-denied" => match process::spawn("/bin/cat", &[], None, &[]) {
             Err(_) => Ok(()),
-            Ok(_) => Err(GuestFault::Failed("an ungranted spawn was not refused".into())),
+            Ok(_) => Err(GuestFault::Failed(
+                "an ungranted spawn was not refused".into(),
+            )),
         },
         // Output past the bundle's cap is the TYPED truncation ON THE WIRE
         // (M2-K6 round 4): a guest matches the bundle variant, never a string.
@@ -261,11 +273,21 @@ fn operator_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
             Ok(())
         }
         "profile-patch-denied" => {
-            match operator_call("jinn:profile", "patch-entry", &patch_payload(arg, r#"{"data":"noop"}"#)) {
-                Err(GuestFault::Failed(text)) if text.contains("GrantRefused") => Ok(()),
-                other => Err(GuestFault::Failed(format!(
-                    "a patch outside the scope was not the typed refusal: {other:?}"
-                ))),
+            // The contract: EVERY refusal, the scope's included, is the
+            // typed `refused` outcome on the wire (tag 1 + reason), never
+            // an outer kernel error.
+            let answer = operator_call(
+                "jinn:profile",
+                "patch-entry",
+                &patch_payload(arg, r#"{"data":"noop"}"#),
+            )?;
+            let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
+            if answer.first() == Some(&1) && reason.contains("scope") {
+                Ok(())
+            } else {
+                Err(GuestFault::Failed(format!(
+                    "a patch outside the scope was not `refused` on the wire: {answer:?}"
+                )))
             }
         }
         other => Err(GuestFault::Failed(format!("unknown operator mode {other}"))),
@@ -293,7 +315,11 @@ fn patch_tick(mode: &str, id: &str) -> Result<(), GuestFault> {
     if fs::meta("/patch.out").is_ok() {
         return Ok(());
     }
-    let patch = if mode == "profile-patch-bad" { r#"{"grants":[7]}"# } else { r#"{"data":"noop"}"# };
+    let patch = if mode == "profile-patch-bad" {
+        r#"{"grants":[7]}"#
+    } else {
+        r#"{"data":"noop"}"#
+    };
     let answer = operator_call("jinn:profile", "patch-entry", &patch_payload(id, patch))?;
     let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
     if answer.first() == Some(&1) && (reason.contains("retry") || reason.contains("in flight")) {
@@ -325,8 +351,7 @@ impl Guest for Fixture {
             },
             "caller" => {
                 let handle = services::resolve(GREETER_CONTRACT).map_err(fault)?;
-                let answer =
-                    services::call(handle, "greet", b"from-guest").map_err(fault)?;
+                let answer = services::call(handle, "greet", b"from-guest").map_err(fault)?;
                 *STASH.lock().unwrap() = answer;
                 effects::register("caller effect", 1).map_err(fault)?;
                 Ok(())
@@ -380,7 +405,10 @@ impl Guest for Fixture {
                 let listed = fs::list("/log").map_err(fs_fault)?;
                 let names: Vec<String> = listed.iter().map(|m| m.path.clone()).collect();
                 fs::remove("/log/b.txt", "k-b2").map_err(fs_fault)?;
-                for absent in [fs::read("/log/b.txt").map(|_| ()), fs::meta("/missing").map(|_| ())] {
+                for absent in [
+                    fs::read("/log/b.txt").map(|_| ()),
+                    fs::meta("/missing").map(|_| ()),
+                ] {
                     match absent {
                         Err(fs::FsError::NotFound) => {}
                         other => {
@@ -497,7 +525,9 @@ impl Guest for Fixture {
         // effects on discard observes this contained failure, a host that
         // raw-disposes never runs it.
         if *MODE.lock().unwrap() == "grumpy-undo" {
-            return Err(GuestFault::Failed(format!("grumpy undo ran (token {token})")));
+            return Err(GuestFault::Failed(format!(
+                "grumpy undo ran (token {token})"
+            )));
         }
         Ok(())
     }
@@ -507,7 +537,9 @@ impl Guest for Fixture {
         // payload repeats it; the echo tick serves whatever is ready.
         if topic == READABLE_TOPIC {
             if payload != token.to_le_bytes() {
-                return Err(GuestFault::Failed("a malformed readiness wake arrived".into()));
+                return Err(GuestFault::Failed(
+                    "a malformed readiness wake arrived".into(),
+                ));
             }
             COUNTER.fetch_add(1, Ordering::SeqCst);
             echo_tick()?;
@@ -561,8 +593,7 @@ impl Guest for Fixture {
                 let mut delta = [0u8; 8];
                 let len = payload.len().min(8);
                 delta[..len].copy_from_slice(&payload[..len]);
-                let value = COUNTER
-                    .fetch_add(u64::from_le_bytes(delta), Ordering::SeqCst)
+                let value = COUNTER.fetch_add(u64::from_le_bytes(delta), Ordering::SeqCst)
                     + u64::from_le_bytes(delta);
                 Ok(value.to_le_bytes().to_vec())
             }
@@ -578,7 +609,9 @@ impl Guest for Fixture {
 
     fn restore(blob: Vec<u8>) -> Result<(), GuestFault> {
         if *MODE.lock().unwrap() == "flaky-restore" {
-            return Err(GuestFault::Failed("flaky restore refused the handoff".into()));
+            return Err(GuestFault::Failed(
+                "flaky restore refused the handoff".into(),
+            ));
         }
         if blob.len() != 8 {
             return Err(GuestFault::Failed("unusable handoff blob".into()));

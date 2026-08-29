@@ -17,7 +17,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use jinnd_api::{ErrorCode, KernelError, KernelFuture, LedgerEventKind};
+use jinnd_api::{ErrorCode, KernelError, KernelFuture, LedgerEventKind, RefusalReason};
 use tokio::io::unix::AsyncFd;
 
 use crate::broker::Broker;
@@ -90,13 +90,16 @@ impl HostNet {
             )
         })?;
         let Some(GrantScope::Net(scope)) = self.core.policy(caller) else {
-            return Err(self
-                .core
-                .refuse(caller, "net caller holds no policy".to_owned()));
+            return Err(self.core.refuse(
+                caller,
+                RefusalReason::NotGranted,
+                "net caller holds no policy".to_owned(),
+            ));
         };
         if !parsed.ip().is_loopback() {
             return Err(self.core.refuse(
                 caller,
+                RefusalReason::NotLoopback,
                 format!("net listen refused: {addr:?} is not loopback (v0.1 binds loopback only)"),
             ));
         }
@@ -104,6 +107,7 @@ impl HostNet {
             Some((low, high)) if (low..=high).contains(&parsed.port()) => Ok(parsed),
             _ => Err(self.core.refuse(
                 caller,
+                RefusalReason::ScopeMismatch,
                 format!(
                     "net listen refused: port {} is outside the granted range",
                     parsed.port()
@@ -172,6 +176,7 @@ impl HostNet {
                 owner: caller,
                 fiber,
                 listener: Arc::new(listener),
+                pending: Arc::default(),
                 wake: Arc::new(Wake::default()),
             },
         );

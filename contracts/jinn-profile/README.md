@@ -30,5 +30,6 @@ The daemon treats the write-back as its own echo.
 
 `ProfilePatched { entry, by }` under the editor's attribution on success;
 `AmendmentRefused { detail }` for a refused patch; `GrantRefused {
-contract, reason }` for an entry outside the scope. No `EffectRegistered`,
+contract, reason: ScopeMismatch, detail }` for an entry outside the scope —
+answered `refused` on the wire like every other refusal. No `EffectRegistered`,
 no `EffectWithdrawn`: the document is not in any fiber's journal.

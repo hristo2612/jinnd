@@ -246,7 +246,7 @@ fn failed(refused: std::io::Error) -> KernelError {
 /// the inverse outside the root.
 pub(super) async fn apply_inverse(root: PathBuf, record: Record) -> Result<(), KernelError> {
     let label = record.header.label;
-    let file = blocking(move || scope::resolve(&root, &label)).await?;
+    let file = blocking(move || scope::resolve(&root, &label).map_err(KernelError::from)).await?;
     match record.prior {
         Prior::Absent => match tokio::fs::remove_file(&file).await {
             Ok(()) => Ok(()),

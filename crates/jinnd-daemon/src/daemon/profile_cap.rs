@@ -11,14 +11,14 @@
 
 use std::sync::Arc;
 
-use jinnd_api::{EntryId, ErrorCode, KernelError, KernelFuture, LedgerEventKind};
+use jinnd_api::{EntryId, KernelError, KernelFuture, LedgerEventKind, RefusalReason};
 use jinnd_ledger::Ledger;
 use jinnd_loader::Loader;
 use jinnd_wasm::{Broker, PROFILE_CONTRACT, Peer, PeerId, grant_refusals};
 
 use super::wire::{Callers, Reader, unknown};
 use crate::seat::seat_config;
-use crate::support::{SharedFibers, error, sync_transitions};
+use crate::support::{SharedFibers, sync_transitions};
 
 /// Answer tag: the patch applied.
 const TAG_APPLIED: u8 = 0;
@@ -103,7 +103,8 @@ impl HostProfile {
     /// One patch: authorize against the caller's scope (a ledgered grant
     /// refusal otherwise), merge onto the committed config, validate, then
     /// hand the loader the amendment — it persists atomically and restarts
-    /// exactly the patched fiber. Refusals answer typed, on the record.
+    /// exactly the patched fiber. Every refusal answers as the bundle's
+    /// `refused(reason)` on the wire, on the record.
     async fn patch_entry(&self, caller: PeerId, payload: Vec<u8>) -> Result<Vec<u8>, KernelError> {
         let (fiber, by) = self.callers.attribution(caller);
         let mut reader = Reader::new(&payload, "profile patch-entry");
@@ -119,12 +120,13 @@ impl HostProfile {
             self.ledger.record(
                 LedgerEventKind::GrantRefused {
                     contract: PROFILE_CONTRACT.to_owned(),
-                    reason: reason.clone(),
+                    reason: RefusalReason::ScopeMismatch,
+                    detail: Some(reason.clone()),
                 },
                 by,
                 fiber,
             );
-            return Err(error(ErrorCode::EffectFailed, reason));
+            return Ok(refused_wire(&reason));
         }
         // An entry patching itself would await its own restart from
         // inside its own host call (the nested-dispatch class): refused.
@@ -174,8 +176,9 @@ impl HostProfile {
         Ok(vec![TAG_APPLIED])
     }
 
-    /// A typed refusal on the wire AND on the record (Law 2: a refused
-    /// patch is history too), attributed to the editor.
+    /// A refusal on the wire AND on the record (Law 2: a refused patch is
+    /// history too), attributed to the editor. The scope refusal is
+    /// recorded as the grant refusal it is, in `patch_entry`.
     fn refuse(
         &self,
         entry: &EntryId,
@@ -190,10 +193,16 @@ impl HostProfile {
             by,
             fiber,
         );
-        let mut wire = vec![TAG_REFUSED];
-        wire.extend(reason.as_bytes());
-        wire
+        refused_wire(reason)
     }
+}
+
+/// The bundle's `refused(reason)` outcome as the wire carries it: every
+/// refusal, the scope's included, is this answer — never an outer error.
+fn refused_wire(reason: &str) -> Vec<u8> {
+    let mut wire = vec![TAG_REFUSED];
+    wire.extend(reason.as_bytes());
+    wire
 }
 
 /// The provider's broker face.

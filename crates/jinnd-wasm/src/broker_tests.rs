@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::{ErrorCode, FiberId, KernelFuture, LedgerEventKind};
+use jinnd_api::{ErrorCode, FiberId, KernelFuture, LedgerEventKind, RefusalReason};
 
 use crate::broker::Broker;
 use crate::peer::{LedgerSink, Peer, PeerId};
@@ -88,7 +88,8 @@ async fn ungranted_resolve_is_refused_and_the_denial_is_a_ledger_event() {
         ledger.kinds(),
         vec![LedgerEventKind::GrantRefused {
             contract: "jinn:fs".into(),
-            reason: "grant refused: jinn:fs".into(),
+            reason: RefusalReason::NotGranted,
+            detail: None,
         }]
     );
     let events = ledger.events.lock().unwrap_or_else(|p| p.into_inner());
@@ -247,7 +248,8 @@ async fn an_ungranted_provide_is_refused_and_the_denial_is_recorded() {
         ledger.kinds(),
         vec![LedgerEventKind::GrantRefused {
             contract: "jinn:unearned".into(),
-            reason: "grant refused: jinn:unearned".into(),
+            reason: RefusalReason::NotGranted,
+            detail: None,
         }],
         "mechanical closure: the refusal is a ledger event, not a default-accept"
     );
@@ -272,7 +274,8 @@ async fn an_ungranted_dispatch_is_refused_and_a_granted_one_crosses_the_broker()
     );
     assert!(ledger.kinds().contains(&LedgerEventKind::GrantRefused {
         contract: "jinn:fs".into(),
-        reason: "grant refused: jinn:fs".into(),
+        reason: RefusalReason::NotGranted,
+        detail: None,
     }));
 
     broker.grant(caller, "jinn:fs");

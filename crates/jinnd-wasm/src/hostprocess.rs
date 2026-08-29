@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use jinnd_api::{ErrorCode, KernelError, KernelFuture, LedgerEventKind};
+use jinnd_api::{ErrorCode, KernelError, KernelFuture, LedgerEventKind, RefusalReason};
 
 use crate::broker::Broker;
 use crate::broker_state::refusal;
@@ -107,9 +107,11 @@ impl HostProcess {
         command: &str,
     ) -> Result<(PathBuf, ProcessScope), KernelError> {
         let Some(GrantScope::Process(scope)) = self.core.policy(caller) else {
-            return Err(self
-                .core
-                .refuse(caller, "process caller holds no policy".to_owned()));
+            return Err(self.core.refuse(
+                caller,
+                RefusalReason::NotGranted,
+                "process caller holds no policy".to_owned(),
+            ));
         };
         let (command, prefixes) = (command.to_owned(), scope.exec.clone());
         let verdict = tokio::task::spawn_blocking(move || allowed(&command, &prefixes))
@@ -117,7 +119,9 @@ impl HostProcess {
             .unwrap_or_else(|_| Err("process resolution task failed".to_owned()));
         match verdict {
             Ok(program) => Ok((program, scope)),
-            Err(message) => Err(self.core.refuse(caller, message)),
+            Err(message) => Err(self
+                .core
+                .refuse(caller, RefusalReason::ScopeMismatch, message)),
         }
     }
 

@@ -23,6 +23,10 @@ pub(super) enum Socket {
         /// stays non-blocking, and readiness is observable without
         /// accepting (the wake task's need).
         listener: Arc<AsyncFd<std::net::TcpListener>>,
+        /// A connection the level probe after an accept took off the OS
+        /// queue (M2-K7 round 2): the next accept answers it first; the
+        /// release drops it closed.
+        pending: Arc<std::sync::Mutex<Option<TcpStream>>>,
         wake: Arc<Wake>,
     },
     Conn {

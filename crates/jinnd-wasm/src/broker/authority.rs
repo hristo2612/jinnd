@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
+use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind, RefusalReason};
 
 use crate::broker_state::refusal;
 use crate::grants::GrantScope;
@@ -132,14 +132,17 @@ impl Broker {
         if granted {
             return Ok(());
         }
-        let reason = format!("grant refused: {name}");
         self.ledger.append(
             LedgerEventKind::GrantRefused {
                 contract: name.to_owned(),
-                reason: reason.clone(),
+                reason: RefusalReason::NotGranted,
+                detail: None,
             },
             fiber,
         );
-        Err(refusal(ErrorCode::EffectFailed, reason))
+        Err(refusal(
+            ErrorCode::EffectFailed,
+            format!("grant refused: {name}"),
+        ))
     }
 }

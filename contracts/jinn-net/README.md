@@ -29,7 +29,9 @@ The kernel delivers `lifecycle.handle-event(handle, "jinn:net/readable",
 <8-byte LE handle>)` — the token is the socket handle — when a listener
 has a pending connection or a connection has bytes or EOF. One wake per
 readiness transition the guest has not yet acted on: a flood of bytes is
-one wake until the guest reads, EOF wakes once, `accept`/`read` re-arm.
+one wake until the guest reads, EOF wakes once, `accept`/`read` consume
+then re-arm (a level probe: what is still pending wakes again exactly
+once; what was just consumed never re-announces).
 A server holds no alarm. A guest that ignores wakes and polls (from a
 `jinn:clock` alarm) still works.
 

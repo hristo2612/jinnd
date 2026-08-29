@@ -18,7 +18,9 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use jinnd_api::{EntryId, LedgerEventKind, LedgerRecord, TransitionCause};
+use jinnd_api::{
+    EntryId, FiberState, LedgerEventKind, LedgerRecord, RefusalReason, TransitionCause,
+};
 use jinnd_daemon::{Daemon, DaemonPaths};
 
 struct Home(PathBuf);
@@ -226,19 +228,27 @@ async fn ledger_reads_page_with_receipts_and_exclude_the_readers_own() {
     assert!(!first_events.is_empty());
     assert_eq!(first_events[0]["id"], 1);
     assert!(
-        first_events
-            .iter()
-            .all(|event| { event["kind"].is_object() || event["kind"].is_string() })
+        first_events.iter().all(|event| event["kind"].is_string()),
+        "kind is the canonical name the bundle declares: {first}"
     );
     assert!(
         first_events
             .iter()
             .all(|event| { matches!(event["sensitivity"].as_str(), Some("public" | "personal")) })
     );
+    let loaded = first_events
+        .iter()
+        .find(|event| event["kind"] == "ArtifactLoaded")
+        .unwrap_or_else(|| panic!("the pin admission is on the page: {first}"));
+    let payload: serde_json::Value = serde_json::from_str(
+        loaded["payload"]
+            .as_str()
+            .unwrap_or_else(|| panic!("payload is JSON text: {loaded}")),
+    )
+    .unwrap_or_else(|error| panic!("payload decodes: {error}"));
     assert!(
-        first_events
-            .iter()
-            .any(|event| event["kind"].get("ArtifactLoaded").is_some())
+        payload["hash"].is_string(),
+        "ArtifactLoaded decodes to its declared fields: {payload}"
     );
     let next = first["next-from"]
         .as_u64()
@@ -259,7 +269,7 @@ async fn ledger_reads_page_with_receipts_and_exclude_the_readers_own() {
     assert!(
         !second_events
             .iter()
-            .any(|event| event["kind"].get("LedgerConsumed").is_some()),
+            .any(|event| event["kind"] == "LedgerConsumed"),
         "the reader's own receipt is not in its feed: {second}"
     );
     let mut bytes = [0u8; 8];
@@ -270,7 +280,11 @@ async fn ledger_reads_page_with_receipts_and_exclude_the_readers_own() {
         .iter()
         .filter(|record| matches!(record.kind, LedgerEventKind::LedgerConsumed { .. }))
         .collect();
-    assert_eq!(receipts.len(), 2, "one receipt per delivery: {records:?}");
+    assert_eq!(
+        receipts.len(),
+        3,
+        "one receipt per read, last-seq included: {records:?}"
+    );
     assert!(
         receipts
             .iter()
@@ -286,6 +300,15 @@ async fn ledger_reads_page_with_receipts_and_exclude_the_readers_own() {
         assert_eq!(*count as usize, first_events.len());
         assert_eq!(*end + 1, next);
     }
+    assert_eq!(
+        receipts[2].kind,
+        LedgerEventKind::LedgerConsumed {
+            first: last,
+            last,
+            count: 0
+        },
+        "last-seq's receipt is the consulted high-water mark, zero events delivered"
+    );
     assert!(last >= receipts[0].sequence, "last-seq counts the receipt");
     assert!(last <= records.last().map_or(0, |record| record.sequence));
     daemon
@@ -470,9 +493,13 @@ async fn patches_outside_the_scope_or_failing_validation_refuse_without_writing(
     let records = events(&daemon).await;
     let refused = records
         .iter()
-        .find(|record| matches!(&record.kind, LedgerEventKind::GrantRefused { contract, reason } if contract == "jinn:profile" && reason.contains("worker")))
-        .unwrap_or_else(|| panic!("the scope refusal is on the record with its reason: {records:?}"));
+        .find(|record| matches!(&record.kind, LedgerEventKind::GrantRefused { contract, reason: RefusalReason::ScopeMismatch, detail: Some(detail) } if contract == "jinn:profile" && detail.contains("worker")))
+        .unwrap_or_else(|| panic!("the scope refusal is on the record, typed, with its detail: {records:?}"));
     assert_eq!(refused.entry, Some(EntryId("narrow".to_owned())));
+    assert!(
+        records.iter().any(|record| matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.to == FiberState::Active) && record.entry == Some(EntryId("narrow".to_owned()))),
+        "the editor saw `refused` on the wire, not a fault: {records:?}"
+    );
     assert!(
         records.iter().any(|record| matches!(&record.kind, LedgerEventKind::AmendmentRefused { detail } if detail.contains("worker")) && record.entry == Some(EntryId("clumsy".to_owned()))),
         "the validation refusal is on the record: {records:?}"

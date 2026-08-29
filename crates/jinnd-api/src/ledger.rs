@@ -120,7 +120,8 @@ pub enum LedgerEventKind {
     /// One consumption receipt for a `jinn:ledger` read (constitution 02,
     /// family 2; M2-K7 #20): the delivered sequence span and count,
     /// attributed to the reading entry/fiber — and excluded from that
-    /// reader's own feed, so a read never feeds itself.
+    /// reader's own feed, so a read never feeds itself. A `last-seq` read
+    /// delivers no events: its receipt is the consulted mark, count 0.
     LedgerConsumed { first: u64, last: u64, count: u32 },
     /// One `jinn:clock` alarm wake delivered to its requesting plugin
     /// (M2-K2; Law 2): every wake is a ledger event, attributed to the
@@ -132,9 +133,14 @@ pub enum LedgerEventKind {
     ContractResolved { contract: String },
     /// The grant check refused a resolution — every denial is a ledger event
     /// (constitution 01 §Grants; authorized M1-P8 additive delta). `reason`
-    /// is the typed refusal text the caller received (M2-K7, harness #19:
-    /// the record carries WHY, not only WHAT).
-    GrantRefused { contract: String, reason: String },
+    /// is the typed refusal class (M2-K7, harness #19: the record carries
+    /// WHY, not only WHAT — R3, typed not stringly); `detail` is the prose
+    /// the caller received, riding beside the class, never instead of it.
+    GrantRefused {
+        contract: String,
+        reason: RefusalReason,
+        detail: Option<String>,
+    },
     /// One contract call crossed the broker's single dispatch point
     /// (Law 2, R6; decision log 2026-08-25; authorized M1-P8 additive delta).
     ContractCall { contract: String, operation: String },
@@ -155,6 +161,28 @@ pub enum LedgerEventKind {
         artifact: String,
         phase: SwapPhaseKind,
     },
+}
+
+/// Why a grant check refused (M2-K7, harness #19; R3): the closed set of
+/// refusal classes every granted surface answers with — the broker's own
+/// check and the base providers' per-call scope enforcement alike.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum RefusalReason {
+    /// The caller holds no grant for the contract at all.
+    NotGranted,
+    /// A granted contract, but the call's target lies outside the declared
+    /// scope: an fs path beside every granted prefix, a port outside the
+    /// granted range, a command under no granted exec prefix, a profile
+    /// entry the `entry-ids` scope does not admit.
+    ScopeMismatch,
+    /// `jinn:net`: a bind address that is not loopback (v0.1 binds
+    /// loopback only).
+    NotLoopback,
+    /// `jinn:fs`: a path that cannot be resolved to a containment verdict
+    /// (an unreadable ancestor) — refused, never lexically guessed.
+    Unresolvable,
+    /// A handle minted for another peer: valid only for its owner (R4).
+    ForeignHandle,
 }
 
 /// The ledgered phases of one Mode-1 hot-swap batch (R8; authorized M1-P8

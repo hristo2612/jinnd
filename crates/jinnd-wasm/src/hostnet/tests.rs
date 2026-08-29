@@ -412,6 +412,11 @@ async fn readiness_wakes_the_holder_once_per_transition_with_no_alarm() {
         .unwrap_or_else(|| panic!("accepted"));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(face.wakes(conn), 0, "a quiet connection never wakes");
+    assert_eq!(
+        face.wakes(listener),
+        1,
+        "the accept consumed the transition: one connect, one wake"
+    );
     client
         .write_all(b"hello")
         .unwrap_or_else(|error| panic!("{error}"));
@@ -423,6 +428,12 @@ async fn readiness_wakes_the_holder_once_per_transition_with_no_alarm() {
         "unread bytes wake once until the guest reads"
     );
     assert_eq!(rig.read_until(conn, TAG_DATA).await, b"hello");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        face.wakes(conn),
+        1,
+        "a read that drained the bytes is not a new transition"
+    );
     // The guest read re-armed; the next transition wakes again.
     client
         .write_all(b"again")
@@ -451,9 +462,8 @@ async fn closing_from_inside_the_wake_handler_never_deadlocks() {
     struct Closer {
         broker: Arc<Broker>,
         guest: u64,
-        /// Only this handle is closed from inside the handler; a listener
-        /// wake (readiness stays set after a successful accept until the
-        /// next accept answers would-block) is answered with nothing.
+        /// Only this handle is closed from inside the handler; any other
+        /// wake is answered with nothing.
         conn: u64,
     }
     impl crate::topics::EventTarget for Closer {
@@ -515,6 +525,43 @@ async fn closing_from_inside_the_wake_handler_never_deadlocks() {
         1,
         "the connection is released, the listener stays"
     );
+}
+
+/// Two connections pending before the guest accepts: the first accept
+/// consumes one and the OTHER is still pending — a new transition, exactly
+/// one wake; the second accept drains the listener and no wake follows
+/// (level-triggered: never lost, never doubled).
+#[tokio::test]
+async fn a_second_pending_connection_wakes_again_exactly_once() {
+    let rig = rig();
+    let face = Arc::new(Face(Mutex::new(Vec::new())));
+    rig.broker.attach_target(
+        rig.guest,
+        Arc::clone(&face) as Arc<dyn crate::topics::EventTarget>,
+    );
+    let listener = rig.listen().await;
+    let _first =
+        TcpStream::connect(("127.0.0.1", rig.port)).unwrap_or_else(|error| panic!("{error}"));
+    let _second =
+        TcpStream::connect(("127.0.0.1", rig.port)).unwrap_or_else(|error| panic!("{error}"));
+    settle(|| face.wakes(listener) == 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(face.wakes(listener), 1, "two connects, one transition");
+    rig.accept(listener)
+        .await
+        .unwrap_or_else(|| panic!("first accepted"));
+    settle(|| face.wakes(listener) == 2).await;
+    rig.accept(listener)
+        .await
+        .unwrap_or_else(|| panic!("second accepted"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        face.wakes(listener),
+        2,
+        "the drained listener does not wake"
+    );
+    assert_eq!(rig.ledger.readable_wakes(listener), 2);
+    assert_eq!(rig.provider.live(), 3, "the listener and both connections");
 }
 
 /// Under a chatty peer the wake count is bounded by what the guest does,
