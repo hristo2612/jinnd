@@ -181,6 +181,13 @@ doubt, the code goes above the line, not below it. Metric note (2026-08-25): the
 kernel-core count excludes the conformance-harness lane (`jinnd-api` facade +
 `jinnd-adapter`), loom-only models, and cfg(test) code — the ceiling exists to keep
 the kernel small, never to incentivize golfing containment or honesty code.
+Per-file cap note (2026-08-29, promoted from the M2-K8 card so it stops being
+re-litigated card by card): the 300-line per-file cap is **hard for `src/`** and
+**soft for coherent test suites** — a test file over the cap is split where a natural
+seam exists and is reported as a MINOR, never a Blocker on line count alone. It is
+still a required fix: "soft" means the severity is lower, not that the split is
+optional. A test file with no natural seam stays whole and is named in the round's
+report.
 
 **R11 — Failure is local.** A failing plugin deactivates itself and its dependents,
 cleanly, and touches nothing else. Panics never cross the kernel boundary. Sibling
