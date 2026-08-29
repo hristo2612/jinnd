@@ -24,7 +24,10 @@ fn keystore_import_mirrors_its_bundle() {
         .find(|line| line.trim_start().starts_with("variant keystore-error"))
         .unwrap_or_else(|| panic!("keystore-error declared in the bundle"))
         .trim();
-    assert!(WORLD.contains(declared), "the world carries {declared} verbatim");
+    assert!(
+        WORLD.contains(declared),
+        "the world carries {declared} verbatim"
+    );
     for operation in ["get:", "put:", "delete:", "%list:"] {
         assert!(KEYSTORE.contains(operation) && WORLD.contains(operation));
     }

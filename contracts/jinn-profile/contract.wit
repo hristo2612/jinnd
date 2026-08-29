@@ -1,17 +1,27 @@
-// jinn:profile@0.1.0 (M2-K7, harness #21) — a profile patch as OPERATOR
-// INTENT. The kernel supplies it; `patch-entry` is applied BY THE LOADER:
-// validated against the profile schema (04), written back atomically
-// (stage + fsync + rename), and RECORDED as a typed `ProfilePatched`
-// ledger event with NO fs inverse and NO fiber journal entry — the
-// profile's history is the ledger's, never a fiber's contribution, so
-// disposing the editing plugin never touches the document. The patched
-// fiber restarts exactly (same fiber, new incarnation). Reached over
-// `services.resolve("jinn:profile")` + `services.call`.
-package jinn:profile@0.1.0;
+// jinn:profile@0.2.0 (M2-K7, harness #21; 0.2.0 M2-K8, harness #25/#26)
+// — a profile patch as OPERATOR INTENT, and a read-only view of the
+// document of record. The kernel supplies it; `patch-entry` is applied BY
+// THE LOADER: validated against the profile schema (04), written back
+// atomically (stage + fsync + rename), and RECORDED as a typed
+// `ProfilePatched` ledger event with NO fs inverse and NO fiber journal
+// entry — the profile's history is the ledger's, never a fiber's
+// contribution, so disposing the editing plugin never touches the
+// document. The patched fiber's restart is SCHEDULED (same fiber, new
+// incarnation) and never awaited inside the caller's call (0.2.0, #26):
+// the answer is `accepted(seq)` once the document committed. Reached over
+// `services.resolve("jinn:profile")` + `services.call`. 0.2.0 is additive
+// over 0.1.0 (R12): `accepted` joins `outcome` and is what a 0.2.0
+// provider answers; `applied` is retained for 0.1.0 readers and is never
+// answered by a 0.2.0 provider; `entry` and `document` are new.
+package jinn:profile@0.2.0;
 
 interface patch {
-  // Why a patch was refused; nothing was written.
-  variant outcome { applied, refused(string) }
+  // The patch's outcome. `accepted(seq)`: the document committed and the
+  // patched fiber's restart is scheduled; `seq` is the `ProfilePatched`
+  // record's ledger sequence — the restart's transitions land after it,
+  // observable through `jinn:ledger` and `jinn:introspect`. `refused`:
+  // nothing was written.
+  variant outcome { applied, refused(string), accepted(u64) }
 
   // Merges `merge-patch` (RFC 7396, an object) onto the entry's `config`
   // subtree — the only subtree a plugin may write (04 §Write-back is
@@ -23,8 +33,25 @@ interface patch {
   // operation in flight on the entry or the document — retryable).
   // Broker wire: operation `patch-entry`, payload = u32-LE length + the
   // entry id's UTF-8 bytes, then the merge-patch JSON bytes; answer = one
-  // tag byte (0 applied, 1 refused) then the refusal reason's UTF-8.
+  // tag byte (1 refused then the reason's UTF-8; 2 accepted then the
+  // u64-LE sequence).
   patch-entry: func(id: string, merge-patch: string) -> outcome;
+
+  // One entry's authority fields as the document of record holds them
+  // (0.2.0, #25): `{ id, package, version, hash, grants, config, disabled,
+  // parent }` as JSON text, or the JSON `null` for an unknown entry. An
+  // entry outside the caller's `entry-ids` scope is a ledgered grant
+  // refusal (an error on the wire — a read has no `refused` outcome).
+  // Effect class: read; ledgered per call. Read-only viewers hold
+  // `ops = ["entry", "document"]`. Broker wire: operation `entry`,
+  // payload = u32-LE length + the id's UTF-8 bytes; answer = JSON text.
+  entry: func(id: string) -> string;
+
+  // The document of record's entries the caller's scope admits (`*` for
+  // all), as `{ "entries": [<entry>...] }` JSON text; a scope admitting
+  // nothing refuses on the record. Effect class: read. Broker wire:
+  // operation `document`, empty payload; answer = JSON text.
+  document: func() -> string;
 }
 
 world profile-provider {

@@ -357,6 +357,77 @@ fn operator_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
     }
 }
 
+/// The settings contract the two-hop modes provide and consume (M2-K8 #26).
+const SETTINGS_CONTRACT: &str = "jinn:test/settings";
+
+/// The M2-K8 profile modes. `settings-provider` provides the settings
+/// contract; its `patch` handler patches the OWNER entry through
+/// `jinn:profile` — the two-hop shape. `settings-owner` resolves the
+/// provider from `activate` (polling until it is live) and logs the
+/// answer. `settings-trigger:<owner>` calls the provider's `patch` from a
+/// tick. `profile-read:<id>` reads `entry` and `document` under a
+/// read-only grant and asserts a patch is refused.
+fn profile_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
+    match mode {
+        "settings-provider" => {
+            services::provide(SETTINGS_CONTRACT).map_err(fault)?;
+            Ok(())
+        }
+        "settings-owner" => {
+            let answer = poll(4000, || {
+                let Ok(handle) = services::resolve(SETTINGS_CONTRACT) else {
+                    return Ok(None);
+                };
+                Ok(services::call(handle, "get", b"").ok())
+            })?;
+            let mut line = answer;
+            line.push(b'\n');
+            fs::append("/owner.log", &line, "").map_err(fs_fault)
+        }
+        "settings-trigger" => {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        "profile-read" => {
+            let entry = operator_call("jinn:profile", "entry", &patch_payload(arg, ""))?;
+            fs::write("/profile-entry.json", &entry, "").map_err(fs_fault)?;
+            let document = operator_call("jinn:profile", "document", &[])?;
+            fs::write("/profile-document.json", &document, "").map_err(fs_fault)?;
+            match operator_call(
+                "jinn:profile",
+                "patch-entry",
+                &patch_payload(arg, r#"{"data":"noop"}"#),
+            ) {
+                Err(_) => fs::write("/profile-read-denied", b"denied", "").map_err(fs_fault),
+                Ok(answer) => Err(GuestFault::Failed(format!(
+                    "a patch under a read-only profile grant was not refused: {answer:?}"
+                ))),
+            }
+        }
+        other => Err(GuestFault::Failed(format!("unknown profile mode {other}"))),
+    }
+}
+
+/// One trigger tick (M2-K8 #26): asks the provider to patch the owner;
+/// a loader conflict (the boot reconcile still engaged) retries next
+/// tick; the final answer is recorded once.
+fn trigger_tick(owner: &str) -> Result<(), GuestFault> {
+    if fs::meta("/trigger.out").is_ok() {
+        return Ok(());
+    }
+    let Ok(handle) = services::resolve(SETTINGS_CONTRACT) else {
+        return Ok(());
+    };
+    let Ok(answer) = services::call(handle, "patch", owner.as_bytes()) else {
+        return Ok(());
+    };
+    let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
+    if answer.first() == Some(&1) && (reason.contains("retry") || reason.contains("in flight")) {
+        return Ok(());
+    }
+    fs::write("/trigger.out", &answer, "").map_err(fs_fault)
+}
+
 /// One introspection from the tick: stashes the composition and readiness
 /// once `boot-reconciled` is true (every entry settled), else waits.
 fn introspect_tick() -> Result<(), GuestFault> {
@@ -409,6 +480,9 @@ impl Guest for Fixture {
         }
         if mode.starts_with("keystore") {
             return keystore_mode(mode);
+        }
+        if mode.starts_with("settings-") || mode == "profile-read" {
+            return profile_mode(mode, arg);
         }
         match mode {
             "trap" => panic!("fixture trap mode"),
@@ -643,6 +717,9 @@ impl Guest for Fixture {
                 if patch_mode.starts_with("profile-patch") {
                     patch_tick(patch_mode, id)?;
                 }
+                if patch_mode == "settings-trigger" {
+                    trigger_tick(id)?;
+                }
             }
             if mode == "introspect" {
                 introspect_tick()?;
@@ -680,7 +757,19 @@ impl Guest for Fixture {
                     + u64::from_le_bytes(delta);
                 Ok(value.to_le_bytes().to_vec())
             }
+            "get" if *MODE.lock().unwrap() == "settings-provider" => Ok(b"v1".to_vec()),
             "get" => Ok(COUNTER.load(Ordering::SeqCst).to_le_bytes().to_vec()),
+            // The two-hop shape (M2-K8 #26): from inside this handler the
+            // provider patches its OWNER, whose restarted `activate` will
+            // call `get` on this very instance.
+            "patch" => {
+                let owner = String::from_utf8_lossy(&payload).into_owned();
+                operator_call(
+                    "jinn:profile",
+                    "patch-entry",
+                    &patch_payload(&owner, r#"{"data":"settings-owner:v2"}"#),
+                )
+            }
             "stash" => Ok(STASH.lock().unwrap().clone()),
             _ => Err(GuestFault::Failed(format!("unknown operation {operation}"))),
         }
