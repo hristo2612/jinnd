@@ -376,6 +376,27 @@ Ordering rule: never touch a layer until the layer above it is already useful.
      cannot cross the component boundary; realm queries evaluated kernel-side);
      Mode-1 swap batches all entries sharing an artifact hash.
 
+- **2026-08-29** — **C5 and C6 DECIDED on measured evidence (harness FINDINGS #27,
+  settings seam, pin 57360cc).** Measured on the real daemon: a `jinn:profile`
+  `patch-entry` on an entry's own config = reconcile-by-id restart, 21 ledger rows,
+  28 ms, state retained (K4 entry-scoped effects); the seam-level hot path (a
+  separate overlay-store entry + `changed` event, owner untouched) = 33 rows, 56 ms.
+  **C5 (hot-config acceptance): REJECTED as a kernel feature.** Reconcile-by-id
+  restart stays the ONLY kernel apply path for an entry's own config — cheap,
+  honest, and state-preserving since K4. Hot-config is a seam pattern above the
+  kernel (a distinct store entry that the owner reads), never an in-place mutation of
+  the owner's entry. **C6 (per-entry config layering / intercept plumbing): REJECTED
+  in the kernel.** The profile stays the single document of record; layering is the
+  settings provider's concern under a harness-side consistency law (a patch reports
+  and emits exactly the value the next read resolves, or refuses typed). The kernel's
+  only obligations arising from this evidence go to M2-K8: (a) FINDINGS #26 — a
+  non-blocking `patch-entry` answer (`accepted` once the document is committed and
+  the restart scheduled — the Algorithm-5 deferred-amendment shape already named on
+  2026-08-25) so a patched owner may call anything in `activate` without the two-hop
+  nested-dispatch deadlock; (b) FINDINGS #25 — a read-only document view
+  (`jinn:profile.entry(id)`/`document()` or authority fields on `jinn:introspect`)
+  so viewers need no `jinn:fs` write authority and the data-root coupling ends.
+
 - **2026-08-28** — **Suspend ≠ dispose adjudicated (harness FINDINGS #14/#15 →
   M2-K4).** At 41cb2f4, clean SIGINT withdrew every fs mutation (state/history
   reverted to activation-time content) while SIGKILL preserved them — crash kept
