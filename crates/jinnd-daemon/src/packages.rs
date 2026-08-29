@@ -24,11 +24,13 @@ fn lane(
     component: Arc<Mutex<LoadedComponent>>,
 ) -> PackageLane {
     let track = move |body: Arc<WasmBody>, signal| {
+        let entry = body.entry().clone();
         let fiber = Arc::new(Fiber::spawn(body, signal));
         lock(&fibers).insert(
             fiber.id(),
             Tracked {
                 fiber: Arc::clone(&fiber),
+                entry,
                 recorded: 0,
             },
         );

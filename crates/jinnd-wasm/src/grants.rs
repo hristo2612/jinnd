@@ -20,6 +20,11 @@ mod tests;
 
 pub use policy::{EnvPolicy, GrantScope, NetScope, ProcessScope};
 
+/// The read-only composition contract's name (M2-K7, harness #19).
+pub const INTROSPECT_CONTRACT: &str = "jinn:introspect";
+/// The profile-patch contract's name (M2-K7, harness #21).
+pub const PROFILE_CONTRACT: &str = "jinn:profile";
+
 /// One scope value as the profile document wrote it (constitution 04
 /// §Format): the decoder preserves the written shape — including one it
 /// cannot read — so the admission judgment, not the decoder, refuses it on
@@ -99,7 +104,10 @@ enum Declared {
     ProcessPolicy,
     /// `net-policy`: bind range + outbound allowlist (jinn:net, M2-K6).
     NetPolicy,
-    /// The bundle declares no scope (jinn:ledger).
+    /// `entry-ids`: the profile entries a patch may target (jinn:profile,
+    /// M2-K7); `*` only when written.
+    EntryIds,
+    /// The bundle declares no scope (jinn:ledger, jinn:introspect).
     NoScope,
     /// No shipped bundle declares a scope type for this contract.
     Undeclared,
@@ -111,7 +119,8 @@ fn declared(contract: &str) -> Declared {
         FS_CONTRACT => Declared::PathPrefix,
         PROCESS_CONTRACT => Declared::ProcessPolicy,
         NET_CONTRACT => Declared::NetPolicy,
-        "jinn:ledger" => Declared::NoScope,
+        PROFILE_CONTRACT => Declared::EntryIds,
+        "jinn:ledger" | INTROSPECT_CONTRACT => Declared::NoScope,
         _ => Declared::Undeclared,
     }
 }
@@ -156,6 +165,7 @@ fn admit(grant: &Grant) -> Result<(), KernelError> {
         ))),
         (Declared::ProcessPolicy, wrote) => policy::process_scope(contract, wrote).map(|_| ()),
         (Declared::NetPolicy, wrote) => policy::net_scope(contract, wrote).map(|_| ()),
+        (Declared::EntryIds, wrote) => policy::entry_scope(contract, wrote).map(|_| ()),
         (Declared::NoScope, wrote) => Err(refused(format!(
             "grant refused: {contract} declares no scope type; scope {wrote} cannot validate"
         ))),
@@ -187,9 +197,24 @@ pub(crate) fn authority(grant: &Grant) -> GrantScope {
                 .and_then(|wrote| policy::net_scope(contract, wrote).ok())
                 .unwrap_or_default(),
         ),
+        // A bare profile grant patches NOTHING (default deny, M2-K2 law).
+        (Declared::EntryIds, scope) => GrantScope::Entries(
+            scope
+                .as_ref()
+                .and_then(|wrote| policy::entry_scope(contract, wrote).ok())
+                .unwrap_or_default(),
+        ),
         (_, Some(ScopeValue::Path(path))) => GrantScope::Paths(vec![path.clone()]),
         _ => GrantScope::Root,
     }
+}
+
+/// The fail-closed verdicts a grant list would draw at activation, for a
+/// surface validating a config BEFORE it commits (M2-K7 `jinn:profile`:
+/// a patch whose grants would refuse is refused whole, never half-applied).
+#[must_use]
+pub fn grant_refusals(grants: &[Grant]) -> Vec<KernelError> {
+    admission(grants).1
 }
 
 /// Splits a seat's grants into the admitted and the refusals to record —

@@ -87,7 +87,8 @@ async fn ungranted_resolve_is_refused_and_the_denial_is_a_ledger_event() {
     assert_eq!(
         ledger.kinds(),
         vec![LedgerEventKind::GrantRefused {
-            contract: "jinn:fs".into()
+            contract: "jinn:fs".into(),
+            reason: "grant refused: jinn:fs".into(),
         }]
     );
     let events = ledger.events.lock().unwrap_or_else(|p| p.into_inner());
@@ -245,7 +246,8 @@ async fn an_ungranted_provide_is_refused_and_the_denial_is_recorded() {
     assert_eq!(
         ledger.kinds(),
         vec![LedgerEventKind::GrantRefused {
-            contract: "jinn:unearned".into()
+            contract: "jinn:unearned".into(),
+            reason: "grant refused: jinn:unearned".into(),
         }],
         "mechanical closure: the refusal is a ledger event, not a default-accept"
     );
@@ -269,7 +271,8 @@ async fn an_ungranted_dispatch_is_refused_and_a_granted_one_crosses_the_broker()
         Some(ErrorCode::EffectFailed)
     );
     assert!(ledger.kinds().contains(&LedgerEventKind::GrantRefused {
-        contract: "jinn:fs".into()
+        contract: "jinn:fs".into(),
+        reason: "grant refused: jinn:fs".into(),
     }));
 
     broker.grant(caller, "jinn:fs");

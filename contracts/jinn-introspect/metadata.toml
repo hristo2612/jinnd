@@ -1,0 +1,31 @@
+# Contract-bundle metadata for jinn:introspect@0.1.0 (M2-K7)
+
+[contract]
+name    = "jinn:introspect"
+version = "0.1.0"
+
+# No scope type: a grant is whole-composition read access (a scoped grant
+# refuses fail-closed, M2-K2 law). Attenuation is by grant or no grant.
+
+[operations.entries]
+effect      = "read"
+sensitivity = "public"
+
+[operations.readiness]
+effect      = "read"
+sensitivity = "public"
+
+[equality]
+# Observational equivalence: the composition as reported — same entries,
+# same states and registrations by class. Incarnation ids are identity,
+# not state: two reports differing only in incarnation describe the same
+# composition after a restart.
+relation = "composition-report-modulo-incarnation"
+
+[notes]
+# Every read is a ledger event (the broker's `ContractCall` line). The
+# answer is a snapshot under brief kernel locks; it never awaits a guest
+# (R1) and never blocks a transition. Sockets and processes count the
+# caller-held `jinn:net` / `jinn:process` kernel registrations of the
+# entry's live seat; listeners and alarms count the live ones.
+lifecycle = "read-only"

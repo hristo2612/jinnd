@@ -96,7 +96,7 @@ fn grant_refusals(records: &[LedgerRecord], fiber: jinnd_api::FiberId) -> usize 
     records
         .iter()
         .filter(|record| {
-            matches!(&record.kind, LedgerEventKind::GrantRefused { contract } if contract == "jinn:fs")
+            matches!(&record.kind, LedgerEventKind::GrantRefused { contract, .. } if contract == "jinn:fs")
                 && record.fiber == Some(fiber)
         })
         .count()

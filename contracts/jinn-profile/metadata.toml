@@ -1,0 +1,39 @@
+# Contract-bundle metadata for jinn:profile@0.1.0 (M2-K7)
+
+[contract]
+name    = "jinn:profile"
+version = "0.1.0"
+
+[scope]
+type   = "entry-ids"
+# Decidable subset predicate the kernel evaluates for attenuation (01
+# §Grants): a scope is a non-empty list of entry ids; subset(a, b) := a ⊆ b,
+# where `"*"` (every entry) is the top and is admitted only when WRITTEN.
+# FAIL-CLOSED (M2-K2 law): any other shape refuses the grant with a
+# ledgered per-entry error; a grant with no scope patches NOTHING.
+# Profile syntax (04 §Format): `{ contract = "jinn:profile", scope =
+# ["scheduler", "status"] }` or `scope = ["*"]`.
+subset = "entry-id-set-containment"
+
+[operations.patch-entry]
+# Operator intent, not a fiber effect: applied by the loader, recorded as
+# `ProfilePatched { entry, by }`, no inverse registered in any journal.
+# History is the ledger's; a prior document is reconstructible from it,
+# never rolled back by an editor's teardown.
+effect      = "operator-intent"
+sensitivity = "personal"
+
+[equality]
+# Observational equivalence: the document of record (04) — two profiles
+# are equal iff their entry trees are equal by id; the running system
+# converges on the document (LAW §3).
+relation = "document-of-record-by-entry-id"
+
+[notes]
+# The write-back is the loader's own (stage + fsync + rename); the daemon
+# recognizes it as its own echo (M2-K5), so no reconcile follows from the
+# watcher — the runtime-led amendment already restarted exactly the
+# patched fiber. A refusal is a typed answer AND an `AmendmentRefused`
+# ledger event under the editor's attribution; a scope refusal is a
+# `GrantRefused` with its reason.
+lifecycle = "operator-intent-no-inverse"

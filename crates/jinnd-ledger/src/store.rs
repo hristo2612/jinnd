@@ -39,7 +39,14 @@ pub(crate) enum Op {
     },
     Query {
         query: LedgerQuery,
+        /// At most this many records (M2-K7 `jinn:ledger` paging); `None`
+        /// is the whole match.
+        limit: Option<u32>,
         ack: oneshot::Sender<Result<Vec<LedgerRecord>, LedgerError>>,
+    },
+    /// The highest committed sequence (0 for an empty stream).
+    Last {
+        ack: oneshot::Sender<Result<u64, LedgerError>>,
     },
 }
 
@@ -130,9 +137,46 @@ impl Ledger {
     ///
     /// [`LedgerError`] when the writer is gone or storage refused.
     pub async fn events(&self, query: LedgerQuery) -> Result<Vec<LedgerRecord>, LedgerError> {
+        self.select(query, None).await
+    }
+
+    /// One page of the stream (M2-K7, the `jinn:ledger` reader): at most
+    /// `limit` records with sequence ≥ `from`, in sequence order. Paging by
+    /// the last delivered sequence plus one walks the whole stream.
+    ///
+    /// # Errors
+    ///
+    /// As [`Ledger::events`].
+    pub async fn page(&self, from: u64, limit: u32) -> Result<Vec<LedgerRecord>, LedgerError> {
+        let query = LedgerQuery {
+            from_sequence: Some(from),
+            ..LedgerQuery::default()
+        };
+        self.select(query, Some(limit)).await
+    }
+
+    /// The highest committed sequence, 0 for an empty stream — a read
+    /// through the single writer, so every append sent before it counts.
+    ///
+    /// # Errors
+    ///
+    /// As [`Ledger::events`].
+    pub async fn last_sequence(&self) -> Result<u64, LedgerError> {
+        let (ack, last) = oneshot::channel();
+        self.tx
+            .send(Op::Last { ack })
+            .map_err(|_| LedgerError::Closed)?;
+        last.await.map_err(|_| LedgerError::Closed)?
+    }
+
+    async fn select(
+        &self,
+        query: LedgerQuery,
+        limit: Option<u32>,
+    ) -> Result<Vec<LedgerRecord>, LedgerError> {
         let (ack, records) = oneshot::channel();
         self.tx
-            .send(Op::Query { query, ack })
+            .send(Op::Query { query, limit, ack })
             .map_err(|_| LedgerError::Closed)?;
         records.await.map_err(|_| LedgerError::Closed)?
     }

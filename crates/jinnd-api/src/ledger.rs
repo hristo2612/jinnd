@@ -106,6 +106,22 @@ pub enum LedgerEventKind {
     /// One `jinn:net` listener or connection closed — by the guest, or by
     /// the kernel releasing the registration (M2-K6).
     NetClosed { handle: u64 },
+    /// One `jinn:net` readiness wake delivered to the plugin holding the
+    /// socket (M2-K7, harness #23; Law 2): the listener has a pending
+    /// connection, or the connection has bytes or EOF — one wake per
+    /// readiness transition the guest has not yet acted on, never one per
+    /// byte (R9). Ledgered exactly like `AlarmWake`.
+    NetReadable { handle: u64 },
+    /// One profile entry patched through `jinn:profile` (M2-K7, harness
+    /// #21; Law 2, constitution 04): applied BY THE LOADER as operator
+    /// intent — no fs inverse, no fiber journal entry. `entry` is the
+    /// patched entry; `by` names the editing entry (or the calling peer).
+    ProfilePatched { entry: EntryId, by: String },
+    /// One consumption receipt for a `jinn:ledger` read (constitution 02,
+    /// family 2; M2-K7 #20): the delivered sequence span and count,
+    /// attributed to the reading entry/fiber — and excluded from that
+    /// reader's own feed, so a read never feeds itself.
+    LedgerConsumed { first: u64, last: u64, count: u32 },
     /// One `jinn:clock` alarm wake delivered to its requesting plugin
     /// (M2-K2; Law 2): every wake is a ledger event, attributed to the
     /// requesting fiber via the record's columns.
@@ -115,8 +131,10 @@ pub enum LedgerEventKind {
     /// authorized M1-P8 additive delta).
     ContractResolved { contract: String },
     /// The grant check refused a resolution — every denial is a ledger event
-    /// (constitution 01 §Grants; authorized M1-P8 additive delta).
-    GrantRefused { contract: String },
+    /// (constitution 01 §Grants; authorized M1-P8 additive delta). `reason`
+    /// is the typed refusal text the caller received (M2-K7, harness #19:
+    /// the record carries WHY, not only WHAT).
+    GrantRefused { contract: String, reason: String },
     /// One contract call crossed the broker's single dispatch point
     /// (Law 2, R6; decision log 2026-08-25; authorized M1-P8 additive delta).
     ContractCall { contract: String, operation: String },

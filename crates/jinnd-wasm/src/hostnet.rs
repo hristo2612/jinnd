@@ -7,61 +7,44 @@
 //! REGISTRATIONS released through [`Peer::withdraw`] on suspend and
 //! dispose alike (closed, ledgered). Every call is non-blocking (R1):
 //! `accept` and `read` answer `would-block`, `write` answers what the
-//! socket took. Bytes are data plane and are not ledgered.
+//! socket took. Bytes are data plane and are not ledgered. Readiness
+//! (M2-K7, harness #23): every held socket has a wake task that delivers
+//! `jinn:net/readable` to the holder when a listener has a pending
+//! connection or a connection has bytes/EOF — one wake per readiness
+//! transition the guest has not acted on, so a server holds NO alarm;
+//! the guest that ignores wakes and polls still works.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use jinnd_api::{ErrorCode, FiberId, KernelError, KernelFuture, LedgerEventKind};
-use tokio::net::{TcpListener, TcpStream};
+use jinnd_api::{ErrorCode, KernelError, KernelFuture, LedgerEventKind};
+use tokio::io::unix::AsyncFd;
 
 use crate::broker::Broker;
 use crate::broker_state::refusal;
 use crate::grants::GrantScope;
-use crate::hostbase::{Owned, ProviderCore};
+use crate::hostbase::ProviderCore;
 use crate::hostcaps::NET_CONTRACT;
 use crate::hostwire::encode_handle;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
 mod ops;
+mod readiness;
+mod socket;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
+mod wake;
+#[cfg(all(test, feature = "loom"))]
+mod wake_model;
 
-/// One held socket: a listener or an accepted connection, owned by the
-/// peer that minted it (R4).
-#[derive(Clone)]
-enum Socket {
-    Listener {
-        owner: PeerId,
-        fiber: Option<FiberId>,
-        listener: Arc<TcpListener>,
-    },
-    Conn {
-        owner: PeerId,
-        fiber: Option<FiberId>,
-        stream: Arc<TcpStream>,
-    },
-}
+pub use readiness::READABLE_TOPIC;
+use socket::{Socket, Wake};
+use wake::WakeTable;
 
-impl Socket {
-    fn fiber(&self) -> Option<FiberId> {
-        match self {
-            Self::Listener { fiber, .. } | Self::Conn { fiber, .. } => *fiber,
-        }
-    }
-}
-
-impl Owned for Socket {
-    fn owner(&self) -> PeerId {
-        match self {
-            Self::Listener { owner, .. } | Self::Conn { owner, .. } => *owner,
-        }
-    }
-}
-
-/// The `jinn:net` provider: the table of live sockets.
+/// The `jinn:net` provider: the table of live sockets and their wake state.
 pub struct HostNet {
     core: ProviderCore<Socket>,
+    wakes: WakeTable,
 }
 
 fn failed(what: &str, error: &std::io::Error) -> KernelError {
@@ -74,6 +57,7 @@ impl HostNet {
     pub fn new(sink: Arc<dyn LedgerSink>) -> Arc<Self> {
         Arc::new(Self {
             core: ProviderCore::new(NET_CONTRACT, sink),
+            wakes: WakeTable::default(),
         })
     }
 
@@ -128,7 +112,46 @@ impl HostNet {
         }
     }
 
-    async fn listen(&self, caller: PeerId, payload: Vec<u8>) -> Result<Vec<u8>, KernelError> {
+    /// Holds `socket` under a fresh handle and arms its wake task (M2-K7):
+    /// the task runs on the timer runtime like an alarm's; without one the
+    /// socket is still held and served, only unwoken (the guest polls).
+    fn hold(self: &Arc<Self>, caller: PeerId, socket: Socket) -> u64 {
+        let handle = self.core.mint();
+        self.core.insert(handle, socket.clone());
+        self.wakes.insert(handle);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let fiber = socket.fiber();
+            let wake = Arc::clone(socket.wake());
+            let task = runtime.spawn(readiness::run(
+                Arc::clone(self),
+                handle,
+                socket,
+                Arc::clone(&wake),
+                caller,
+                fiber,
+            ));
+            // Uncontended: the task cannot release itself, and a release
+            // finds the row only after this insert.
+            if let Ok(mut slot) = wake.task.try_lock() {
+                *slot = Some(task);
+            }
+        }
+        handle
+    }
+
+    /// The guest acted on `socket`'s handle: re-arm its wake and kick the
+    /// task so a still-pending readiness wakes again (M2-K7).
+    fn rearm(&self, handle: u64, socket: &Socket) {
+        if self.wakes.rearm(handle) {
+            socket.wake().notify.notify_one();
+        }
+    }
+
+    async fn listen(
+        self: &Arc<Self>,
+        caller: PeerId,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, KernelError> {
         let addr = String::from_utf8(payload).map_err(|_| {
             refusal(
                 ErrorCode::PluginFailed,
@@ -136,17 +159,20 @@ impl HostNet {
             )
         })?;
         let addr = self.authorize_bind(caller, &addr)?;
-        let listener = TcpListener::bind(addr)
-            .await
+        // A non-blocking std listener behind tokio readiness: bind is
+        // instant on loopback (no resolution, no wait).
+        let listener = std::net::TcpListener::bind(addr)
+            .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
+            .and_then(AsyncFd::new)
             .map_err(|error| failed("listen", &error))?;
         let fiber = self.core.attribution(caller);
-        let handle = self.core.mint();
-        self.core.insert(
-            handle,
+        let handle = self.hold(
+            caller,
             Socket::Listener {
                 owner: caller,
                 fiber,
                 listener: Arc::new(listener),
+                wake: Arc::new(Wake::default()),
             },
         );
         self.core.sink.append(
@@ -167,6 +193,19 @@ impl HostNet {
         let Some(socket) = self.core.remove(handle) else {
             return Ok(());
         };
+        // The row leaves the wake table BEFORE the socket closes: after
+        // this returns no wake of the handle is ever appended (loom-pinned)
+        // — and the wake task is gone, so the descriptor closes HERE.
+        self.wakes.take(handle);
+        let wake = Arc::clone(socket.wake());
+        wake.notify.notify_one();
+        let task = wake.task.lock().await.take();
+        if let Some(task) = task {
+            task.abort();
+            if !wake.delivering.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = task.await;
+            }
+        }
         self.core
             .sink
             .append(LedgerEventKind::NetClosed { handle }, socket.fiber());

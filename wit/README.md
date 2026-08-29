@@ -22,7 +22,10 @@ version, designed to outlive the current kernel implementation.
   live in `contracts/`, governed by `docs/constitution/01-capability-contracts.md`.
   The base host-provider contracts the kernel supplies — `jinn:fs`,
   `jinn:ledger`, `jinn:process`, `jinn:net`, `jinn:keystore` — are bundles
-  there, not copies here.
+  there, not copies here; so are the operator contracts reached over the
+  handle lane (`jinn:introspect`, `jinn:profile`; M2-K7). The `net`
+  import's readiness wake (`jinn:net/readable`, M2-K7) is additive prose
+  on the 0.4.0 world: no signature changed.
 
 ## v0.1 binding of grants to imports
 

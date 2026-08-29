@@ -11,7 +11,16 @@ Rules (R12): contracts are versioned; never breaking within a major version; des
 to outlive any particular kernel implementation or host OS.
 
 Bundles: `jinn-fs` (0.2.0), `jinn-clock` (0.1.0), `jinn-process` (0.1.0),
-`jinn-net` (0.1.0), `jinn-ledger` (0.1.0 skeleton).
+`jinn-net` (0.1.0, readiness wake M2-K7), `jinn-ledger` (0.1.0, finalized
+M2-K7), `jinn-introspect` (0.1.0), `jinn-profile` (0.1.0).
+
+## Operator contracts (M2-K7)
+
+`jinn:introspect` (read-only composition), `jinn:ledger` (paged reads with
+consumption receipts), and `jinn:profile` (a patch as operator intent,
+applied by the loader, no fiber inverse) are kernel-supplied providers
+reached over the string-keyed handle lane (`services.resolve` +
+`services.call`), granted like any contract and ledgered per call.
 
 ## Lifecycle classification (jinn:plugin@0.3.0, M2-K4)
 

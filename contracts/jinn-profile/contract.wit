@@ -1,0 +1,32 @@
+// jinn:profile@0.1.0 (M2-K7, harness #21) — a profile patch as OPERATOR
+// INTENT. The kernel supplies it; `patch-entry` is applied BY THE LOADER:
+// validated against the profile schema (04), written back atomically
+// (stage + fsync + rename), and RECORDED as a typed `ProfilePatched`
+// ledger event with NO fs inverse and NO fiber journal entry — the
+// profile's history is the ledger's, never a fiber's contribution, so
+// disposing the editing plugin never touches the document. The patched
+// fiber restarts exactly (same fiber, new incarnation). Reached over
+// `services.resolve("jinn:profile")` + `services.call`.
+package jinn:profile@0.1.0;
+
+interface patch {
+  // Why a patch was refused; nothing was written.
+  variant outcome { applied, refused(string) }
+
+  // Merges `merge-patch` (RFC 7396, an object) onto the entry's `config`
+  // subtree — the only subtree a plugin may write (04 §Write-back is
+  // confined) — and commits both views together. Refused, whole and
+  // unwritten: an entry outside the caller's scope (a ledgered grant
+  // refusal), an unknown entry, a patch that does not parse or is not an
+  // object, a result that is not an object or whose grants would refuse
+  // at activation, the caller's own entry, or a loader conflict (an
+  // operation in flight on the entry or the document — retryable).
+  // Broker wire: operation `patch-entry`, payload = u32-LE length + the
+  // entry id's UTF-8 bytes, then the merge-patch JSON bytes; answer = one
+  // tag byte (0 applied, 1 refused) then the refusal reason's UTF-8.
+  patch-entry: func(id: string, merge-patch: string) -> outcome;
+}
+
+world profile-provider {
+  export patch;
+}

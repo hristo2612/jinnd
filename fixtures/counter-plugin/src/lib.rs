@@ -37,6 +37,8 @@ const SECRET_CONTRACT: &str = "jinn:test/secret";
 const TOPIC: &str = "jinn:test/topic";
 /// Where `jinn:clock` wakes arrive (wit/plugin.wit `interface clock`).
 const WAKE_TOPIC: &str = "jinn:clock/alarm";
+/// Where `jinn:net` readiness wakes arrive (M2-K7; the token is the handle).
+const READABLE_TOPIC: &str = "jinn:net/readable";
 /// The token the clock modes request their alarms under.
 const WAKE_TOKEN: u64 = 11;
 
@@ -162,13 +164,20 @@ fn process_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
 }
 
 /// The M2-K6 net modes: `net-echo:<port>` listens on loopback and echoes
-/// from its wake handler; `net-refused:<addr>` asserts the bind refuses.
+/// from its alarm handler; `net-refused:<addr>` asserts the bind refuses;
+/// `net-wake:<port>` (M2-K7) listens and echoes from the READINESS wake
+/// alone — no alarm is ever requested.
 fn net_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
     match mode {
         "net-echo" => {
             let listener = net::listen(&format!("127.0.0.1:{arg}")).map_err(net_fault)?;
             LISTENER.store(listener, Ordering::SeqCst);
             clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        "net-wake" => {
+            let listener = net::listen(&format!("127.0.0.1:{arg}")).map_err(net_fault)?;
+            LISTENER.store(listener, Ordering::SeqCst);
             Ok(())
         }
         "net-refused" => match net::listen(arg) {
@@ -209,6 +218,90 @@ fn echo_tick() -> Result<(), GuestFault> {
     Ok(())
 }
 
+/// One operator-contract call over the handle lane (M2-K7).
+fn operator_call(contract: &str, operation: &str, payload: &[u8]) -> Result<Vec<u8>, GuestFault> {
+    let handle = services::resolve(contract).map_err(fault)?;
+    services::call(handle, operation, payload).map_err(fault)
+}
+
+/// The `jinn:profile` request wire: u32-LE id length, the id, the patch.
+fn patch_payload(id: &str, patch: &str) -> Vec<u8> {
+    let mut wire = (id.len() as u32).to_le_bytes().to_vec();
+    wire.extend(id.as_bytes());
+    wire.extend(patch.as_bytes());
+    wire
+}
+
+/// The M2-K7 operator modes. `introspect` and `ledger-read` answer at
+/// activation and stash the answers on the granted fs; `profile-patch:<id>`
+/// and `profile-patch-bad:<id>` patch from an alarm tick (the boot
+/// reconcile still engages the document during activation, so a loader
+/// conflict is retried next tick — a retryable refusal names "retry" or
+/// "in flight"); `profile-patch-denied:<id>` asserts the scope refusal.
+fn operator_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
+    match mode {
+        // Reads from a tick, once the boot reconcile has landed: the
+        // composition it reports is then settled, not mid-activation.
+        "introspect" => {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        "ledger-read" => {
+            let mut request = 1u64.to_le_bytes().to_vec();
+            request.extend(500u32.to_le_bytes());
+            let first = operator_call("jinn:ledger", "read-range", &request)?;
+            fs::write("/ledger-page1.json", &first, "").map_err(fs_fault)?;
+            let second = operator_call("jinn:ledger", "read-range", &request)?;
+            fs::write("/ledger-page2.json", &second, "").map_err(fs_fault)?;
+            let last = operator_call("jinn:ledger", "last-seq", &[])?;
+            fs::write("/ledger-last", &last, "").map_err(fs_fault)
+        }
+        "profile-patch" | "profile-patch-bad" => {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        "profile-patch-denied" => {
+            match operator_call("jinn:profile", "patch-entry", &patch_payload(arg, r#"{"data":"noop"}"#)) {
+                Err(GuestFault::Failed(text)) if text.contains("GrantRefused") => Ok(()),
+                other => Err(GuestFault::Failed(format!(
+                    "a patch outside the scope was not the typed refusal: {other:?}"
+                ))),
+            }
+        }
+        other => Err(GuestFault::Failed(format!("unknown operator mode {other}"))),
+    }
+}
+
+/// One introspection from the tick: stashes the composition and readiness
+/// once `boot-reconciled` is true (every entry settled), else waits.
+fn introspect_tick() -> Result<(), GuestFault> {
+    if fs::meta("/introspect-entries.json").is_ok() {
+        return Ok(());
+    }
+    let readiness = operator_call("jinn:introspect", "readiness", &[])?;
+    if !String::from_utf8_lossy(&readiness).contains("\"boot-reconciled\":true") {
+        return Ok(());
+    }
+    let entries = operator_call("jinn:introspect", "entries", &[])?;
+    fs::write("/introspect-readiness.json", &readiness, "").map_err(fs_fault)?;
+    fs::write("/introspect-entries.json", &entries, "").map_err(fs_fault)
+}
+
+/// One patch attempt from the tick: records the final answer, retries a
+/// loader conflict silently.
+fn patch_tick(mode: &str, id: &str) -> Result<(), GuestFault> {
+    if fs::meta("/patch.out").is_ok() {
+        return Ok(());
+    }
+    let patch = if mode == "profile-patch-bad" { r#"{"grants":[7]}"# } else { r#"{"data":"noop"}"# };
+    let answer = operator_call("jinn:profile", "patch-entry", &patch_payload(id, patch))?;
+    let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
+    if answer.first() == Some(&1) && (reason.contains("retry") || reason.contains("in flight")) {
+        return Ok(());
+    }
+    fs::write("/patch.out", &answer, "").map_err(fs_fault)
+}
+
 struct Fixture;
 
 impl Guest for Fixture {
@@ -221,6 +314,9 @@ impl Guest for Fixture {
         }
         if mode.starts_with("net-") {
             return net_mode(mode, arg);
+        }
+        if mode == "introspect" || mode == "ledger-read" || mode.starts_with("profile-patch") {
+            return operator_mode(mode, arg);
         }
         match mode {
             "trap" => panic!("fixture trap mode"),
@@ -407,6 +503,16 @@ impl Guest for Fixture {
     }
 
     fn handle_event(token: u64, topic: String, payload: Vec<u8>) -> Result<Vec<u8>, GuestFault> {
+        // A typed readiness wake (M2-K7): the token is the handle and the
+        // payload repeats it; the echo tick serves whatever is ready.
+        if topic == READABLE_TOPIC {
+            if payload != token.to_le_bytes() {
+                return Err(GuestFault::Failed("a malformed readiness wake arrived".into()));
+            }
+            COUNTER.fetch_add(1, Ordering::SeqCst);
+            echo_tick()?;
+            return Ok(Vec::new());
+        }
         // A typed clock wake: right token, right topic, 8-byte LE instant —
         // anything else on the wake topic is a contract violation.
         if topic == WAKE_TOPIC {
@@ -417,6 +523,14 @@ impl Guest for Fixture {
             let mode = MODE.lock().unwrap().clone();
             if mode.starts_with("net-echo") {
                 echo_tick()?;
+            }
+            if let Some((patch_mode, id)) = mode.split_once(':') {
+                if patch_mode.starts_with("profile-patch") {
+                    patch_tick(patch_mode, id)?;
+                }
+            }
+            if mode == "introspect" {
+                introspect_tick()?;
             }
             if mode == "fs-on-wake" {
                 fs::append("/wakes.log", b"tick\n", "").map_err(fs_fault)?;

@@ -23,9 +23,11 @@ mod gate;
 mod peer_face;
 #[cfg(all(test, feature = "loom"))]
 mod seal_model;
+mod summary;
 mod teardown;
 
 pub(crate) use gate::SealGate;
+pub use summary::SeatSummary;
 
 /// One instance's committed contribution: the instance PAIRED with its
 /// registration journal — ONE list, in registration order (R5: teardown has
@@ -215,6 +217,9 @@ pub fn commit_staged(
         })
         .collect();
     let ids = topics.rebind(&old_listens, rebinds);
+    // Host-provider wakes follow the seat: the successor's face is the
+    // peer's delivery target from this instant (M2-K7, R8).
+    broker.attach_target(peer, Arc::clone(&face) as Arc<dyn EventTarget>);
     // The staged alarms arm against the NEW instance's own face, the
     // displaced seat's alarms cancel — live alarms survive the swap through
     // the staged outcome, exactly like any effect (M2-K2, R8); their floor

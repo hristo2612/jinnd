@@ -286,7 +286,7 @@ async fn a_guest_resolve_without_a_grant_is_refused_and_recorded() {
 impl Rig {
     fn kinds_contains_refusal(&self, contract: &str) -> bool {
         self.ledger.kinds().iter().any(
-            |kind| matches!(kind, LedgerEventKind::GrantRefused { contract: c } if c == contract),
+            |kind| matches!(kind, LedgerEventKind::GrantRefused { contract: c, .. } if c == contract),
         )
     }
 }

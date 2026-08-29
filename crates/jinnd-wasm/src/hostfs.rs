@@ -219,6 +219,7 @@ impl HostFs {
             self.sink.append(
                 LedgerEventKind::GrantRefused {
                     contract: FS_CONTRACT.to_owned(),
+                    reason: error.message.clone(),
                 },
                 self.attribution(caller),
             );

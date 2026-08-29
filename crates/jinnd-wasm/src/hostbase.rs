@@ -55,6 +55,11 @@ impl<T: Owned> ProviderCore<T> {
         self.broker().and_then(|broker| broker.attribution(caller))
     }
 
+    /// The calling peer's delivery face, through the broker (M2-K7).
+    pub(crate) fn target_of(&self, caller: PeerId) -> Option<Arc<dyn crate::topics::EventTarget>> {
+        self.broker().and_then(|broker| broker.target_of(caller))
+    }
+
     /// The typed authority `caller` holds this contract under.
     pub(crate) fn policy(&self, caller: PeerId) -> Option<GrantScope> {
         self.broker()
@@ -67,6 +72,7 @@ impl<T: Owned> ProviderCore<T> {
         self.sink.append(
             LedgerEventKind::GrantRefused {
                 contract: self.contract.to_owned(),
+                reason: message.clone(),
             },
             self.attribution(caller),
         );

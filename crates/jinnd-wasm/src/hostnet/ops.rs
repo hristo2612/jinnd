@@ -8,7 +8,9 @@ use std::task::Poll;
 
 use jinnd_api::{ErrorCode, KernelError, LedgerEventKind};
 
-use super::{HostNet, Socket, failed};
+use tokio::net::TcpStream;
+
+use super::{HostNet, Socket, Wake, failed};
 use crate::broker_state::refusal;
 use crate::hostwire::{Reader, TAG_DATA, TAG_WOULD_BLOCK, encode_read};
 use crate::peer::PeerId;
@@ -20,7 +22,7 @@ impl HostNet {
     /// One operation on a caller-owned handle: 8-byte LE handle first,
     /// then the operation's own fields.
     pub(super) async fn handle_op(
-        &self,
+        self: &Arc<Self>,
         caller: PeerId,
         operation: &str,
         payload: &[u8],
@@ -28,52 +30,69 @@ impl HostNet {
         let mut reader = Reader::new(payload, "net handle");
         let handle = reader.u64()?;
         let socket = self.core.row(caller, handle)?;
-        match (operation, socket) {
+        match (operation, &socket) {
             (
                 "accept",
                 Socket::Listener {
                     listener, fiber, ..
                 },
             ) => {
-                // One poll, no wait (R1): readiness arrives on a later poll.
+                // One poll, no wait (R1): readiness arrives on a later
+                // poll — or on the readiness wake (M2-K7). The guest acted
+                // on the listener: its next readiness wakes again.
+                self.rearm(handle, &socket);
+                let fiber = *fiber;
                 let pending =
-                    std::future::poll_fn(|cx| Poll::Ready(listener.poll_accept(cx))).await;
-                match pending {
-                    Poll::Ready(Ok((stream, _))) => {
-                        let conn = self.core.mint();
-                        self.core.insert(
-                            conn,
-                            Socket::Conn {
-                                owner: caller,
-                                fiber,
-                                stream: Arc::new(stream),
-                            },
-                        );
-                        self.core.sink.append(
-                            LedgerEventKind::NetAccepted {
-                                listener: handle,
-                                handle: conn,
-                            },
-                            fiber,
-                        );
-                        let mut wire = vec![TAG_DATA];
-                        wire.extend(conn.to_le_bytes());
-                        Ok(wire)
+                    std::future::poll_fn(|cx| Poll::Ready(listener.poll_read_ready(cx))).await;
+                let accepted = match pending {
+                    Poll::Ready(Ok(mut guard)) => {
+                        match guard.try_io(|fd| fd.get_ref().accept()) {
+                            Ok(Ok((stream, _))) => stream
+                                .set_nonblocking(true)
+                                .and_then(|()| TcpStream::from_std(stream)),
+                            Ok(Err(error)) => Err(error),
+                            // Readiness cleared: nothing pending after all.
+                            Err(_would_block) => return Ok(vec![TAG_WOULD_BLOCK]),
+                        }
                     }
-                    Poll::Ready(Err(error)) => Err(failed("accept", &error)),
-                    Poll::Pending => Ok(vec![TAG_WOULD_BLOCK]),
-                }
+                    Poll::Ready(Err(error)) => Err(error),
+                    Poll::Pending => return Ok(vec![TAG_WOULD_BLOCK]),
+                };
+                let stream = accepted.map_err(|error| failed("accept", &error))?;
+                let conn = self.hold(
+                    caller,
+                    Socket::Conn {
+                        owner: caller,
+                        fiber,
+                        stream: Arc::new(stream),
+                        wake: Arc::new(Wake::default()),
+                    },
+                );
+                self.core.sink.append(
+                    LedgerEventKind::NetAccepted {
+                        listener: handle,
+                        handle: conn,
+                    },
+                    fiber,
+                );
+                let mut wire = vec![TAG_DATA];
+                wire.extend(conn.to_le_bytes());
+                Ok(wire)
             }
             ("read", Socket::Conn { stream, .. }) => {
                 let max = (reader.u32()? as usize).clamp(1, READ_CAP);
                 let mut buffer = vec![0u8; max];
                 Ok(match stream.try_read(&mut buffer) {
+                    // EOF is final: the peer's close stays readable, so no
+                    // re-arm — the guest heard it once (R9).
                     Ok(0) => encode_read(None, true),
                     Ok(count) => {
+                        self.rearm(handle, &socket);
                         buffer.truncate(count);
                         encode_read(Some(buffer), false)
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        self.rearm(handle, &socket);
                         encode_read(None, false)
                     }
                     Err(error) => return Err(failed("read", &error)),

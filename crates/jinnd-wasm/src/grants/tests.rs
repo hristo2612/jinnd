@@ -141,6 +141,8 @@ fn bare_grants_admit_unchanged_and_process_net_default_to_deny() {
         "jinn:test/counter",
         "jinn:process",
         "jinn:net",
+        "jinn:profile",
+        "jinn:introspect",
     ] {
         let grant = Grant {
             contract: contract.to_owned(),
@@ -155,10 +157,62 @@ fn bare_grants_admit_unchanged_and_process_net_default_to_deny() {
                 assert_eq!(policy, ProcessScope::default());
             }
             ("jinn:net", GrantScope::Net(policy)) => assert_eq!(policy, NetScope::default()),
-            ("jinn:process" | "jinn:net", other) => panic!("not a policy: {other:?}"),
+            // M2-K7: a bare profile grant patches nothing (default deny).
+            ("jinn:profile", GrantScope::Entries(ids)) => assert!(ids.is_empty()),
+            ("jinn:process" | "jinn:net" | "jinn:profile", other) => {
+                panic!("not a policy: {other:?}")
+            }
             (_, scope) => assert_eq!(scope, GrantScope::Root),
         }
     }
+}
+
+/// M2-K7 (`jinn:profile`, harness #21): the `entry-ids` scope admits a
+/// non-empty list of ids or `"*"` and refuses every other shape; the
+/// authority admits exactly the named entries, `"*"` only when written.
+#[test]
+fn an_entry_ids_scope_parses_its_declared_shape_and_refuses_the_rest() {
+    let named = scoped(
+        "jinn:profile",
+        ScopeValue::List(vec![text("scheduler"), text("status")]),
+    );
+    assert!(only(named.clone()).is_ok());
+    let authority = authority(&named);
+    assert!(authority.admits_entry("scheduler") && authority.admits_entry("status"));
+    assert!(!authority.admits_entry("editor") && !authority.admits_entry("*"));
+    let star = scoped("jinn:profile", ScopeValue::List(vec![text("*")]));
+    assert!(super::authority(&star).admits_entry("anything"));
+    assert!(
+        !GrantScope::Root.admits_entry("scheduler"),
+        "only an entry scope patches"
+    );
+    for (wrote, why) in [
+        (text("scheduler"), "a bare string is not a list"),
+        (ScopeValue::List(Vec::new()), "an empty list names nothing"),
+        (
+            ScopeValue::List(vec![ScopeValue::Rate(3)]),
+            "an id is a string",
+        ),
+        (
+            ScopeValue::List(vec![text("")]),
+            "an empty id names nothing",
+        ),
+        (
+            map(&[("ids", text("a"))]),
+            "a map is not the declared shape",
+        ),
+    ] {
+        let refusal = refusal_of(only(scoped("jinn:profile", wrote)));
+        assert!(
+            refusal.contains("grant refused: jinn:profile"),
+            "{why}: {refusal}"
+        );
+    }
+    let refusal = refusal_of(only(scoped(
+        "jinn:introspect",
+        ScopeValue::List(vec![text("x")]),
+    )));
+    assert!(refusal.contains("declares no scope type"), "{refusal}");
 }
 
 /// One judgment call, split verdicts: mixed lists partition exactly.

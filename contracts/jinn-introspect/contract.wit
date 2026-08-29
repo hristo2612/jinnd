@@ -1,0 +1,47 @@
+// jinn:introspect@0.1.0 (M2-K7, harness #19) — the read-only composition
+// contract. The kernel supplies it (01 §Mechanical closure); a plugin sees
+// the composition only when its profile entry grants this contract. Every
+// read crosses the broker (grant check → ledger append → dispatch) and is
+// answered from a SNAPSHOT of kernel-owned state — no guest is called on
+// this path (R1). Reached over `services.resolve("jinn:introspect")` +
+// `services.call(handle, <operation>, [])`; answers are the UTF-8 JSON of
+// the records below, field names as written (kebab-case).
+package jinn:introspect@0.1.0;
+
+interface composition {
+  // The kernel registrations one live seat holds, by class.
+  record registrations { listeners: u32, alarms: u32, sockets: u32, processes: u32 }
+
+  // One profile entry as the kernel runs it. `fiber`, `state`, and
+  // `incarnation` are absent for an entry with no live fiber (disabled,
+  // faulted, or a group). `state` is the fiber's last committed state
+  // (`pending` | `loading` | `active` | `failed` | `unloading` |
+  // `disposed`); `incarnation` identifies the CURRENT activation — never
+  // reused within a kernel process, so a restart is evidenced by the same
+  // fiber under a new incarnation.
+  record entry {
+    id: string,
+    fiber: option<u64>,
+    state: option<string>,
+    incarnation: option<u64>,
+    provisions: list<string>,
+    registrations: registrations,
+  }
+
+  // The daemon's readiness: the boot reconcile has landed, and the
+  // profile/artifact watcher is armed (the machine-readable shape of the
+  // readiness line, harness #12).
+  record readiness { boot-reconciled: bool, watcher-armed: bool }
+
+  // Effect class: read. Operation `entries`, empty payload; answer = the
+  // JSON list of `entry`, in document order.
+  entries: func() -> list<entry>;
+
+  // Effect class: read. Operation `readiness`, empty payload; answer = the
+  // JSON `readiness` record.
+  readiness: func() -> readiness;
+}
+
+world introspect-provider {
+  export composition;
+}

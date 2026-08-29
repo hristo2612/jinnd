@@ -9,6 +9,7 @@ use jinnd_api::{ErrorCode, FiberId, KernelError};
 
 use crate::grants::GrantScope;
 use crate::peer::{HandleId, Peer, PeerId};
+use crate::topics::EventTarget;
 
 pub(crate) struct PeerRecord {
     pub(crate) fiber: Option<FiberId>,
@@ -19,6 +20,10 @@ pub(crate) struct PeerRecord {
     /// (M2-K6): root, path-prefix subtrees, or a process/net policy.
     /// Root is the explicit maximum, never a default.
     pub(crate) grants: HashMap<String, GrantScope>,
+    /// The peer's own delivery face (M2-K7): where a host provider delivers
+    /// a wake for a registration this peer holds. A Mode-1 commit
+    /// re-attaches it to the successor instance (R8).
+    pub(crate) target: Option<Arc<dyn EventTarget>>,
 }
 
 /// One live provision. `generation` is the identity of THIS provision of the
