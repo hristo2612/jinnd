@@ -9,6 +9,7 @@
 //! staged activation's outcome is committed, exactly as an initial
 //! activation's is; nothing is ever retargeted through a mutable cell.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
@@ -87,6 +88,12 @@ pub struct SharedSlot {
     current: Mutex<Option<SeatState>>,
     /// The closing gate (M2-K4/K5): door, then drain, then journal.
     gate: SealGate,
+    /// True once ANY incarnation has been installed here (M2-K9). This is
+    /// what tells a fiber being REPLACED from one arriving for the first
+    /// time: the slot outlives every incarnation of its entry, so once it
+    /// has held a seat, any transition the fiber later owes is a
+    /// replacement of something that was live.
+    ever: crate::sync::AtomicBool,
 }
 
 fn empty() -> KernelError {
@@ -107,7 +114,15 @@ impl SharedSlot {
     /// Installs `seat` as the live one, returning the displaced seat —
     /// the swap-commit primitive. No lock is held across either instance.
     pub fn install(&self, seat: SeatState) -> Option<SeatState> {
+        self.ever.store(true, Ordering::SeqCst);
         self.lock().replace(seat)
+    }
+
+    /// True once an incarnation has been installed here (M2-K9): the entry
+    /// has been live, so a transition it owes now replaces something.
+    /// Never lowered — `unseal` reopens the gate, not this.
+    pub fn ever_installed(&self) -> bool {
+        self.ever.load(Ordering::SeqCst)
     }
 
     /// Empties the slot (teardown), returning the seat to retire.
@@ -214,6 +229,7 @@ pub fn commit_staged(
             topic: record.topic.clone(),
             context,
             token: record.token,
+            fiber,
             target: Arc::clone(&face) as Arc<dyn EventTarget>,
         })
         .collect();

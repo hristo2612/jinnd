@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use jinnd_api::{EntryId, KernelError, KernelFuture};
 use jinnd_loader::Loader;
-use jinnd_wasm::{Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId};
+use jinnd_wasm::{Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId, RestartOracle};
 
 use super::Readiness;
 use super::wire::{json, unknown};
@@ -22,6 +22,10 @@ pub(crate) struct HostIntrospect {
     loader: Arc<Loader>,
     lane: Arc<LaneCore>,
     readiness: Arc<Readiness>,
+    /// The same pending-restart source the dispatch refusal reads (M2-K9):
+    /// a caller that asks is told exactly what a caller that dispatches
+    /// would be refused for.
+    restarts: Arc<dyn RestartOracle>,
 }
 
 impl HostIntrospect {
@@ -36,6 +40,7 @@ impl HostIntrospect {
         loader: Arc<Loader>,
         lane: Arc<LaneCore>,
         readiness: Arc<Readiness>,
+        restarts: Arc<dyn RestartOracle>,
     ) -> Result<(), KernelError> {
         let peer = broker.register_peer(None);
         broker.grant(peer, INTROSPECT_CONTRACT);
@@ -46,6 +51,7 @@ impl HostIntrospect {
                 loader,
                 lane,
                 readiness,
+                restarts,
             }),
         )
     }
@@ -72,11 +78,18 @@ impl HostIntrospect {
                         (Some(incarnation), Some(seat))
                     });
                 let seat = seat.unwrap_or_default();
+                // M2-K9: whether this entry's live incarnation is already
+                // scheduled for replacement — the ask that replaces
+                // discovering a pending restart by stalling on it.
+                let restarting = fiber
+                    .and_then(|fiber| self.restarts.restarting(fiber))
+                    .is_some();
                 serde_json::json!({
                     "id": id.0,
                     "fiber": fiber.map(|fiber| fiber.0),
                     "state": state,
                     "incarnation": incarnation,
+                    "restarting": restarting,
                     "provisions": seat.provisions,
                     "registrations": {
                         "listeners": seat.listeners,

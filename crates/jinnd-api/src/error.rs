@@ -26,6 +26,11 @@ pub enum ErrorCode {
     /// The same provider superseding its own generation — the hot-swap lane —
     /// is not a duplicate. (Authorized M1-P6c additive delta.)
     DuplicateProvision,
+    /// A reply-expecting event dispatch was refused because the selected
+    /// listener's incarnation is already scheduled for replacement: the
+    /// caller retries after the target's restart lands (M2-K9, harness
+    /// finding 31; authorized additive facade delta).
+    Restarting,
     /// A read, stat, or removal named a path that does not exist: the
     /// typed not-found of the base host-provider contracts (`jinn:fs`
     /// bundle `fs-error.not-found`), so a caller classifies absence by

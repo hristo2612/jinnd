@@ -24,6 +24,7 @@ mod ledger_cap;
 mod observe;
 mod profile_cap;
 mod profile_read;
+mod restarts;
 mod wire;
 
 /// What `jinn:introspect.readiness` answers (M2-K7, harness #19/#12).
@@ -118,6 +119,10 @@ impl Daemon {
         for (entry, records) in keystore.journals() {
             lane.inherit(&EntryId(entry), records);
         }
+        // The pending-restart oracle (M2-K9, harness #31): ONE snapshot
+        // source, installed on the topic registry and handed to
+        // `jinn:introspect`.
+        let restarts = restarts::Restarts::install(&lane, &fibers);
         let tree = ContextTree::new();
         let root = tree.root();
         let registry = Registry::new();
@@ -131,6 +136,7 @@ impl Daemon {
             Arc::clone(&loader),
             Arc::clone(&lane),
             Arc::clone(&readiness),
+            restarts,
         )?;
         ledger_cap::HostLedger::register(&lane.broker, ledger.clone())?;
         profile_cap::HostProfile::register(

@@ -76,4 +76,4 @@ pub use selector::{NoRealms, RealmOracle, Selector};
 pub use sha256::hex_digest;
 pub use slot::{SeatState, SeatSummary, SharedSlot, commit_staged};
 pub use swap::{SlotPhase, SwapCore, SwapOutcome, SwapSlots, swap_batch};
-pub use topics::{EmitReport, EventTarget, LocalTopics, Rebind};
+pub use topics::{EmitReport, EventTarget, LocalTopics, Rebind, RestartOracle, Restarting};

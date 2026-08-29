@@ -1,4 +1,4 @@
-/// jinn:plugin@0.5.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.6.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
@@ -16,6 +16,10 @@
 /// 0.5.0 (M2-K8): the `keystore` import is finalized to its bundle
 /// (`contracts/jinn-keystore`, 0.1.0) — `delete` and `list` join `get`
 /// and `put`, and the bundle's `keystore-error` crosses verbatim.
+/// 0.6.0 (M2-K9): `kernel-error` gains `restarting` — the typed refusal a
+/// reply-expecting `events.emit` answers when a selected listener's
+/// incarnation is already scheduled for replacement. Additive: no existing
+/// case, signature, or meaning changes.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -28,7 +32,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.5.0;
+package jinn:plugin@0.6.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -57,6 +61,16 @@ interface types {
     provider-failed(string),
     /// The kernel refused the operation as malformed.
     invalid(string),
+    /// A reply-expecting `events.emit` was refused because a selected
+    /// listener's incarnation is already scheduled for replacement
+    /// (M2-K9). Nothing was delivered: the walk is refused whole, before
+    /// any listener runs. Retry after the target's restart lands —
+    /// observable on the ledger (its fiber transitions) or through
+    /// `jinn:introspect` (`entry.restarting`). The kernel never queues the
+    /// dispatch across the swap: buffering would hide a real state
+    /// transition behind an unbounded queue, so the refusal is the honest,
+    /// fail-closed answer. Every refusal is a ledger event.
+    restarting(string),
   }
 
   /// The five dispatch modes of the one event bus (LAW §3).
@@ -128,6 +142,16 @@ interface events {
   /// payload's declarative listener selection (C4). Outputs are the settled
   /// listener answers per mode; a failing listener never aborts a collecting
   /// walk (R9) — its failure is contained and recorded.
+  ///
+  /// REPLY-EXPECTING modes — every mode whose answer carries listener
+  /// outputs (`parallel`, `serial`, `bail`, `waterfall`) — are decided
+  /// BEFORE any delivery (M2-K9): if any selected listener sits in an
+  /// incarnation already scheduled for replacement, the whole walk is
+  /// refused with `kernel-error.restarting` and nothing is delivered. A
+  /// dispatch is therefore never half-landed, and never landed in an
+  /// incarnation the kernel is already taking down. `emit` — the
+  /// fire-and-forget mode, whose outputs are discarded — is unaffected:
+  /// it is DELIVERED exactly as before.
   emit: func(topic: string, mode: dispatch-mode, target: selector, payload: list<u8>)
     -> result<list<list<u8>>, kernel-error>;
 

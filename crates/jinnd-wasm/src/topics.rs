@@ -8,12 +8,17 @@
 //! byte-lane mode rules are declared in `wit/plugin.wit`: a non-empty output
 //! is decisive (bail) and replaces the payload (waterfall).
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use jinnd_api::{DispatchMode, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
 use crate::peer::LedgerSink;
 use crate::selector::{RealmOracle, Selector, selects};
+
+mod restarting;
+
+pub use restarting::{RestartOracle, Restarting};
+use restarting::{expects_reply, refusal};
 
 /// One event delivery answered by a listener's host — the transport seam,
 /// like [`crate::broker::Peer`] for contract calls.
@@ -26,6 +31,9 @@ struct Listener {
     topic: String,
     context: u64,
     token: u64,
+    /// The fiber whose incarnation minted this registration (M2-K9): the
+    /// identity a reply-expecting walk asks the restart oracle about.
+    fiber: Option<FiberId>,
     target: Arc<dyn EventTarget>,
 }
 
@@ -34,6 +42,8 @@ pub struct Rebind {
     pub topic: String,
     pub context: u64,
     pub token: u64,
+    /// The fiber the successor incarnation serves (M2-K9).
+    pub fiber: Option<FiberId>,
     pub target: Arc<dyn EventTarget>,
 }
 
@@ -49,16 +59,26 @@ struct Inner {
 pub struct EmitReport {
     pub outputs: Vec<Vec<u8>>,
     pub failures: Vec<KernelError>,
+    /// The walk was REFUSED before any delivery (M2-K9): a selected
+    /// listener's incarnation is already scheduled for replacement.
+    /// Outputs and failures are empty — nothing ran.
+    pub refused: Option<KernelError>,
 }
 
 /// Topic registry + dispatcher.
 #[derive(Default)]
 pub struct LocalTopics {
     inner: Mutex<Inner>,
-    /// The dispatch-trace tap (M2-K2; Law 2): with a sink, every emit lands
-    /// exactly one `DispatchTrace` after its walk settled. `None` keeps the
-    /// registry a pure port (crate tests, pre-tap callers).
+    /// The dispatch-trace tap (M2-K2; Law 2): with a sink, every emit that
+    /// DISPATCHES lands exactly one `DispatchTrace` after its walk
+    /// settled; a walk refused before any delivery lands its
+    /// `DispatchRefused` row instead (M2-K9). `None` keeps the registry a
+    /// pure port (crate tests, pre-tap callers).
     sink: Option<Arc<dyn LedgerSink>>,
+    /// The pending-restart oracle (M2-K9): set once by the assembly that
+    /// owns the fibers. Unset, no walk is ever refused — the registry
+    /// stays the pure port it is for crate tests.
+    restarts: OnceLock<Arc<dyn RestartOracle>>,
 }
 
 impl LocalTopics {
@@ -68,7 +88,15 @@ impl LocalTopics {
         Self {
             inner: Mutex::new(Inner::default()),
             sink: Some(sink),
+            restarts: OnceLock::new(),
         }
+    }
+
+    /// Installs the pending-restart oracle (M2-K9): from here on every
+    /// reply-expecting walk is decided against kernel-owned fiber state
+    /// before it dispatches. Idempotent — a second install is ignored.
+    pub fn watch_restarts(&self, oracle: Arc<dyn RestartOracle>) {
+        let _ = self.restarts.set(oracle);
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -84,6 +112,7 @@ impl LocalTopics {
         topic: &str,
         context: u64,
         token: u64,
+        fiber: Option<FiberId>,
         target: Arc<dyn EventTarget>,
     ) -> u64 {
         let mut inner = self.lock();
@@ -94,6 +123,7 @@ impl LocalTopics {
             topic: topic.to_owned(),
             context,
             token,
+            fiber,
             target,
         });
         id
@@ -128,11 +158,26 @@ impl LocalTopics {
                     topic: registration.topic,
                     context: registration.context,
                     token: registration.token,
+                    fiber: registration.fiber,
                     target: registration.target,
                 });
                 id
             })
             .collect()
+    }
+
+    /// The first selected listener whose incarnation is already scheduled
+    /// for replacement, in selection order (M2-K9). Answered by the
+    /// oracle from kernel-owned state alone; without one, never.
+    fn doomed(
+        &self,
+        selected: &[(Option<FiberId>, u64, Arc<dyn EventTarget>)],
+    ) -> Option<Restarting> {
+        let oracle = self.restarts.get()?;
+        selected
+            .iter()
+            .filter_map(|(fiber, _, _)| *fiber)
+            .find_map(|fiber| oracle.restarting(fiber))
     }
 
     /// Dispatches one payload: listeners are selected kernel-side from a
@@ -153,21 +198,45 @@ impl LocalTopics {
         fiber: Option<FiberId>,
         oracle: &dyn RealmOracle,
     ) -> EmitReport {
-        let selected: Vec<(u64, Arc<dyn EventTarget>)> = {
+        let selected: Vec<(Option<FiberId>, u64, Arc<dyn EventTarget>)> = {
             let inner = self.lock();
             inner
                 .listeners
                 .iter()
                 .filter(|listener| listener.topic == topic)
                 .filter(|listener| selects(selector, oracle, emitter, listener.context))
-                .map(|listener| (listener.token, Arc::clone(&listener.target)))
+                .map(|listener| (listener.fiber, listener.token, Arc::clone(&listener.target)))
                 .collect()
         };
+        // A reply-expecting walk is DECIDED before it dispatches (M2-K9):
+        // one selected listener in a doomed incarnation refuses the whole
+        // walk, so a dispatch is never half-landed and never lands in an
+        // incarnation the kernel is already taking down. The refusal is
+        // the ledger row; a walk that dispatched nothing traces nothing.
+        if expects_reply(mode)
+            && let Some(target) = self.doomed(&selected)
+        {
+            if let Some(sink) = &self.sink {
+                sink.append(
+                    LedgerEventKind::DispatchRefused {
+                        topic: topic.to_owned(),
+                        mode,
+                        target: target.entry.clone(),
+                        incarnation: target.incarnation,
+                    },
+                    fiber,
+                );
+            }
+            return EmitReport {
+                refused: Some(refusal(topic, &target)),
+                ..EmitReport::default()
+            };
+        }
         let listeners = selected.len();
         let mut report = EmitReport::default();
         match mode {
             DispatchMode::Emit | DispatchMode::Parallel | DispatchMode::Serial => {
-                for (token, target) in selected {
+                for (_, token, target) in selected {
                     match target.deliver(token, topic, payload.clone()).await {
                         Ok(output) => report.outputs.push(output),
                         Err(failure) => report.failures.push(failure),
@@ -178,7 +247,7 @@ impl LocalTopics {
                 }
             }
             DispatchMode::Bail => {
-                for (token, target) in selected {
+                for (_, token, target) in selected {
                     match target.deliver(token, topic, payload.clone()).await {
                         Ok(output) if !output.is_empty() => {
                             report.outputs.push(output);
@@ -191,7 +260,7 @@ impl LocalTopics {
             }
             DispatchMode::Waterfall => {
                 let mut current = payload;
-                for (token, target) in selected {
+                for (_, token, target) in selected {
                     match target.deliver(token, topic, current.clone()).await {
                         Ok(output) if !output.is_empty() => current = output,
                         Ok(_) => {}

@@ -86,6 +86,27 @@ impl LaneCore {
     /// activation's incarnation (the slot id — never reused in this
     /// process) and its registrations by class. A snapshot of kernel-owned
     /// state under the roster lock; no guest is ever called (R1).
+    /// The incarnation a restart refusal concerns (M2-K9): the entry's
+    /// current activation id — never reused in this process — which is the
+    /// doomed incarnation while its seat is still installed, and the
+    /// replacement arriving to take its place once teardown has taken it.
+    /// Either way it is the incarnation the refused caller must wait past.
+    ///
+    /// `None` when the entry has no roster row, and — the load-bearing
+    /// case — when NO incarnation has ever been installed: an entry
+    /// arriving for the first time owes its first transition too, but
+    /// nothing is being replaced, so it is never refused as restarting. A
+    /// snapshot under the roster and slot locks; no guest is called (R1).
+    #[must_use]
+    pub fn incarnation(&self, entry: &EntryId) -> Option<u64> {
+        let (slot, incarnation) = {
+            let roster = lock(&self.roster);
+            let row = roster.get(entry)?;
+            (Arc::clone(&row.slot), row.slot_id)
+        };
+        slot.ever_installed().then_some(incarnation)
+    }
+
     #[must_use]
     pub fn seat_summary(&self, entry: &EntryId) -> Option<(u64, SeatSummary)> {
         let (slot, incarnation) = {

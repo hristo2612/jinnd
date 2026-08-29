@@ -9,9 +9,23 @@ const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
-    // 0.5.0 (M2-K8): the keystore import finalized to its bundle.
-    assert!(WORLD.contains("package jinn:plugin@0.5.0;"));
+    // 0.6.0 (M2-K9): `kernel-error` gains the typed `restarting` refusal.
+    assert!(WORLD.contains("package jinn:plugin@0.6.0;"));
     assert!(WORLD.contains("Suspend ≠ dispose"));
+}
+
+/// M2-K9 (R3/R12): the reply-expecting dispatch refusal is a CASE of the
+/// world's own error, not prose a guest greps — and `emit` states which
+/// modes it decides, so the contract, not the implementation, is where a
+/// guest author learns the rule.
+#[test]
+fn the_world_carries_the_typed_restart_refusal() {
+    const INTROSPECT: &str = include_str!("../../../../contracts/jinn-introspect/contract.wit");
+    assert!(WORLD.contains("restarting(string),"));
+    assert!(WORLD.contains("REPLY-EXPECTING modes"));
+    // The ask that replaces discovering a pending restart by stalling.
+    assert!(INTROSPECT.contains("package jinn:introspect@0.2.0;"));
+    assert!(INTROSPECT.contains("restarting: bool,"));
 }
 
 /// M2-K8 (R3/R12): the `keystore` import answers its bundle's error on

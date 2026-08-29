@@ -120,6 +120,12 @@ impl bindings::events::Host for HostState {
                 self.seat.oracle.as_ref(),
             )
             .await;
+        // The reply-expecting refusal (M2-K9): the walk never dispatched,
+        // so the guest is told so — typed — instead of waiting on an
+        // incarnation the kernel is already taking down.
+        if let Some(refused) = report.refused {
+            return Err(bindings::wire_error(refused));
+        }
         Ok(report.outputs)
     }
 
@@ -156,6 +162,7 @@ impl bindings::events::Host for HostState {
             &topic,
             self.seat.context,
             token,
+            self.seat.fiber,
             self.face.clone() as Arc<dyn crate::topics::EventTarget>,
         );
         self.outcome

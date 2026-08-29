@@ -1,4 +1,5 @@
-// jinn:introspect@0.1.0 (M2-K7, harness #19) — the read-only composition
+// jinn:introspect@0.2.0 (M2-K9, harness #31; 0.1.0 M2-K7, #19) — the
+// read-only composition
 // contract. The kernel supplies it (01 §Mechanical closure); a plugin sees
 // the composition only when its profile entry grants this contract. Every
 // read crosses the broker (grant check → ledger append → dispatch) and is
@@ -6,7 +7,7 @@
 // this path (R1). Reached over `services.resolve("jinn:introspect")` +
 // `services.call(handle, <operation>, [])`; answers are the UTF-8 JSON of
 // the records below, field names as written (kebab-case).
-package jinn:introspect@0.1.0;
+package jinn:introspect@0.2.0;
 
 interface composition {
   // The kernel registrations one live seat holds, by class.
@@ -19,11 +20,21 @@ interface composition {
   // `disposed`); `incarnation` identifies the CURRENT activation — never
   // reused within a kernel process, so a restart is evidenced by the same
   // fiber under a new incarnation.
+  // `restarting` (0.2.0) is true while this entry's LIVE incarnation is
+  // already scheduled for replacement: the kernel has taken a target the
+  // current incarnation cannot serve — a config patch, a dependency-epoch
+  // change, an operator restart, a disposal or a suspension — and has not
+  // yet swapped it. In exactly that window a reply-expecting
+  // `events.emit` selecting one of this entry's listeners is REFUSED with
+  // `kernel-error.restarting`; asking here is how a caller learns that
+  // without discovering it by stalling. False for an entry with no
+  // installed incarnation (arriving, torn down, disabled, or a group).
   record entry {
     id: string,
     fiber: option<u64>,
     state: option<string>,
     incarnation: option<u64>,
+    restarting: bool,
     provisions: list<string>,
     registrations: registrations,
   }

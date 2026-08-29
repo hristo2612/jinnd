@@ -29,6 +29,10 @@ pub fn wire_error(error: jinnd_api::KernelError) -> types::KernelError {
             types::KernelError::ProviderFailed(error.message)
         }
         ErrorCode::EffectFailed => types::KernelError::GrantRefused(error.message),
+        // M2-K9: the reply-expecting dispatch refusal keeps its own case —
+        // it is not a grant refusal, and a caller acts on it differently
+        // (retry after the target's restart lands).
+        ErrorCode::Restarting => types::KernelError::Restarting(error.message),
         ErrorCode::NotFound => types::KernelError::ProviderFailed(error.message),
         ErrorCode::DependencyCycle | ErrorCode::InvalidProfile | ErrorCode::DuplicateProvision => {
             types::KernelError::Invalid(error.message)

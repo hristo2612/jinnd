@@ -8,6 +8,7 @@
 //! `fs-on-wake` appends from a wake handler (M2-K3); the `proc-*` and
 //! `net-*` modes drive the `jinn:process` / `jinn:net` long-lived editions
 //! (M2-K6; `mode:arg` carries a path, a port, or an address);
+//! the `notify-*` modes drive the M2-K9 restart-window shape (#31);
 //! `grumpy-undo` registers an effect whose inverse fails
 //! loudly (it proves an undo replay RAN); `flaky-restore` refuses every
 //! handoff (it fails a swap's health gate on demand); `interleave` registers
@@ -41,6 +42,14 @@ const WAKE_TOPIC: &str = "jinn:clock/alarm";
 const READABLE_TOPIC: &str = "jinn:net/readable";
 /// The token the clock modes request their alarms under.
 const WAKE_TOKEN: u64 = 11;
+/// The M2-K9 notice topic: a settings provider's `changed` notice, which
+/// its consumers must answer (a reply-expecting dispatch).
+const CHANGED_TOPIC: &str = "jinn:test/settings-changed";
+/// The token `notify-consumer` listens for the notice under.
+const NOTICE_TOKEN: u64 = 21;
+/// The token `notify-consumer`'s effect answers to: its seat carries a
+/// real journal, so its restart is a real seat replacement.
+const CONSUMER_UNDO_TOKEN: u64 = 22;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static PICKY: AtomicBool = AtomicBool::new(false);
@@ -142,6 +151,21 @@ fn poll<T>(
         }
         if clock::now().map_err(fault)? > started + budget_ms {
             return Err(GuestFault::Failed("polling budget exhausted".into()));
+        }
+    }
+}
+
+/// Burns roughly `ms` of wall clock WITHOUT flooding the ledger: every
+/// kernel crossing is an event (Law 2), so the clock is consulted once per
+/// coarse spin rather than once per iteration.
+fn dawdle(ms: u64) -> Result<(), GuestFault> {
+    let started = clock::now().map_err(fault)?;
+    loop {
+        for step in 0..200_000u64 {
+            std::hint::black_box(step);
+        }
+        if clock::now().map_err(fault)? >= started + ms {
+            return Ok(());
         }
     }
 }
@@ -408,6 +432,139 @@ fn profile_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
     }
 }
 
+/// The M2-K9 modes (harness #31) — the two-hop shape with a NOTICE.
+/// `notify-provider` provides the settings contract and, from its
+/// `patch-notify` handler, patches its CONSUMER and immediately dispatches
+/// the `changed` notice serially: straight into the window K8 opened, where
+/// the consumer holds a pending restart and is still addressable.
+/// `notify-consumer` listens for the notice and registers an effect whose
+/// inverse dawdles, so its restart holds that window open for the whole
+/// withdrawal replay — the seat still installed, the listener still routed;
+/// its handler calls BACK into the provider, the peer that cannot answer
+/// because it is inside the very call that emitted. `notify-trigger:<id>`
+/// starts the shape from a tick.
+fn notify_mode(mode: &str) -> Result<(), GuestFault> {
+    match mode {
+        "notify-provider" => services::provide(SETTINGS_CONTRACT).map(|_| ()).map_err(fault),
+        "notify-consumer" => {
+            effects::register("consumer effect", CONSUMER_UNDO_TOKEN).map_err(fault)?;
+            jinn::plugin::events::listen(CHANGED_TOPIC, NOTICE_TOKEN).map_err(fault)?;
+            fs::append("/consumer.log", b"act\n", "").map_err(fs_fault)?;
+            // A deliberately unhurried activation: the listener is live and
+            // the fiber's restart is still in flight for the whole of it,
+            // which is precisely the state a reply-expecting dispatch must
+            // refuse — and long enough to observe instead of race for.
+            dawdle(600)
+        }
+        "notify-trigger" => {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        other => Err(GuestFault::Failed(format!("unknown notify mode {other}"))),
+    }
+}
+
+/// Patch the consumer, then dispatch the notice into the window that
+/// opened. The outcome's first byte is what the KERNEL answered: 1 = the
+/// typed `restarting` refusal, 2 = some other kernel error, 0 = the walk
+/// was delivered (the listener-output count follows), 9 = the patch itself
+/// was refused (retryable; nothing was dispatched).
+fn notify(consumer: &str) -> Result<Vec<u8>, GuestFault> {
+    let accepted = operator_call(
+        "jinn:profile",
+        "patch-entry",
+        &patch_payload(consumer, r#"{"data":"notify-consumer:v2"}"#),
+    )?;
+    if accepted.first() != Some(&2) {
+        let mut wire = vec![9];
+        wire.extend(accepted);
+        return Ok(wire);
+    }
+    // The notice, dispatched across the replacement the patch scheduled.
+    // A walk that selects nobody (the old listener withdrawn, the new one
+    // not yet registered) is not an answer about the target at all, so it
+    // is retried until the kernel says something — bounded by the clock.
+    let mut outcome = Vec::new();
+    for _ in 0..40u32 {
+        match jinn::plugin::events::emit(
+            CHANGED_TOPIC,
+            jinn::plugin::types::DispatchMode::Serial,
+            &jinn::plugin::types::Selector::All,
+            b"changed",
+        ) {
+            // A walk that selected nobody says nothing about the target
+            // (the old listener withdrawn, the new one not yet
+            // registered): dispatch again a moment later.
+            Ok(outputs) if outputs.is_empty() => {}
+            Ok(outputs) => {
+                outcome = vec![0, outputs.len() as u8];
+                break;
+            }
+            Err(jinn::plugin::types::KernelError::Restarting(reason)) => {
+                outcome = vec![1];
+                outcome.extend(reason.into_bytes());
+                break;
+            }
+            Err(other) => {
+                outcome = vec![2];
+                outcome.extend(format!("{other:?}").into_bytes());
+                break;
+            }
+        }
+        dawdle(20)?;
+    }
+    if outcome.is_empty() {
+        // Every dispatch selected nobody: the notice had no audience at
+        // all, which is not an answer about the target.
+        outcome = vec![3];
+    }
+    // The pending restart is ASKABLE, not only discoverable by stalling —
+    // snapshotted from inside the window that produced the refusal.
+    if outcome.first() == Some(&1) {
+        let entries = operator_call("jinn:introspect", "entries", &[])?;
+        fs::write("/notify-introspect.json", &entries, "").map_err(fs_fault)?;
+    }
+    Ok(outcome)
+}
+
+/// One notice tick (M2-K9): asks the provider to run the shape once and
+/// records what the kernel answered. The window between "the restart is
+/// SCHEDULED" and "the swap commits" is scheduling-narrow by nature — that
+/// is exactly why a dispatch landing in it must be refused rather than
+/// left to luck — so the tick RETRIES the whole shape until it lands in
+/// the window (tag 1) or the attempt budget is spent. Every attempt's tag
+/// is on the record in `/notify.log`, so a run that never reaches the
+/// window is legible rather than silent.
+fn notify_tick(consumer: &str) -> Result<(), GuestFault> {
+    if fs::meta("/notify.out").is_ok() {
+        return Ok(());
+    }
+    let Ok(handle) = services::resolve(SETTINGS_CONTRACT) else {
+        return Ok(());
+    };
+    let answer = match services::call(handle, "patch-notify", consumer.as_bytes()) {
+        Ok(answer) => answer,
+        Err(refused) => {
+            fs::append("/notify.err", format!("{refused:?}\n").as_bytes(), "").map_err(fs_fault)?;
+            return Ok(());
+        }
+    };
+    let Some(&tag) = answer.first() else {
+        return Ok(());
+    };
+    // 9: the patch itself was refused (the boot reconcile still engaged);
+    // nothing was dispatched, so it is not an attempt.
+    if tag == 9 {
+        return Ok(());
+    }
+    fs::append("/notify.log", &[tag], "").map_err(fs_fault)?;
+    let attempts = fs::meta("/notify.log").map_err(fs_fault)?.size;
+    if tag == 1 || attempts >= 20 {
+        fs::write("/notify.out", &answer, "").map_err(fs_fault)?;
+    }
+    Ok(())
+}
+
 /// One trigger tick (M2-K8 #26): asks the provider to patch the owner;
 /// a loader conflict (the boot reconcile still engaged) retries next
 /// tick; the final answer is recorded once.
@@ -483,6 +640,9 @@ impl Guest for Fixture {
         }
         if mode.starts_with("settings-") || mode == "profile-read" {
             return profile_mode(mode, arg);
+        }
+        if mode.starts_with("notify-") {
+            return notify_mode(mode);
         }
         match mode {
             "trap" => panic!("fixture trap mode"),
@@ -690,6 +850,18 @@ impl Guest for Fixture {
     }
 
     fn handle_event(token: u64, topic: String, payload: Vec<u8>) -> Result<Vec<u8>, GuestFault> {
+        // The M2-K9 notice (harness #31). Reaching this handler at all is
+        // the defect: the delivery landed in an incarnation the loader is
+        // already replacing, and the call below can never be served — the
+        // provider is inside the very call that emitted the notice.
+        if topic == CHANGED_TOPIC {
+            if token != NOTICE_TOKEN {
+                return Err(GuestFault::Failed("a malformed notice arrived".into()));
+            }
+            fs::append("/consumer.log", b"notice\n", "").map_err(fs_fault)?;
+            let handle = services::resolve(SETTINGS_CONTRACT).map_err(fault)?;
+            return services::call(handle, "get", b"").map_err(fault);
+        }
         // A typed readiness wake (M2-K7): the token is the handle and the
         // payload repeats it; the echo tick serves whatever is ready.
         if topic == READABLE_TOPIC {
@@ -719,6 +891,9 @@ impl Guest for Fixture {
                 }
                 if patch_mode == "settings-trigger" {
                     trigger_tick(id)?;
+                }
+                if patch_mode == "notify-trigger" {
+                    notify_tick(id)?;
                 }
             }
             if mode == "introspect" {
@@ -770,6 +945,9 @@ impl Guest for Fixture {
                     &patch_payload(&owner, r#"{"data":"settings-owner:v2"}"#),
                 )
             }
+            // The M2-K9 shape (harness #31): patch the consumer, then
+            // dispatch the notice into the window that just opened.
+            "patch-notify" => notify(&String::from_utf8_lossy(&payload)),
             "stash" => Ok(STASH.lock().unwrap().clone()),
             _ => Err(GuestFault::Failed(format!("unknown operation {operation}"))),
         }

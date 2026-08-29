@@ -138,6 +138,19 @@ pub enum LedgerEventKind {
     /// (M2-K2; Law 2): every wake is a ledger event, attributed to the
     /// requesting fiber via the record's columns.
     AlarmWake { alarm: u64 },
+    /// A reply-expecting dispatch was refused BEFORE any listener ran
+    /// (M2-K9, harness finding 31; Law 2): `target`'s live incarnation is
+    /// already scheduled for replacement, so the walk never landed in it.
+    /// Its own kind — a reader tells a restart refusal from a scope
+    /// refusal ([`LedgerEventKind::GrantRefused`]) by the kind alone. A
+    /// refused walk lands this row INSTEAD of a `DispatchTrace`: nothing
+    /// was dispatched. (Authorized M2-K9 additive facade delta.)
+    DispatchRefused {
+        topic: String,
+        mode: DispatchMode,
+        target: EntryId,
+        incarnation: u64,
+    },
     /// A capability grant was exercised: the broker resolved a granted
     /// contract to a caller-scoped handle (constitution 01 §Grants;
     /// authorized M1-P8 additive delta).
