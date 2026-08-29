@@ -17,17 +17,15 @@
 
 use std::sync::Arc;
 
-use jinnd_api::{
-    EntryId, ErrorCode, KernelError, KernelFuture, LedgerEventKind, ProfileEntry, RefusalReason,
-};
+use jinnd_api::{EntryId, KernelError, KernelFuture, LedgerEventKind, RefusalReason};
 use jinnd_ledger::Ledger;
 use jinnd_loader::Loader;
-use jinnd_wasm::{Broker, GrantScope, PROFILE_CONTRACT, Peer, PeerId, grant_refusals};
+use jinnd_wasm::{Broker, PROFILE_CONTRACT, Peer, PeerId, grant_refusals};
 
 use super::storage;
-use super::wire::{Callers, Reader, json, unknown};
+use super::wire::{Callers, Reader, unknown};
 use crate::seat::seat_config;
-use crate::support::{SharedFibers, error, sync_transitions};
+use crate::support::{SharedFibers, sync_transitions};
 
 /// Answer tag: refused; the reason's UTF-8 follows.
 const TAG_REFUSED: u8 = 1;
@@ -36,10 +34,10 @@ const TAG_REFUSED: u8 = 1;
 const TAG_ACCEPTED: u8 = 2;
 
 pub(crate) struct HostProfile {
-    loader: Arc<Loader>,
-    ledger: Ledger,
+    pub(super) loader: Arc<Loader>,
+    pub(super) ledger: Ledger,
     fibers: SharedFibers,
-    callers: Callers,
+    pub(super) callers: Callers,
 }
 
 /// RFC 7396 merge-patch: an object patch merges key by key (`null`
@@ -207,79 +205,6 @@ impl HostProfile {
         Ok(wire)
     }
 
-    /// The entries the caller's scope admits, from the document of record.
-    fn admitted_entries(&self, caller: PeerId) -> Vec<ProfileEntry<serde_json::Value>> {
-        let scope = self.callers.policy(caller);
-        self.loader
-            .persisted::<serde_json::Value>()
-            .map(|profile| {
-                profile
-                    .entries
-                    .into_iter()
-                    .filter(|entry| {
-                        scope
-                            .as_ref()
-                            .is_some_and(|scope| scope.admits_entry(&entry.id.0))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// One read's scope refusal (M2-K8 #25): ledgered, and an error on
-    /// the wire — a read has no `refused` outcome to answer.
-    fn refuse_read(&self, caller: PeerId, what: &str) -> KernelError {
-        let (fiber, by) = self.callers.attribution(caller);
-        let reason = format!("grant refused: {PROFILE_CONTRACT} scope does not admit {what}");
-        self.ledger.record(
-            LedgerEventKind::GrantRefused {
-                contract: PROFILE_CONTRACT.to_owned(),
-                reason: RefusalReason::ScopeMismatch,
-                detail: Some(reason.clone()),
-            },
-            by,
-            fiber,
-        );
-        error(ErrorCode::EffectFailed, reason)
-    }
-
-    /// `entry(id)` (0.2.0, #25): the entry's authority fields, or the JSON
-    /// `null` for an unknown entry; an entry outside the scope refuses.
-    fn entry(&self, caller: PeerId, payload: &[u8]) -> Result<Vec<u8>, KernelError> {
-        let id = Reader::new(payload, "profile entry").text()?;
-        if !self
-            .callers
-            .policy(caller)
-            .is_some_and(|scope| scope.admits_entry(&id))
-        {
-            return Err(self.refuse_read(caller, &format!("entry {id:?}")));
-        }
-        let found = self
-            .admitted_entries(caller)
-            .into_iter()
-            .find(|entry| entry.id.0 == id)
-            .map_or(serde_json::Value::Null, |entry| entry_record(&entry));
-        Ok(json(&found))
-    }
-
-    /// `document()` (0.2.0, #25): the document of record's entries the
-    /// scope admits; a grant admitting nothing refuses.
-    fn document(&self, caller: PeerId) -> Result<Vec<u8>, KernelError> {
-        let admits_something = matches!(
-            self.callers.policy(caller),
-            Some(GrantScope::Entries(ids)) if !ids.is_empty()
-        );
-        if !admits_something {
-            return Err(self.refuse_read(caller, "the document"));
-        }
-        let entries: Vec<serde_json::Value> = self
-            .admitted_entries(caller)
-            .iter()
-            .map(entry_record)
-            .collect();
-        Ok(json(&serde_json::json!({ "entries": entries })))
-    }
-
     /// A refusal on the wire AND on the record (Law 2: a refused patch is
     /// history too), attributed to the editor. The scope refusal is
     /// recorded as the grant refusal it is, in `patch_entry`.
@@ -299,21 +224,6 @@ impl HostProfile {
         );
         refused_wire(reason)
     }
-}
-
-/// The bundle's `entry` record (0.2.0, #25): the document's authority
-/// fields — identity, pinned package, grants as written — and the config.
-fn entry_record(entry: &ProfileEntry<serde_json::Value>) -> serde_json::Value {
-    serde_json::json!({
-        "id": entry.id.0,
-        "package": entry.plugin.package,
-        "version": entry.plugin.version,
-        "hash": entry.plugin.artifact_hash,
-        "grants": entry.config.get("grants").cloned().unwrap_or(serde_json::json!([])),
-        "config": entry.config,
-        "disabled": entry.disabled,
-        "parent": entry.parent.as_ref().map(|parent| parent.0.clone()),
-    })
 }
 
 /// The bundle's `refused(reason)` outcome as the wire carries it: every

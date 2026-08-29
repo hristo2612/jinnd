@@ -21,6 +21,7 @@ mod introspect;
 mod ledger_cap;
 mod observe;
 mod profile_cap;
+mod profile_read;
 mod wire;
 
 /// What `jinn:introspect.readiness` answers (M2-K7, harness #19/#12).

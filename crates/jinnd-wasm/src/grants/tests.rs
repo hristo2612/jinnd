@@ -383,9 +383,12 @@ fn an_ops_attenuation_admits_declared_operations_only() {
     assert!(only(attenuated("jinn:fs", names(&[]))).is_err());
     assert!(only(attenuated("jinn:test/counter", names(&["get"]))).is_err());
     assert_eq!(
-        super::attenuation(&attenuated("jinn:fs", names(&["read", "read"]))),
+        super::ops::attenuation(&attenuated("jinn:fs", names(&["read", "read"]))),
         Some(vec!["read".to_owned()]),
         "the admitted attenuation is the deduplicated operation set"
     );
-    assert_eq!(super::attenuation(&scoped("jinn:fs", text("/log"))), None);
+    assert_eq!(
+        super::ops::attenuation(&scoped("jinn:fs", text("/log"))),
+        None
+    );
 }
