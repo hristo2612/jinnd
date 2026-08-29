@@ -20,21 +20,32 @@ interface composition {
   // `disposed`); `incarnation` identifies the CURRENT activation — never
   // reused within a kernel process, so a restart is evidenced by the same
   // fiber under a new incarnation.
-  // `restarting` (0.2.0) is true while this entry's LIVE incarnation is
-  // already scheduled for replacement: the kernel has taken a target the
-  // current incarnation cannot serve — a config patch, a dependency-epoch
-  // change, an operator restart, a disposal or a suspension — and has not
-  // yet swapped it. In exactly that window a reply-expecting
-  // `events.emit` selecting one of this entry's listeners is REFUSED with
-  // `kernel-error.restarting`; asking here is how a caller learns that
-  // without discovering it by stalling. False for an entry with no
-  // installed incarnation (arriving, torn down, disabled, or a group).
+  // `unserved` (0.2.0) names what this entry's LIVE incarnation already
+  // owes, when it owes anything: the kernel has taken a target the current
+  // incarnation cannot serve and has not yet landed it. In exactly that
+  // window a reply-expecting `events.emit` selecting one of this entry's
+  // listeners is REFUSED with the matching `kernel-error` case, and asking
+  // here is how a caller learns that without discovering it by stalling.
+  // Absent for an entry that can serve, and for one with no installed
+  // incarnation (arriving, torn down, disabled, or a group).
+  // What a live incarnation already owes, and therefore what a caller
+  // refused by it must do next (0.2.0). The three are different futures,
+  // so they are three answers: only `restarting` promises a replacement.
+  enum unserved {
+    // A replacement is scheduled: retry once the restart lands.
+    restarting,
+    // Disposal is owed, and disposal is terminal: never retry.
+    gone,
+    // Suspension is owed: retry after a resume, which may never come.
+    suspended,
+  }
+
   record entry {
     id: string,
     fiber: option<u64>,
     state: option<string>,
     incarnation: option<u64>,
-    restarting: bool,
+    unserved: option<unserved>,
     provisions: list<string>,
     registrations: registrations,
   }

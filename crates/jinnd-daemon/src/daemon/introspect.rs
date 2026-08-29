@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use jinnd_api::{EntryId, KernelError, KernelFuture};
+use jinnd_api::{EntryId, KernelError, KernelFuture, Owed};
 use jinnd_loader::Loader;
 use jinnd_wasm::{Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId, RestartOracle};
 
@@ -78,18 +78,23 @@ impl HostIntrospect {
                         (Some(incarnation), Some(seat))
                     });
                 let seat = seat.unwrap_or_default();
-                // M2-K9: whether this entry's live incarnation is already
-                // scheduled for replacement — the ask that replaces
-                // discovering a pending restart by stalling on it.
-                let restarting = fiber
-                    .and_then(|fiber| self.restarts.restarting(fiber))
-                    .is_some();
+                // M2-K9: what this entry's live incarnation already owes,
+                // named exactly as a refused dispatch would name it — the
+                // ask that replaces discovering it by stalling.
+                let unserved =
+                    fiber
+                        .and_then(|fiber| self.restarts.unserved(fiber))
+                        .map(|unserved| match unserved.owed {
+                            Owed::Reload => "restarting",
+                            Owed::Disposal => "gone",
+                            Owed::Suspension => "suspended",
+                        });
                 serde_json::json!({
                     "id": id.0,
                     "fiber": fiber.map(|fiber| fiber.0),
                     "state": state,
                     "incarnation": incarnation,
-                    "restarting": restarting,
+                    "unserved": unserved,
                     "provisions": seat.provisions,
                     "registrations": {
                         "listeners": seat.listeners,

@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DispatchMode, EffectId, EntryId, FiberId, KernelError, Transition};
+use crate::{DispatchMode, EffectId, EntryId, FiberId, KernelError, Owed, Transition};
 
 /// Proof that one appended event is durable: the receipt resolves only after
 /// the event's commit returned, never before (constitution 02).
@@ -139,17 +139,17 @@ pub enum LedgerEventKind {
     /// requesting fiber via the record's columns.
     AlarmWake { alarm: u64 },
     /// A reply-expecting dispatch was refused BEFORE any listener ran
-    /// (M2-K9, harness finding 31; Law 2): `target`'s live incarnation is
-    /// already scheduled for replacement, so the walk never landed in it.
-    /// Its own kind — a reader tells a restart refusal from a scope
-    /// refusal ([`LedgerEventKind::GrantRefused`]) by the kind alone. A
-    /// refused walk lands this row INSTEAD of a `DispatchTrace`: nothing
-    /// was dispatched. (Authorized M2-K9 additive facade delta.)
+    /// (M2-K9, harness finding 31; Law 2): `target`'s live incarnation
+    /// already owes `owed`, so the walk never landed in it. Its own kind —
+    /// a reader tells a dispatch refusal from a scope refusal by the kind
+    /// alone, and the three refusals apart by `owed`. A refused walk lands
+    /// this row INSTEAD of a `DispatchTrace`. (Authorized M2-K9 delta.)
     DispatchRefused {
         topic: String,
         mode: DispatchMode,
         target: EntryId,
         incarnation: u64,
+        owed: Owed,
     },
     /// A capability grant was exercised: the broker resolved a granted
     /// contract to a caller-scoped handle (constitution 01 §Grants;

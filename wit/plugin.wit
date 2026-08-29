@@ -16,10 +16,11 @@
 /// 0.5.0 (M2-K8): the `keystore` import is finalized to its bundle
 /// (`contracts/jinn-keystore`, 0.1.0) — `delete` and `list` join `get`
 /// and `put`, and the bundle's `keystore-error` crosses verbatim.
-/// 0.6.0 (M2-K9): `kernel-error` gains `restarting` — the typed refusal a
-/// reply-expecting `events.emit` answers when a selected listener's
-/// incarnation is already scheduled for replacement. Additive: no existing
-/// case, signature, or meaning changes.
+/// 0.6.0 (M2-K9): `kernel-error` gains `restarting`, `gone` and `suspended`
+/// — the three typed refusals a reply-expecting `events.emit` answers when
+/// a selected listener's incarnation already owes a transition, each
+/// carrying a `refused-target`. Additive: no existing case, signature, or
+/// meaning changes.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -62,15 +63,36 @@ interface types {
     /// The kernel refused the operation as malformed.
     invalid(string),
     /// A reply-expecting `events.emit` was refused because a selected
-    /// listener's incarnation is already scheduled for replacement
-    /// (M2-K9). Nothing was delivered: the walk is refused whole, before
-    /// any listener runs. Retry after the target's restart lands —
-    /// observable on the ledger (its fiber transitions) or through
-    /// `jinn:introspect` (`entry.restarting`). The kernel never queues the
-    /// dispatch across the swap: buffering would hide a real state
-    /// transition behind an unbounded queue, so the refusal is the honest,
-    /// fail-closed answer. Every refusal is a ledger event.
-    restarting(string),
+    /// listener's incarnation is already being REPLACED (M2-K9). Nothing
+    /// was delivered: the walk is refused whole, before any listener runs.
+    /// A replacement is scheduled — retry once the restart lands,
+    /// observable on the ledger (the target's fiber transitions) or
+    /// through `jinn:introspect` (`entry.unserved` clears). The kernel
+    /// never queues the dispatch across the swap: buffering would hide a
+    /// real state transition behind an unbounded queue, so the refusal is
+    /// the honest, fail-closed answer. Every refusal is a ledger event.
+    restarting(refused-target),
+    /// The same refusal, for a target being DISPOSED (M2-K9). Disposal is
+    /// terminal: nothing replaces this incarnation, so a caller must NOT
+    /// wait for a restart — re-resolve, or give up. Its own case exactly
+    /// so a caller is never told to wait for something that is not coming.
+    gone(refused-target),
+    /// The same refusal, for a target being SUSPENDED (M2-K9): the cell
+    /// stops and the entry persists. Retry after a resume — which may
+    /// never come on its own, so a caller must not spin on it.
+    suspended(refused-target),
+  }
+
+  /// Who a dispatch refusal was refused BY, typed so a caller acts on
+  /// identity instead of parsing prose (M2-K9; R3).
+  record refused-target {
+    /// The profile entry id the refused incarnation serves.
+    entry: string,
+    /// The incarnation refused by — never reused within a kernel process,
+    /// so a caller tells it from the one a retry will reach.
+    incarnation: u64,
+    /// The topic whose walk was refused. Nothing on it was delivered.
+    topic: string,
   }
 
   /// The five dispatch modes of the one event bus (LAW §3).
@@ -146,12 +168,12 @@ interface events {
   /// REPLY-EXPECTING modes — every mode whose answer carries listener
   /// outputs (`parallel`, `serial`, `bail`, `waterfall`) — are decided
   /// BEFORE any delivery (M2-K9): if any selected listener sits in an
-  /// incarnation already scheduled for replacement, the whole walk is
-  /// refused with `kernel-error.restarting` and nothing is delivered. A
-  /// dispatch is therefore never half-landed, and never landed in an
-  /// incarnation the kernel is already taking down. `emit` — the
-  /// fire-and-forget mode, whose outputs are discarded — is unaffected:
-  /// it is DELIVERED exactly as before.
+  /// incarnation that already owes a transition, the whole walk is refused
+  /// with `restarting`, `gone` or `suspended` — whichever names what that
+  /// target owes — and nothing is delivered. A dispatch is therefore never
+  /// half-landed, and never landed in an incarnation the kernel is already
+  /// taking down. `emit` — the fire-and-forget mode, whose outputs are
+  /// discarded — is unaffected: it is DELIVERED exactly as before.
   emit: func(topic: string, mode: dispatch-mode, target: selector, payload: list<u8>)
     -> result<list<list<u8>>, kernel-error>;
 

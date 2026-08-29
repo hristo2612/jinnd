@@ -464,6 +464,21 @@ fn notify_mode(mode: &str) -> Result<(), GuestFault> {
     }
 }
 
+/// Records a typed dispatch refusal for the test to read back: the tag
+/// byte, then the record's own fields as JSON. The guest never formats the
+/// kernel's prose into meaning — there is none to format (M2-K9, R3).
+fn refusal(tag: u8, case: &str, target: &jinn::plugin::types::RefusedTarget) -> Vec<u8> {
+    let mut wire = vec![tag];
+    wire.extend(
+        format!(
+            r#"{{"case":"{case}","entry":"{}","incarnation":{},"topic":"{}"}}"#,
+            target.entry, target.incarnation, target.topic
+        )
+        .into_bytes(),
+    );
+    wire
+}
+
 /// Patch the consumer, then dispatch the notice into the window that
 /// opened. The outcome's first byte is what the KERNEL answered: 1 = the
 /// typed `restarting` refusal, 2 = some other kernel error, 0 = the walk
@@ -500,9 +515,18 @@ fn notify(consumer: &str) -> Result<Vec<u8>, GuestFault> {
                 outcome = vec![0, outputs.len() as u8];
                 break;
             }
-            Err(jinn::plugin::types::KernelError::Restarting(reason)) => {
-                outcome = vec![1];
-                outcome.extend(reason.into_bytes());
+            // The typed refusal: the case IS the next move, and the
+            // record names who refused. Nothing here parses a sentence.
+            Err(jinn::plugin::types::KernelError::Restarting(target)) => {
+                outcome = refusal(1, "restarting", &target);
+                break;
+            }
+            Err(jinn::plugin::types::KernelError::Gone(target)) => {
+                outcome = refusal(4, "gone", &target);
+                break;
+            }
+            Err(jinn::plugin::types::KernelError::Suspended(target)) => {
+                outcome = refusal(5, "suspended", &target);
                 break;
             }
             Err(other) => {

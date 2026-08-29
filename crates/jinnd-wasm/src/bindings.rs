@@ -18,7 +18,7 @@ pub use generated::jinn::plugin::{
 };
 pub use generated::{Plugin, PluginPre};
 
-use jinnd_api::ErrorCode;
+use jinnd_api::{ErrorCode, Owed};
 
 /// Maps a facade error onto the wire, losing nothing the guest may act on.
 pub fn wire_error(error: jinnd_api::KernelError) -> types::KernelError {
@@ -29,14 +29,28 @@ pub fn wire_error(error: jinnd_api::KernelError) -> types::KernelError {
             types::KernelError::ProviderFailed(error.message)
         }
         ErrorCode::EffectFailed => types::KernelError::GrantRefused(error.message),
-        // M2-K9: the reply-expecting dispatch refusal keeps its own case —
-        // it is not a grant refusal, and a caller acts on it differently
-        // (retry after the target's restart lands).
-        ErrorCode::Restarting => types::KernelError::Restarting(error.message),
         ErrorCode::NotFound => types::KernelError::ProviderFailed(error.message),
         ErrorCode::DependencyCycle | ErrorCode::InvalidProfile | ErrorCode::DuplicateProvision => {
             types::KernelError::Invalid(error.message)
         }
+    }
+}
+
+/// The reply-expecting dispatch refusal, typed onto the wire (M2-K9): the
+/// case NAMES the caller's next move and the record names who refused it,
+/// so nothing about a refusal has to be read out of a sentence (R3).
+/// Deliberately not routed through [`wire_error`] — a `kernel-error` whose
+/// payload is a record cannot be reconstructed from a message string.
+pub fn wire_refusal(topic: &str, refused: &crate::topics::Unserved) -> types::KernelError {
+    let target = types::RefusedTarget {
+        entry: refused.entry.0.clone(),
+        incarnation: refused.incarnation,
+        topic: topic.to_owned(),
+    };
+    match refused.owed {
+        Owed::Reload => types::KernelError::Restarting(target),
+        Owed::Disposal => types::KernelError::Gone(target),
+        Owed::Suspension => types::KernelError::Suspended(target),
     }
 }
 

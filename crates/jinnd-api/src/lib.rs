@@ -33,7 +33,7 @@ mod wasm;
 pub use effect::{EffectDescriptor, Undo};
 pub use error::{ErrorCode, KernelError, KernelFuture};
 pub use event::{DispatchMode, DispatchReport, Event, EventListener};
-pub use fiber::{FiberState, Transition, TransitionCause};
+pub use fiber::{FiberState, Owed, Transition, TransitionCause};
 pub use forward::{EffectHost, ForwardAction, ForwardEffect};
 pub use ids::{ContextId, EffectId, EntryId, FiberId, Generation, Realm};
 pub use inject::{Inject, ServiceResolver, ServiceType};

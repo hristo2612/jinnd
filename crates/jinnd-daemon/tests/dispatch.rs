@@ -10,8 +10,8 @@
 //! deadline killed them both.
 //!
 //! The contract now: the walk is refused WHOLE, before any listener runs,
-//! with the typed `restarting` refusal naming the target and the
-//! incarnation being replaced; the refusal is a ledger row of its own kind
+//! with a typed refusal whose CASE is the caller's next move and whose
+//! record names the target, the incarnation being replaced, and the topic; the refusal is a ledger row of its own kind
 //! (a reader tells it from a scope refusal without parsing prose); and the
 //! pending restart is ASKABLE through `jinn:introspect` rather than
 //! discoverable only by stalling.
@@ -21,7 +21,7 @@ mod support;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use jinnd_api::{DispatchMode, EntryId, FiberState, LedgerEventKind, LedgerRecord};
+use jinnd_api::{DispatchMode, EntryId, FiberState, LedgerEventKind, LedgerRecord, Owed};
 use jinnd_daemon::{Daemon, DaemonPaths};
 
 struct Home(PathBuf);
@@ -169,16 +169,29 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
     // The kernel's answer to the emitting guest: the TYPED refusal, naming
     // the target — never a stall, never an empty successful walk.
     let outcome = wait_for(&paths.data.join("notify.out"), |bytes| !bytes.is_empty()).await;
-    let reason = String::from_utf8_lossy(&outcome[1.min(outcome.len())..]).into_owned();
+    let body = String::from_utf8_lossy(&outcome[1.min(outcome.len())..]).into_owned();
     assert_eq!(
         outcome.first(),
         Some(&1),
-        "the typed restarting refusal (tag 1), got {:?}: {reason}",
+        "the typed `restarting` refusal (tag 1), got {:?}: {body}",
         outcome.first()
     );
+    // The guest read IDENTITY off the record — it parsed no sentence.
+    let refusal = json(body.as_bytes());
+    assert_eq!(refusal["case"], serde_json::json!("restarting"));
+    assert_eq!(
+        refusal["entry"],
+        serde_json::json!("consumer"),
+        "the record names the target: {refusal}"
+    );
+    assert_eq!(
+        refusal["topic"],
+        serde_json::json!("jinn:test/settings-changed"),
+        "and the refused topic: {refusal}"
+    );
     assert!(
-        reason.contains("consumer"),
-        "the refusal names its target: {reason}"
+        refusal["incarnation"].as_u64().is_some_and(|born| born > 0),
+        "and the incarnation being replaced: {refusal}"
     );
 
     // Nothing landed in the doomed incarnation: the handler never ran.
@@ -199,9 +212,10 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
         .and_then(|entries| entries.iter().find(|entry| entry["id"] == "consumer"))
         .unwrap_or_else(|| panic!("the consumer is in the composition: {composition}"));
     assert_eq!(
-        seen["restarting"],
-        serde_json::json!(true),
-        "introspect reports the pending restart: {seen}"
+        seen["unserved"],
+        serde_json::json!("restarting"),
+        "introspect names the pending transition in the refusal's own \
+         vocabulary — a replacement IS scheduled here: {seen}"
     );
 
     let records = events(&daemon).await;
@@ -215,11 +229,18 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
             mode,
             target,
             incarnation,
+            owed,
         } => {
             assert_eq!(topic, "jinn:test/settings-changed");
             assert_eq!(*mode, DispatchMode::Serial);
             assert_eq!(target.0, "consumer", "the row names the target entry");
             assert!(*incarnation > 0, "the row names the incarnation replaced");
+            assert_eq!(
+                *owed,
+                Owed::Reload,
+                "and WHY, so a ledger reader tells this from a refusal by a \
+                 fiber that is never coming back"
+            );
         }
         other => panic!("{other:?}"),
     }

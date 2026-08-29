@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use jinnd_api::{EffectDescriptor, FiberId, FiberState, TransitionCause};
+use jinnd_api::{EffectDescriptor, FiberId, FiberState, Owed, TransitionCause};
 use tokio::sync::watch;
 
 use crate::body::FiberBody;
@@ -118,6 +118,20 @@ impl Fiber {
     #[must_use]
     pub fn resting(&self) -> bool {
         self.shared.steering.resting()
+    }
+
+    /// WHAT the fiber owes, when [`Fiber::resting`] is false (M2-K9): a
+    /// reload that replaces this incarnation, a terminal disposal that
+    /// replaces it with nothing, or a suspension awaiting a resume that may
+    /// never come. `None` exactly when the fiber rests.
+    ///
+    /// Answered from the same critical section as the rest bit, so the two
+    /// are never observed out of sync. Advisory for anyone but the fiber
+    /// itself, like [`Fiber::resting`]: a refusal built on it is honest and
+    /// retryable, never a lock.
+    #[must_use]
+    pub fn owed(&self) -> Option<Owed> {
+        self.shared.steering.owed()
     }
 
     /// Resolves once the fiber has settled with nothing left to do, having re-read

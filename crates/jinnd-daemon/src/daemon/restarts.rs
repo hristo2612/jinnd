@@ -6,15 +6,15 @@
 //! be told different things.
 //!
 //! The answer is a snapshot of kernel-owned state under brief locks: the
-//! tracked fiber's REST bit (lowered atomically with every target write —
-//! restart, dependency-epoch change, disposal, suspension — so the moment
-//! such a call returns this reads `false`) and the lane's live incarnation.
-//! No guest is called and nothing blocks (R1).
+//! tracked fiber's own typed [`Owed`] (read in the same critical section as
+//! its rest bit, so the moment a target write returns this already names
+//! what that write asked for) and the lane's live incarnation. No guest is
+//! called and nothing blocks (R1).
 
 use std::sync::{Arc, Weak};
 
-use jinnd_api::FiberId;
-use jinnd_wasm::{LaneCore, RestartOracle, Restarting};
+use jinnd_api::{FiberId, Owed};
+use jinnd_wasm::{LaneCore, RestartOracle, Unserved};
 
 use crate::support::{SharedFibers, lock};
 
@@ -43,28 +43,41 @@ impl Restarts {
         oracle
     }
 
-    /// True while `fiber` owes a lifecycle transition: its committed state
-    /// is not the latest desired one. An untracked fiber owes nothing this
-    /// daemon can see — honest jurisdiction, never a guess.
-    fn owes_a_transition(&self, fiber: FiberId) -> Option<jinnd_api::EntryId> {
+    /// WHAT `fiber` owes, and for which entry: the fiber's own typed
+    /// answer, read atomically with its rest bit. An untracked fiber owes
+    /// nothing this daemon can see — honest jurisdiction, never a guess.
+    fn owes(&self, fiber: FiberId) -> Option<(jinnd_api::EntryId, Owed)> {
         let fibers = lock(&self.fibers);
         let tracked = fibers.get(&fiber)?;
-        (!tracked.fiber.resting()).then(|| tracked.entry.clone())
+        let owed = tracked.fiber.owed()?;
+        Some((tracked.entry.clone(), owed))
     }
 }
 
 impl RestartOracle for Restarts {
-    /// The doomed incarnation behind `fiber`, if any. Both halves must
-    /// hold: the fiber owes a transition, AND an incarnation is actually
-    /// INSTALLED. The second half is what keeps a first activation — which
-    /// also owes a transition, and may already have registered a listener
-    /// from inside `activate` — out of the refusal: it is arriving, not
-    /// leaving, and nothing is being replaced. Once teardown has taken the
-    /// seat the answer lapses too, and the seat's own gate takes over with
-    /// its typed sealed refusal.
-    fn restarting(&self, fiber: FiberId) -> Option<Restarting> {
-        let entry = self.owes_a_transition(fiber)?;
+    /// What the incarnation behind `fiber` owes, if anything. Both halves
+    /// must hold: the fiber owes a transition, AND an incarnation is
+    /// actually INSTALLED. The second half is what keeps a first
+    /// activation — which also owes a transition, and may already have
+    /// registered a listener from inside `activate` — out of the refusal:
+    /// it is arriving, not leaving, and nothing is being replaced. Once
+    /// teardown has taken the seat the answer lapses too, and the seat's
+    /// own gate takes over with its typed sealed refusal.
+    ///
+    /// The `owed` field is carried through UNCHANGED from the fiber (M2-K9
+    /// round 2): the kernel never upgrades a disposal or a suspension into
+    /// a promised restart, because a caller obeying that promise would
+    /// wait for a replacement that is not coming.
+    fn unserved(&self, fiber: FiberId) -> Option<Unserved> {
+        let (entry, owed) = self.owes(fiber)?;
         let incarnation = self.lane.upgrade()?.incarnation(&entry)?;
-        Some(Restarting { entry, incarnation })
+        Some(Unserved {
+            entry,
+            incarnation,
+            owed,
+        })
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -10,7 +10,7 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::FiberState;
+use jinnd_api::{FiberState, Owed};
 use jinnd_fiber::{Fiber, ReadinessSource};
 use support::{Gate, Trace, body, epoch, gated, ready};
 
@@ -104,4 +104,81 @@ async fn a_task_spawned_and_awaited_by_the_body_never_observes_rest() {
         fiber.resting(),
         "the fiber rests once the activation landed"
     );
+}
+
+/// A body whose single inverse blocks at `gate`: the withdrawal the fiber
+/// owes stays observable for exactly as long as the test wants it.
+fn holding(trace: &Trace, gate: &Gate) -> Arc<dyn jinnd_fiber::FiberBody> {
+    let (trace, gate) = (trace.clone(), gate.clone());
+    body(move |mut setup| {
+        let (trace, gate) = (trace.clone(), gate.clone());
+        Box::pin(async move {
+            setup.effect("held", support::gated_undo(&trace, "held", &gate))?;
+            Ok(())
+        })
+    })
+}
+
+/// M2-K9: WHAT a fiber owes is a typed answer, never a bit. The three
+/// dispositions are genuinely different futures for anyone waiting on the
+/// fiber, so the kernel names them apart at the one place it knows: a
+/// caller held off by a fiber that is being DISPOSED must never be told to
+/// wait for a restart that is not coming, and one held off by a suspension
+/// must not be told the same either — a resume may never arrive on its own.
+#[tokio::test]
+async fn a_fiber_names_what_it_owes_and_never_calls_a_disposal_a_reload() {
+    // A reload: the target moved and this incarnation is REPLACED.
+    let (fiber, _source) = ready(body(|_setup| Box::pin(async { Ok(()) })));
+    fiber.quiesce().await;
+    assert_eq!(fiber.owed(), None, "a settled fiber owes nothing");
+    fiber.restart(jinnd_api::TransitionCause::ExplicitRestart);
+    assert_eq!(
+        fiber.owed(),
+        Some(Owed::Reload),
+        "a restart replaces the incarnation"
+    );
+    fiber.quiesce().await;
+    assert_eq!(fiber.owed(), None, "the reload landed");
+
+    // A disposal, observed from INSIDE its own withdrawal replay — exactly
+    // the window a refused caller is told about. Terminal: nothing comes
+    // after it, so the honest answer is not `Reload`.
+    let trace = Trace::new();
+    let gate = Gate::new();
+    let (doomed, _doomed_source) = ready(holding(&trace, &gate));
+    let doomed = Arc::new(doomed);
+    doomed.quiesce().await;
+    let withdrawal = tokio::spawn({
+        let doomed = Arc::clone(&doomed);
+        async move { doomed.dispose().await }
+    });
+    gate.entered(1).await;
+    assert_eq!(
+        doomed.owed(),
+        Some(Owed::Disposal),
+        "a disposal is terminal: naming it a reload sends a caller to wait forever"
+    );
+    gate.release();
+    withdrawal.await.unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(doomed.owed(), None, "a disposed fiber owes nothing more");
+
+    // A suspension: the cell stops and the entry persists. A resume may
+    // bring it back, and may never come — its own answer, not a reload.
+    let paused = Trace::new();
+    let resume = Gate::new();
+    let (stopping, _stopping_source) = ready(holding(&paused, &resume));
+    let stopping = Arc::new(stopping);
+    stopping.quiesce().await;
+    let suspension = tokio::spawn({
+        let stopping = Arc::clone(&stopping);
+        async move { stopping.suspend().await }
+    });
+    resume.entered(1).await;
+    assert_eq!(
+        stopping.owed(),
+        Some(Owed::Suspension),
+        "a suspension awaits a resume, not a restart"
+    );
+    resume.release();
+    suspension.await.unwrap_or_else(|error| panic!("{error}"));
 }

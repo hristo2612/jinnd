@@ -10,7 +10,7 @@
 //! `await` or a call into plugin code. That is the whole discipline; the loom models
 //! at the bottom of this file are what keep it honest.
 
-use jinnd_api::{Epoch, TransitionCause};
+use jinnd_api::{Epoch, Owed, TransitionCause};
 
 use crate::plan::{Aim, Desired};
 use crate::sync::Mutex;
@@ -83,6 +83,28 @@ impl SteeringCell {
     /// stamp is still current — the two can never be observed out of sync.
     pub(crate) fn resting(&self) -> bool {
         self.with(|inner| inner.resting)
+    }
+
+    /// What the fiber owes, when it owes anything (M2-K9). Read in the SAME
+    /// critical section as the rest bit, so a caller never sees "owes
+    /// something" paired with a stale answer about WHAT.
+    ///
+    /// Disposal outranks suspension exactly as the planner ranks them: a
+    /// fiber asked to suspend and then to dispose owes a disposal, and a
+    /// caller told so must not wait for a resume that would not help.
+    pub(crate) fn owed(&self) -> Option<Owed> {
+        self.with(|inner| {
+            if inner.resting {
+                return None;
+            }
+            Some(if inner.desired.disposing {
+                Owed::Disposal
+            } else if inner.desired.suspending {
+                Owed::Suspension
+            } else {
+                Owed::Reload
+            })
+        })
     }
 
     /// Raises rest, unless a target write moved the cell since `observed`

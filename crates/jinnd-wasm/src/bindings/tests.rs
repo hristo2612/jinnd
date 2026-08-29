@@ -15,17 +15,61 @@ fn world_is_versioned_for_suspend_semantics() {
 }
 
 /// M2-K9 (R3/R12): the reply-expecting dispatch refusal is a CASE of the
-/// world's own error, not prose a guest greps — and `emit` states which
-/// modes it decides, so the contract, not the implementation, is where a
-/// guest author learns the rule.
+/// world's own error carrying a RECORD, never prose a guest greps — and
+/// `emit` states which modes it decides, so the contract, not the
+/// implementation, is where a guest author learns the rule.
 #[test]
-fn the_world_carries_the_typed_restart_refusal() {
+fn the_world_carries_the_typed_dispatch_refusals() {
     const INTROSPECT: &str = include_str!("../../../../contracts/jinn-introspect/contract.wit");
-    assert!(WORLD.contains("restarting(string),"));
+    for case in [
+        "restarting(refused-target),",
+        "gone(refused-target),",
+        "suspended(refused-target),",
+    ] {
+        assert!(WORLD.contains(case), "{case}");
+    }
+    assert!(WORLD.contains("record refused-target {"));
+    assert!(WORLD.contains("incarnation: u64,"));
     assert!(WORLD.contains("REPLY-EXPECTING modes"));
-    // The ask that replaces discovering a pending restart by stalling.
+    // The ask that replaces discovering a pending transition by stalling,
+    // in the SAME vocabulary the refusal uses.
     assert!(INTROSPECT.contains("package jinn:introspect@0.2.0;"));
-    assert!(INTROSPECT.contains("restarting: bool,"));
+    assert!(INTROSPECT.contains("enum unserved {"));
+    assert!(INTROSPECT.contains("unserved: option<unserved>,"));
+}
+
+/// M2-K9 round 2: the three dispositions map to three DIFFERENT wire
+/// cases, because they are three different next moves for the caller.
+/// Folding a disposal into `restarting` would tell a caller to wait for a
+/// replacement that is never coming — the defect this mapping exists to
+/// prevent — so the mapping is pinned per disposition, not in aggregate.
+#[test]
+fn each_disposition_maps_to_its_own_wire_case() {
+    use jinnd_api::{EntryId, Owed};
+
+    use super::{types, wire_refusal};
+    use crate::topics::Unserved;
+
+    let unserved = |owed| Unserved {
+        entry: EntryId("consumer".to_owned()),
+        incarnation: 7,
+        owed,
+    };
+    let expected = |wire: &types::RefusedTarget| {
+        wire.entry == "consumer" && wire.incarnation == 7 && wire.topic == "t"
+    };
+    match wire_refusal("t", &unserved(Owed::Reload)) {
+        types::KernelError::Restarting(target) => assert!(expected(&target), "{target:?}"),
+        other => panic!("a reload is `restarting`: {other:?}"),
+    }
+    match wire_refusal("t", &unserved(Owed::Disposal)) {
+        types::KernelError::Gone(target) => assert!(expected(&target), "{target:?}"),
+        other => panic!("a disposal is terminal — never `restarting`: {other:?}"),
+    }
+    match wire_refusal("t", &unserved(Owed::Suspension)) {
+        types::KernelError::Suspended(target) => assert!(expected(&target), "{target:?}"),
+        other => panic!("a suspension awaits a resume, not a restart: {other:?}"),
+    }
 }
 
 /// M2-K8 (R3/R12): the `keystore` import answers its bundle's error on

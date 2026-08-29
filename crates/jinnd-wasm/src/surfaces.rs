@@ -121,10 +121,11 @@ impl bindings::events::Host for HostState {
             )
             .await;
         // The reply-expecting refusal (M2-K9): the walk never dispatched,
-        // so the guest is told so — typed — instead of waiting on an
-        // incarnation the kernel is already taking down.
+        // so the guest is told so — typed, naming the target and its own
+        // next move — instead of waiting on an incarnation the kernel is
+        // already taking down.
         if let Some(refused) = report.refused {
-            return Err(bindings::wire_error(refused));
+            return Err(bindings::wire_refusal(&topic, &refused));
         }
         Ok(report.outputs)
     }

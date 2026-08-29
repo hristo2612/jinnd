@@ -17,8 +17,8 @@ use crate::selector::{RealmOracle, Selector, selects};
 
 mod restarting;
 
-pub use restarting::{RestartOracle, Restarting};
-use restarting::{expects_reply, refusal};
+use restarting::expects_reply;
+pub use restarting::{RestartOracle, Unserved};
 
 /// One event delivery answered by a listener's host — the transport seam,
 /// like [`crate::broker::Peer`] for contract calls.
@@ -60,9 +60,11 @@ pub struct EmitReport {
     pub outputs: Vec<Vec<u8>>,
     pub failures: Vec<KernelError>,
     /// The walk was REFUSED before any delivery (M2-K9): a selected
-    /// listener's incarnation is already scheduled for replacement.
-    /// Outputs and failures are empty — nothing ran.
-    pub refused: Option<KernelError>,
+    /// listener's incarnation already owes a transition it cannot serve
+    /// across. Outputs and failures are empty — nothing ran. Typed, so
+    /// the boundary names the target and the caller's next move rather
+    /// than handing a guest a sentence to parse (R3).
+    pub refused: Option<Unserved>,
 }
 
 /// Topic registry + dispatcher.
@@ -166,18 +168,18 @@ impl LocalTopics {
             .collect()
     }
 
-    /// The first selected listener whose incarnation is already scheduled
-    /// for replacement, in selection order (M2-K9). Answered by the
-    /// oracle from kernel-owned state alone; without one, never.
+    /// The first selected listener whose incarnation already owes a
+    /// transition, in selection order (M2-K9). Answered by the oracle from
+    /// kernel-owned state alone; without one, never.
     fn doomed(
         &self,
         selected: &[(Option<FiberId>, u64, Arc<dyn EventTarget>)],
-    ) -> Option<Restarting> {
+    ) -> Option<Unserved> {
         let oracle = self.restarts.get()?;
         selected
             .iter()
             .filter_map(|(fiber, _, _)| *fiber)
-            .find_map(|fiber| oracle.restarting(fiber))
+            .find_map(|fiber| oracle.unserved(fiber))
     }
 
     /// Dispatches one payload: listeners are selected kernel-side from a
@@ -223,12 +225,13 @@ impl LocalTopics {
                         mode,
                         target: target.entry.clone(),
                         incarnation: target.incarnation,
+                        owed: target.owed,
                     },
                     fiber,
                 );
             }
             return EmitReport {
-                refused: Some(refusal(topic, &target)),
+                refused: Some(target),
                 ..EmitReport::default()
             };
         }
