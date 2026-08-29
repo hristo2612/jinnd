@@ -16,6 +16,8 @@ use crate::peer::{HandleId, LedgerSink, Peer, PeerId};
 use crate::broker_state::{Handle, State};
 
 mod authority;
+#[cfg(all(test, not(feature = "loom")))]
+mod authority_tests;
 mod calls;
 
 /// The broker. One per kernel; every contract crossing of every transport

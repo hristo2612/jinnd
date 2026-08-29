@@ -55,7 +55,49 @@ pub enum GrantScope {
     Keys(Vec<String>),
 }
 
+fn extend_unique(held: &mut Vec<String>, more: Vec<String>) {
+    for item in more {
+        if !held.contains(&item) {
+            held.push(item);
+        }
+    }
+}
+
 impl GrantScope {
+    /// Composes a second grant of the same contract into this authority
+    /// (round-2 ruling 2, Law 1): commutative, so grant order never
+    /// changes what a peer holds. Root absorbs; list scopes (paths, keys,
+    /// entries, exec/env/outbound allowlists) union; two bind ranges
+    /// compose to their hull, the one single-range commutative form.
+    /// Scopes of different kinds cannot both be admitted for one contract
+    /// (the bundle declares one scope type), so a mismatch keeps the held
+    /// authority rather than inventing one.
+    pub(crate) fn union(&mut self, other: Self) {
+        match (&mut *self, other) {
+            (Self::Root, _) => {}
+            (_, Self::Root) => *self = Self::Root,
+            (Self::Paths(held), Self::Paths(more))
+            | (Self::Entries(held), Self::Entries(more))
+            | (Self::Keys(held), Self::Keys(more)) => extend_unique(held, more),
+            (Self::Process(held), Self::Process(more)) => {
+                extend_unique(&mut held.exec, more.exec);
+                match (&mut held.env, more.env) {
+                    (EnvPolicy::Allow(names), EnvPolicy::Allow(more)) => extend_unique(names, more),
+                    (env @ EnvPolicy::InheritNone, more) => *env = more,
+                    (EnvPolicy::Allow(_), EnvPolicy::InheritNone) => {}
+                }
+            }
+            (Self::Net(held), Self::Net(more)) => {
+                extend_unique(&mut held.outbound, more.outbound);
+                held.bind = match (held.bind, more.bind) {
+                    (Some((lo, hi)), Some((lo2, hi2))) => Some((lo.min(lo2), hi.max(hi2))),
+                    (held, more) => held.or(more),
+                };
+            }
+            _ => {}
+        }
+    }
+
     /// Whether an `entry-ids` scope admits patching `entry` (fail-closed:
     /// any other scope shape admits nothing).
     #[must_use]
