@@ -10,7 +10,14 @@ Scope type `net-policy`: `{ "bind": [low, high], "outbound": ["host", ...]
 }`, both optional. Admission is fail-closed — any other shape or type
 refuses the grant on the record; a bare grant holds the empty policy
 (nothing may be bound, nothing reached). `listen` refuses a non-loopback
-address and a port outside the granted range, each a ledgered grant refusal.
+address and a port outside the granted ranges, each a ledgered grant refusal.
+
+Several grants of this contract to one entry compose as the EXACT SET of
+their ranges, never the numeric hull: granted `[1000,1000]` and
+`[2000,2000]`, an entry binds those two ports and is refused port 1500,
+which no grant conferred. The set is normalized (sorted, overlapping and
+adjacent ranges coalesced), so grant order never changes what an entry
+holds.
 
 ## Lifecycle
 

@@ -27,8 +27,8 @@ interface files {
     -> result<_, fs-error>;
 
   // effect = revertible: inverse obligation = truncate to the prior length,
-  // or restore prior absence. The shape for guest-kept logs (append is
-  // O(1) per record; a rewrite-per-append pattern is retired).
+  // or restore prior absence. The shape for guest-kept logs; the commit
+  // is whole-document atomic (stage + fsync + rename, M2-K8 #22).
   append: func(path: string, bytes: list<u8>, idempotency-key: string)
     -> result<_, fs-error>;
 

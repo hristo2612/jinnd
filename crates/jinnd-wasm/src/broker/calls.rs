@@ -53,6 +53,17 @@ impl Broker {
         match looked_up {
             Err(error) => Box::pin(async move { Err(error) }),
             Ok((contract, pinned, provider, fiber)) => match provider {
+                // The operation class is checked before the crossing is
+                // appended (M2-K8): a refused operation never crosses.
+                _ if self.check_op(caller, &contract, &operation).is_err() => {
+                    let error = refusal(
+                        ErrorCode::EffectFailed,
+                        format!(
+                            "grant refused: {contract} {operation} is outside the granted operation class"
+                        ),
+                    );
+                    Box::pin(async move { Err(error) })
+                }
                 Some((_, generation)) if generation != pinned => {
                     self.ledger.append(
                         LedgerEventKind::StaleHandleRefused {
@@ -110,7 +121,10 @@ impl Broker {
         operation: &str,
         payload: Vec<u8>,
     ) -> KernelFuture<'static, Vec<u8>> {
-        if let Err(refused) = self.check_grant(caller, contract) {
+        if let Err(refused) = self
+            .check_grant(caller, contract)
+            .and_then(|()| self.check_op(caller, contract, operation))
+        {
             return Box::pin(async move { Err(refused) });
         }
         let (provider, fiber) = {

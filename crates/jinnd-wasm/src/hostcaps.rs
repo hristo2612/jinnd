@@ -15,6 +15,7 @@ use crate::hostfs::{FS_CONTRACT, effect_label};
 use crate::instance::{HostState, Seat};
 use crate::topics::EventTarget;
 
+mod keystore;
 mod procnet;
 
 pub use procnet::{NET_CONTRACT, PROCESS_CONTRACT, registration_label};
@@ -169,10 +170,20 @@ fn alarm(
     token: u64,
 ) -> Result<u64, bindings::types::KernelError> {
     state.admit("alarm").map_err(bindings::wire_error)?;
+    let operation = match spec {
+        AlarmSpec::At(_) => "alarm-at",
+        AlarmSpec::Every(_) => "alarm-every",
+    };
     state
         .seat
         .broker
         .check_grant(state.seat.peer, CLOCK_CONTRACT)
+        .and_then(|()| {
+            state
+                .seat
+                .broker
+                .check_op(state.seat.peer, CLOCK_CONTRACT, operation)
+        })
         .map_err(bindings::wire_error)?;
     // The floor is THIS entry's own grant scope (M2-K2, R9): grants cap
     // how fine a timer an entry may hold, never assembly-wide.
@@ -233,26 +244,5 @@ impl bindings::clock::Host for HostState {
         token: u64,
     ) -> Result<u64, bindings::types::KernelError> {
         alarm(self, AlarmSpec::Every(period_ms), token)
-    }
-}
-
-impl bindings::keystore::Host for HostState {
-    async fn get(&mut self, key: String) -> Result<Vec<u8>, bindings::types::KernelError> {
-        dispatch(&self.seat, "jinn:keystore", "get", key.into_bytes()).await
-    }
-
-    async fn put(
-        &mut self,
-        key: String,
-        value: Vec<u8>,
-    ) -> Result<(), bindings::types::KernelError> {
-        dispatch(
-            &self.seat,
-            "jinn:keystore",
-            "put",
-            prefixed(&[key.as_bytes()], &value),
-        )
-        .await
-        .map(|_| ())
     }
 }

@@ -13,7 +13,11 @@ type   = "net-policy"
 # non-loopback address refuses on the record whatever the range. FAIL-CLOSED
 # (M2-K2 law): any other scope shape or type REFUSES the grant with a
 # ledgered per-entry error. A grant with no scope holds the EMPTY policy —
-# no bind range, no outbound host: default deny.
+# no bind range, no outbound host: default deny. SEVERAL grants of this
+# contract to one entry compose as the exact SET of their bind ranges
+# (normalized: sorted, overlapping/adjacent coalesced), never their hull —
+# a hull would confer a port between two disjoint grants that neither one
+# named (Law 1). listen admits a port iff SOME held range contains it.
 # Profile syntax (04 §Format): `{ contract = "jinn:net", scope = { bind =
 # [7800, 7899] } }`.
 subset = "bind-range-containment-and-outbound-host-subset"

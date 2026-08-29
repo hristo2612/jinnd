@@ -20,10 +20,49 @@ pub(crate) struct PeerRecord {
     /// (M2-K6): root, path-prefix subtrees, or a process/net policy.
     /// Root is the explicit maximum, never a default.
     pub(crate) grants: HashMap<String, GrantScope>,
+    /// Per granted contract, the operation class the grant is attenuated
+    /// to (M2-K8, harness #24; round-2 ruling 2): absent means every
+    /// declared operation; several grants of one contract compose by
+    /// union in EITHER order, so once any grant is unattenuated the class
+    /// is [`OpsClass::All`] for good.
+    pub(crate) ops: HashMap<String, OpsClass>,
     /// The peer's own delivery face (M2-K7): where a host provider delivers
     /// a wake for a registration this peer holds. A Mode-1 commit
     /// re-attaches it to the successor instance (R8).
     pub(crate) target: Option<Arc<dyn EventTarget>>,
+}
+
+/// The operation class one peer holds a contract under (M2-K8): the union
+/// of every grant's declared class. `All` absorbs — attenuation narrows
+/// within one grant, never across grants (Law 1: order-independent).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum OpsClass {
+    All,
+    Only(Vec<String>),
+}
+
+impl OpsClass {
+    /// Widens by the other class.
+    pub(crate) fn union(&mut self, other: Self) {
+        match (&mut *self, other) {
+            (Self::All, _) => {}
+            (_, Self::All) => *self = Self::All,
+            (Self::Only(held), Self::Only(more)) => {
+                for op in more {
+                    if !held.contains(&op) {
+                        held.push(op);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn admits(&self, operation: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(ops) => ops.iter().any(|op| op == operation),
+        }
+    }
 }
 
 /// One live provision. `generation` is the identity of THIS provision of the

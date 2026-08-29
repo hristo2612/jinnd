@@ -103,16 +103,17 @@ impl HostNet {
                 format!("net listen refused: {addr:?} is not loopback (v0.1 binds loopback only)"),
             ));
         }
-        match scope.bind {
-            Some((low, high)) if (low..=high).contains(&parsed.port()) => Ok(parsed),
-            _ => Err(self.core.refuse(
+        if scope.admits_port(parsed.port()) {
+            Ok(parsed)
+        } else {
+            Err(self.core.refuse(
                 caller,
                 RefusalReason::ScopeMismatch,
                 format!(
-                    "net listen refused: port {} is outside the granted range",
+                    "net listen refused: port {} is outside the granted ranges",
                     parsed.port()
                 ),
-            )),
+            ))
         }
     }
 

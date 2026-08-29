@@ -29,11 +29,15 @@ pub(crate) struct HostLedger {
 }
 
 /// The bundle's sensitivity class of one recorded kind: `personal` where
-/// the payload may name paths, commands, or an operator's text; `public`
-/// for kernel bookkeeping.
+/// the payload may name paths, commands, key names, or an operator's
+/// text; `public` for kernel bookkeeping. The `secret` class never
+/// reaches storage (02 §Redaction): a `KeystoreAccessed` record is the
+/// permitted trace of a secret crossing — its name and digest — and is
+/// classed `personal` for export like any other name-bearing record.
 fn sensitivity(kind: &LedgerEventKind) -> &'static str {
     match kind {
         LedgerEventKind::ErrorRecorded { .. }
+        | LedgerEventKind::KeystoreAccessed { .. }
         | LedgerEventKind::ProcessSpawned { .. }
         | LedgerEventKind::AmendmentAccepted { .. }
         | LedgerEventKind::AmendmentRefused { .. }

@@ -12,7 +12,9 @@ use jinnd_context::ContextTree;
 use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::{Document, FileStore, Loader};
 use jinnd_registry::Registry;
-use jinnd_wasm::{HostClock, HostFs, HostNet, HostProcess, LaneCore, LedgerSink};
+use jinnd_wasm::{
+    HostClock, HostFs, HostKeystore, HostNet, HostProcess, LaneCore, LedgerSink, MasterKeySource,
+};
 
 pub use crate::paths::DaemonPaths;
 use crate::support::{SharedFibers, Sink, error, lock};
@@ -21,6 +23,7 @@ mod introspect;
 mod ledger_cap;
 mod observe;
 mod profile_cap;
+mod profile_read;
 mod wire;
 
 /// What `jinn:introspect.readiness` answers (M2-K7, harness #19/#12).
@@ -42,6 +45,7 @@ pub struct Daemon {
     pub(crate) loader: Arc<Loader>,
     pub(crate) lane: Arc<LaneCore>,
     hostfs: Arc<HostFs>,
+    pub(crate) keystore: Arc<HostKeystore>,
     pub(crate) fibers: SharedFibers,
     /// Per package, the pin last applied FROM THE PROFILE (see
     /// `packages.rs`).
@@ -57,8 +61,23 @@ impl Daemon {
     ///
     /// # Errors
     ///
-    /// Ledger storage refusals and wasm engine construction failures.
+    /// Ledger storage refusals, wasm engine construction failures, and a
+    /// configured `jinn:keystore` master-key source that cannot be read
+    /// (fail-closed: the daemon refuses to start rather than fall through
+    /// to a different key).
     pub fn open(paths: DaemonPaths) -> Result<Self, KernelError> {
+        Self::open_with(paths, MasterKeySource::from_env()?)
+    }
+
+    /// [`Daemon::open`] with an explicit `jinn:keystore` master-key source
+    /// (M2-K8 round-2 ruling 1): the key is never under the data root, so
+    /// the daemon is told where it comes from.
+    ///
+    /// # Errors
+    ///
+    /// As [`Daemon::open`]; also an existing sealed store the source
+    /// cannot open (fail-closed).
+    pub fn open_with(paths: DaemonPaths, master: MasterKeySource) -> Result<Self, KernelError> {
         std::fs::create_dir_all(&paths.data)
             .map_err(|refused| error(ErrorCode::InvalidProfile, refused.to_string()))?;
         let ledger = Ledger::open(&paths.ledger).map_err(storage)?;
@@ -80,11 +99,23 @@ impl Daemon {
         // same choke point; their registrations release on suspend.
         HostProcess::new(Arc::clone(&lane.sink)).register(&lane.broker)?;
         HostNet::new(Arc::clone(&lane.sink)).register(&lane.broker)?;
+        // The jinn:keystore provider (M2-K8, finding 5's remainder): the
+        // sealed store sits beside the data root, out of every guest's
+        // reach; its retained journal spans processes like the fs one.
+        let keystore = Arc::new(HostKeystore::open(
+            paths.keystore(),
+            master,
+            Arc::clone(&lane.sink),
+        )?);
+        keystore.register(&lane.broker)?;
         // Every entry's retained journal crosses the process boundary
         // through the retention store (M2-K4 ruling 3): the lane inherits
         // it here, so a successor incarnation's dispose withdraws the
         // whole trail and a removal-while-down withdraws at boot.
         for (entry, records) in hostfs.journals() {
+            lane.inherit(&EntryId(entry), records);
+        }
+        for (entry, records) in keystore.journals() {
             lane.inherit(&EntryId(entry), records);
         }
         let tree = ContextTree::new();
@@ -115,6 +146,7 @@ impl Daemon {
             loader,
             lane,
             hostfs,
+            keystore,
             fibers,
             applied_pins: Mutex::new(HashMap::new()),
             readiness,

@@ -10,9 +10,8 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use jinnd_api::{ErrorCode, KernelError, LedgerEventKind};
-use tokio::io::AsyncWriteExt;
 
-use super::retention::{Header, Prior, Record};
+use super::retention::{Header, Prior, Record, commit_atomic};
 use super::wire::{FileMeta, encode_metas, path_payload, split_keyed};
 use super::{HostFs, blocking, effect_label, scope};
 use crate::broker_state::refusal;
@@ -196,11 +195,13 @@ impl Effect<'_> {
             Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
             Err(refused) => return Err(io_refusal("write", self.path, &refused)),
         };
+        // Stage + fsync + rename (M2-K8, harness #22): a concurrent reader
+        // sees the prior document or this one, never a torn prefix.
         let mutate = async {
             if let Some(parent) = file.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            tokio::fs::write(file, &data).await
+            commit_atomic(file, &data).await
         };
         self.commit(prior, mutate).await
     }
@@ -211,17 +212,20 @@ impl Effect<'_> {
             Err(refused) if refused.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
             Err(refused) => return Err(io_refusal("append", self.path, &refused)),
         };
+        // The appended document commits whole by stage + fsync + rename
+        // (M2-K8, harness #22): O(file) per record in v0.1, honest in the
+        // bundle, never a reader's torn tail.
         let mutate = async {
             if let Some(parent) = file.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            let mut handle = tokio::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(file)
-                .await?;
-            handle.write_all(&data).await?;
-            handle.flush().await
+            let mut whole = match tokio::fs::read(file).await {
+                Ok(bytes) => bytes,
+                Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(refused) => return Err(refused),
+            };
+            whole.extend_from_slice(&data);
+            commit_atomic(file, &whole).await
         };
         self.commit(prior, mutate).await
     }

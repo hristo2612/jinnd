@@ -12,6 +12,16 @@ type   = "path-prefix"
 # subset(a, b) := normalize(a) starts-with normalize(b), after symlink and
 # dot-segment resolution. A grant with no scope is the root scope.
 subset = "path-prefix-containment"
+# Operation-class attenuation (M2-K8, harness #24; additive, R12): a grant
+# entry may carry `ops = [<operation>...]` beside its scope — a non-empty
+# subset of the operations declared below — and the kernel refuses any
+# other operation at its choke point as a ledgered scope refusal. Absent
+# means every operation. subset(a, b) := a.ops ⊆ b.ops. FAIL-CLOSED: an
+# unknown name, an empty list, or a non-list refuses the grant on the
+# record. Several grants of one contract on one entry widen by union, as
+# path scopes do. Profile syntax: `{ contract = "jinn:fs", scope = "/doc",
+# ops = ["read", "list", "meta"] }` is a read-only viewer.
+ops = "declared-operation-subset"
 
 [operations.list]
 effect      = "read"
@@ -31,6 +41,11 @@ sensitivity = "personal"
 # Inverse obligation (03): restore the file's prior content, or prior absence.
 # Witness: post-inverse state observationally equal to pre-state under [equality].
 inverse     = "restore-prior-content-or-absence"
+# Commit shape (M2-K8, harness #22): staged beside the target as
+# `<name>.jinnd-stage`, fsynced, renamed into place — a concurrent reader
+# observes the prior document or the new one, never a prefix. The replaced
+# inode is new (hard links to the prior file are not followed).
+commit      = "stage-fsync-rename"
 
 [operations.append]
 effect      = "revertible"
@@ -38,6 +53,10 @@ sensitivity = "personal"
 # Inverse obligation (03): truncate the file to its prior length, or restore
 # prior absence. Witness: the file's length equals the recorded prior length.
 inverse     = "truncate-to-prior-length-or-absence"
+# Commit shape (M2-K8): the appended document commits whole by stage +
+# fsync + rename — atomic for readers, O(file) per record in v0.1 (the
+# 0.2.0 "O(1) per record" note is retired; a torn tail is never observed).
+commit      = "stage-fsync-rename"
 
 [operations.remove]
 effect      = "revertible"   # 0.2.0: was irreversible in 0.1.0 (no trash)

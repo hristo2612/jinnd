@@ -1,4 +1,4 @@
-/// jinn:plugin@0.4.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.5.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
@@ -13,6 +13,9 @@
 /// over 0.3.0 (`run` and `request` unchanged in shape) and bound to the
 /// contract bundles `contracts/jinn-process` and `contracts/jinn-net`,
 /// whose `process-error` / `net-error` cross the guest boundary verbatim.
+/// 0.5.0 (M2-K8): the `keystore` import is finalized to its bundle
+/// (`contracts/jinn-keystore`, 0.1.0) — `delete` and `list` join `get`
+/// and `put`, and the bundle's `keystore-error` crosses verbatim.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -25,7 +28,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.4.0;
+package jinn:plugin@0.5.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -399,19 +402,45 @@ interface clock {
   alarm-every: func(period-ms: u64, token: u64) -> result<effect-id, kernel-error>;
 }
 
-/// Base host-provider contract `jinn:keystore` (R7). Same grant discipline
-/// and broker choke point as `fs`. Sensitivity class: secret
-/// (constitution 02 §Redaction — values never land in the ledger).
+/// Base host-provider contract `jinn:keystore` (R7; M2-K8, contract
+/// bundle `contracts/jinn-keystore` 0.1.0). Same grant discipline and
+/// broker choke point as `fs`. A grant carries a `key-prefix` scope — the
+/// key-name prefixes it admits, enforced per call; a bare grant admits NO
+/// key (default deny) — and may be attenuated to `ops: [get, list]`.
+/// Sensitivity class SECRET (constitution 02 §Redaction): a value never
+/// lands in the ledger, an error, or plaintext on disk; the ledger records
+/// the crossing as `KeystoreAccessed { operation, key, digest }`.
+/// `put` and `delete` are revertible WORLD MUTATIONS (entry-scoped, as
+/// `fs` writes): the inverse — prior value or absence, sealed at rest — is
+/// retained before the mutation commits, the answered effect joins the
+/// calling seat's journal, and dispose withdraws it LIFO.
 interface keystore {
-  use types.{kernel-error};
+  /// The bundle's error, verbatim: `not-found` is the TYPED absence answer
+  /// of `get` and `delete`; `denied` a ledgered grant, scope, or
+  /// operation-class refusal; `invalid` a malformed key; `failed` every
+  /// other contained failure. No variant carries a value.
+  variant keystore-error { not-found, denied(string), failed(string), invalid(string) }
 
-  /// Reads one secret. Broker wire: operation `get`, payload = key bytes.
-  get: func(key: string) -> result<list<u8>, kernel-error>;
+  /// Reads one secret. Effect class: read.
+  /// Broker wire: operation `get`, payload = the key's UTF-8 bytes.
+  get: func(key: string) -> result<list<u8>, keystore-error>;
 
-  /// Stores one secret. Effect class: revertible.
-  /// Broker wire: operation `put`, payload = u32-LE length + key bytes,
-  /// then the value.
-  put: func(key: string, value: list<u8>) -> result<_, kernel-error>;
+  /// Stores one secret. Effect class: revertible — inverse = restore the
+  /// prior value or absence. Broker wire: operation `put`, payload =
+  /// u32-LE key length + key bytes, then the value; answer = the 8-byte
+  /// LE effect id.
+  put: func(key: string, value: list<u8>) -> result<_, keystore-error>;
+
+  /// Removes one secret. Effect class: revertible — inverse = restore the
+  /// prior value. A missing key answers `not-found` and registers no
+  /// effect. Broker wire: operation `delete`, payload = the key's UTF-8
+  /// bytes; answer as `put`.
+  delete: func(key: string) -> result<_, keystore-error>;
+
+  /// Lists the key NAMES under the caller's granted prefixes, sorted —
+  /// never a value. Effect class: read. Broker wire: operation `list`,
+  /// empty payload; answer = u32-LE-length-prefixed names back to back.
+  %list: func() -> result<list<string>, keystore-error>;
 }
 
 /// The lifecycle surface every Tier A plugin exports. A plugin body runs once

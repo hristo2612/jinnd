@@ -317,6 +317,21 @@ async fn ledger_reads_page_with_receipts_and_exclude_the_readers_own() {
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }
 
+/// The ledger once `fiber`'s scheduled restart has landed (M2-K8 #26):
+/// polls the transition sync until a `ConfigChanged` transition shows.
+async fn restarted_records(daemon: &Daemon, fiber: jinnd_api::FiberId) -> Vec<LedgerRecord> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        daemon.sync_transitions();
+        let records = events(daemon).await;
+        if records.iter().any(|record| matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.fiber == fiber && transition.cause == TransitionCause::ConfigChanged)) {
+            return records;
+        }
+        assert!(Instant::now() < deadline, "the scheduled restart lands");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 fn worker_config(paths: &DaemonPaths) -> serde_json::Value {
     let document: serde_json::Value =
         json_file(&std::fs::read(&paths.profile).unwrap_or_else(|error| panic!("{error}")));
@@ -359,20 +374,17 @@ async fn a_profile_patch_is_operator_intent_that_survives_the_editors_dispose() 
         .entry_fiber("editor")
         .unwrap_or_else(|| panic!("editor live"));
     let answer = wait_for_file(&paths.data.join("patch.out")).await;
-    assert_eq!(
-        answer,
-        vec![0],
-        "applied: {}",
-        String::from_utf8_lossy(&answer)
-    );
+    // 0.2.0 (M2-K8 #26): `accepted` + the ProfilePatched sequence; the
+    // restart is scheduled, its transitions land after that sequence.
+    assert_eq!(answer.first(), Some(&2), "accepted: {answer:?}");
+    assert_eq!(answer.len(), 9);
     assert_eq!(
         worker_config(&paths)["data"],
         "noop",
         "the document carries the patch"
     );
     assert_eq!(daemon.entry_fiber("worker"), Some(worker), "same fiber");
-    daemon.sync_transitions();
-    let records = events(&daemon).await;
+    let records = restarted_records(&daemon, worker).await;
     let restarted = |fiber| {
         count(
             &records,

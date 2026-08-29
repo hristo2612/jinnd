@@ -35,7 +35,10 @@ impl SeatState {
         ledger: Option<(&dyn LedgerSink, FiberId)>,
     ) -> Result<(), KernelError> {
         let mut first = None;
-        let mut withdrawn_hosts = Vec::new();
+        // Keyed by (contract, effect): ids are per PROVIDER (M2-K8 — the
+        // fs and keystore stores each mint from their own epoch), so a
+        // bare id is not an identity across contracts.
+        let mut withdrawn_hosts: Vec<(&str, u64)> = Vec::new();
         for registration in self.registrations.iter().rev() {
             match registration {
                 Registration::Effect { label, token } => {
@@ -87,10 +90,10 @@ impl SeatState {
                 Registration::Host(record) => {
                     // A keyed replay journaled the same id twice (03 §Act):
                     // it withdraws exactly once.
-                    if withdrawn_hosts.contains(&record.effect) {
+                    if withdrawn_hosts.contains(&(record.contract.as_str(), record.effect)) {
                         continue;
                     }
-                    withdrawn_hosts.push(record.effect);
+                    withdrawn_hosts.push((record.contract.as_str(), record.effect));
                     let outcome = broker
                         .withdraw_effect(&record.contract, record.effect)
                         .await;
@@ -142,11 +145,14 @@ impl SeatState {
         ledger: Option<(&dyn LedgerSink, FiberId)>,
     ) -> Vec<HostRecord> {
         // The world effects, in registration order, once each (a keyed
-        // replay journaled its id again).
+        // replay journaled its id again) — identity is (contract, effect):
+        // ids are per provider (round-2 ruling 3; R5).
         let mut retained: Vec<HostRecord> = Vec::new();
         for registration in &self.registrations {
             if let Registration::Host(record) = registration
-                && !retained.iter().any(|held| held.effect == record.effect)
+                && !retained
+                    .iter()
+                    .any(|held| held.contract == record.contract && held.effect == record.effect)
             {
                 retained.push(record.clone());
             }

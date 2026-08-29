@@ -24,7 +24,7 @@ wit_bindgen::generate!({
 });
 
 use exports::jinn::plugin::lifecycle::{Guest, GuestFault};
-use jinn::plugin::{clock, effects, fs, net, process, services};
+use jinn::plugin::{clock, effects, fs, keystore, net, process, services};
 
 /// The counter contract this fixture provides.
 const COUNTER_CONTRACT: &str = "jinn:test/counter";
@@ -64,6 +64,69 @@ fn process_fault(error: process::ProcessError) -> GuestFault {
 
 fn net_fault(error: net::NetError) -> GuestFault {
     GuestFault::Failed(format!("{error:?}"))
+}
+
+fn keystore_fault(error: keystore::KeystoreError) -> GuestFault {
+    GuestFault::Failed(format!("{error:?}"))
+}
+
+/// The secret the keystore modes store: the daemon test greps the ledger
+/// file, the sealed store, and the inverses for these bytes (zero hits).
+const SECRET: &[u8] = b"sk-live-0xDEADBEEF-fixture-secret";
+
+/// The M2-K8 keystore modes: `keystore` drives the whole bundle under an
+/// `engines/` prefix grant and leaves one key in place for the dispose
+/// probe; `keystore-readonly` asserts the `ops: [get, list]` attenuation.
+fn keystore_mode(mode: &str) -> Result<(), GuestFault> {
+    match mode {
+        "keystore" => {
+            keystore::put("engines/openai", SECRET).map_err(keystore_fault)?;
+            if keystore::get("engines/openai").map_err(keystore_fault)? != SECRET {
+                return Err(GuestFault::Failed("the value did not round-trip".into()));
+            }
+            let names = keystore::list().map_err(keystore_fault)?;
+            match keystore::put("smtp/password", b"beside-the-prefix") {
+                Err(keystore::KeystoreError::Denied(_)) => {}
+                other => {
+                    return Err(GuestFault::Failed(format!(
+                        "a key beside the granted prefix was not denied: {other:?}"
+                    )))
+                }
+            }
+            keystore::put("engines/kept", b"kept-0xCAFEBABE-value").map_err(keystore_fault)?;
+            keystore::delete("engines/openai").map_err(keystore_fault)?;
+            match keystore::get("engines/openai") {
+                Err(keystore::KeystoreError::NotFound) => {}
+                other => {
+                    return Err(GuestFault::Failed(format!(
+                        "absence was not the typed not-found: {other:?}"
+                    )))
+                }
+            }
+            fs::write("/keystore.out", names.join(",").as_bytes(), "").map_err(fs_fault)
+        }
+        "keystore-readonly" => {
+            match keystore::get("engines/none") {
+                Err(keystore::KeystoreError::NotFound) => {}
+                other => return Err(GuestFault::Failed(format!("get: {other:?}"))),
+            }
+            let denied = matches!(
+                keystore::put("engines/x", b"v"),
+                Err(keystore::KeystoreError::Denied(_))
+            ) && matches!(
+                keystore::delete("engines/x"),
+                Err(keystore::KeystoreError::Denied(_))
+            );
+            if denied {
+                Ok(())
+            } else {
+                Err(GuestFault::Failed(
+                    "a mutation under a read-only keystore grant was not denied".into(),
+                ))
+            }
+        }
+        other => Err(GuestFault::Failed(format!("unknown keystore mode {other}"))),
+    }
 }
 
 /// Spins until `condition` answers `Some`, or the clock says `budget_ms`
@@ -294,6 +357,77 @@ fn operator_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
     }
 }
 
+/// The settings contract the two-hop modes provide and consume (M2-K8 #26).
+const SETTINGS_CONTRACT: &str = "jinn:test/settings";
+
+/// The M2-K8 profile modes. `settings-provider` provides the settings
+/// contract; its `patch` handler patches the OWNER entry through
+/// `jinn:profile` — the two-hop shape. `settings-owner` resolves the
+/// provider from `activate` (polling until it is live) and logs the
+/// answer. `settings-trigger:<owner>` calls the provider's `patch` from a
+/// tick. `profile-read:<id>` reads `entry` and `document` under a
+/// read-only grant and asserts a patch is refused.
+fn profile_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
+    match mode {
+        "settings-provider" => {
+            services::provide(SETTINGS_CONTRACT).map_err(fault)?;
+            Ok(())
+        }
+        "settings-owner" => {
+            let answer = poll(4000, || {
+                let Ok(handle) = services::resolve(SETTINGS_CONTRACT) else {
+                    return Ok(None);
+                };
+                Ok(services::call(handle, "get", b"").ok())
+            })?;
+            let mut line = answer;
+            line.push(b'\n');
+            fs::append("/owner.log", &line, "").map_err(fs_fault)
+        }
+        "settings-trigger" => {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        "profile-read" => {
+            let entry = operator_call("jinn:profile", "entry", &patch_payload(arg, ""))?;
+            fs::write("/profile-entry.json", &entry, "").map_err(fs_fault)?;
+            let document = operator_call("jinn:profile", "document", &[])?;
+            fs::write("/profile-document.json", &document, "").map_err(fs_fault)?;
+            match operator_call(
+                "jinn:profile",
+                "patch-entry",
+                &patch_payload(arg, r#"{"data":"noop"}"#),
+            ) {
+                Err(_) => fs::write("/profile-read-denied", b"denied", "").map_err(fs_fault),
+                Ok(answer) => Err(GuestFault::Failed(format!(
+                    "a patch under a read-only profile grant was not refused: {answer:?}"
+                ))),
+            }
+        }
+        other => Err(GuestFault::Failed(format!("unknown profile mode {other}"))),
+    }
+}
+
+/// One trigger tick (M2-K8 #26): asks the provider to patch the owner;
+/// a loader conflict (the boot reconcile still engaged) retries next
+/// tick; the final answer is recorded once.
+fn trigger_tick(owner: &str) -> Result<(), GuestFault> {
+    if fs::meta("/trigger.out").is_ok() {
+        return Ok(());
+    }
+    let Ok(handle) = services::resolve(SETTINGS_CONTRACT) else {
+        return Ok(());
+    };
+    let Ok(answer) = services::call(handle, "patch", owner.as_bytes()) else {
+        return Ok(());
+    };
+    let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
+    if answer.first() == Some(&1) && (reason.contains("retry") || reason.contains("in flight")) {
+        return Ok(());
+    }
+    fs::write("/trigger.out", &answer, "").map_err(fs_fault)
+}
+
 /// One introspection from the tick: stashes the composition and readiness
 /// once `boot-reconciled` is true (every entry settled), else waits.
 fn introspect_tick() -> Result<(), GuestFault> {
@@ -343,6 +477,12 @@ impl Guest for Fixture {
         }
         if mode == "introspect" || mode == "ledger-read" || mode.starts_with("profile-patch") {
             return operator_mode(mode, arg);
+        }
+        if mode.starts_with("keystore") {
+            return keystore_mode(mode);
+        }
+        if mode.starts_with("settings-") || mode == "profile-read" {
+            return profile_mode(mode, arg);
         }
         match mode {
             "trap" => panic!("fixture trap mode"),
@@ -432,6 +572,23 @@ impl Guest for Fixture {
                 } else {
                     Err(GuestFault::Failed(
                         "an ungranted fs bundle op was not refused".into(),
+                    ))
+                }
+            }
+            // A read-only fs grant (M2-K8 #24): reads answer, every
+            // mutation is the typed denial.
+            "fs-readonly" => {
+                if let Err(fs::FsError::Denied) = fs::read("/doc.txt") {
+                    return Err(GuestFault::Failed("a read under a read-only grant was denied".into()));
+                }
+                let denied = matches!(fs::write("/doc.txt", b"x", ""), Err(fs::FsError::Denied))
+                    && matches!(fs::append("/doc.txt", b"x", ""), Err(fs::FsError::Denied))
+                    && matches!(fs::remove("/doc.txt", ""), Err(fs::FsError::Denied));
+                if denied {
+                    Ok(())
+                } else {
+                    Err(GuestFault::Failed(
+                        "a mutation under a read-only fs grant was not denied".into(),
                     ))
                 }
             }
@@ -560,6 +717,9 @@ impl Guest for Fixture {
                 if patch_mode.starts_with("profile-patch") {
                     patch_tick(patch_mode, id)?;
                 }
+                if patch_mode == "settings-trigger" {
+                    trigger_tick(id)?;
+                }
             }
             if mode == "introspect" {
                 introspect_tick()?;
@@ -597,7 +757,19 @@ impl Guest for Fixture {
                     + u64::from_le_bytes(delta);
                 Ok(value.to_le_bytes().to_vec())
             }
+            "get" if *MODE.lock().unwrap() == "settings-provider" => Ok(b"v1".to_vec()),
             "get" => Ok(COUNTER.load(Ordering::SeqCst).to_le_bytes().to_vec()),
+            // The two-hop shape (M2-K8 #26): from inside this handler the
+            // provider patches its OWNER, whose restarted `activate` will
+            // call `get` on this very instance.
+            "patch" => {
+                let owner = String::from_utf8_lossy(&payload).into_owned();
+                operator_call(
+                    "jinn:profile",
+                    "patch-entry",
+                    &patch_payload(&owner, r#"{"data":"settings-owner:v2"}"#),
+                )
+            }
             "stash" => Ok(STASH.lock().unwrap().clone()),
             _ => Err(GuestFault::Failed(format!("unknown operation {operation}"))),
         }

@@ -55,6 +55,48 @@ impl Daemon {
         Ok(resolution)
     }
 
+    /// Keyed exactly-once revert of one recorded keystore effect (M2-K8;
+    /// Law 3): the inverse restores the prior value or absence from the
+    /// sealed spill; the witness reads the key back.
+    ///
+    /// # Errors
+    ///
+    /// As [`Daemon::revert`].
+    pub async fn revert_keystore(
+        &self,
+        effect: EffectId,
+        key: &str,
+    ) -> Result<RevertResolution, KernelError> {
+        let (witness, inverse) = self.keystore.undo_action(effect).ok_or_else(|| {
+            error(
+                ErrorCode::EffectFailed,
+                format!("no revertible keystore effect {}", effect.0),
+            )
+        })?;
+        let resolution = self
+            .revert
+            .revert(
+                effect,
+                RevertKey(key.to_owned()),
+                witness,
+                inverse,
+                None,
+                None,
+            )
+            .await?;
+        if resolution == RevertResolution::Reverted {
+            self.keystore.reclaim(effect).await?;
+        }
+        Ok(resolution)
+    }
+
+    /// Every live (unconsumed) keystore effect — put, delete — in id
+    /// order: (id, key name).
+    #[must_use]
+    pub fn keystore_effects(&self) -> Vec<(EffectId, String)> {
+        self.keystore.effects()
+    }
+
     /// Every live (unconsumed) fs effect — write, append, remove — in id
     /// order.
     #[must_use]

@@ -23,7 +23,7 @@ use jinnd_loader::host::Rebind;
 use crate::alarms::clock_floor;
 use crate::broker_state::refusal;
 pub use crate::grants::{Grant, SeatSpec};
-use crate::grants::{admission, authority};
+use crate::grants::{admission, attenuate, authority};
 use crate::handle::Registration;
 use crate::host::LoadedComponent;
 use crate::instance::Seat;
@@ -123,6 +123,7 @@ impl FiberBody for WasmBody {
             for grant in &admitted {
                 core.broker
                     .grant_with(peer, &grant.contract, authority(grant));
+                attenuate(&core.broker, peer, grant);
             }
             // The entry's granted `jinn:clock` resolution floor (M2-K2,
             // R9): grants scope alarm resolution per entry — read off the

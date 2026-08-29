@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind, RefusalReason};
 
-use crate::broker_state::refusal;
+use crate::broker_state::{OpsClass, refusal};
 use crate::grants::GrantScope;
 use crate::peer::{LedgerSink, PeerId};
 use crate::topics::EventTarget;
@@ -80,18 +80,80 @@ impl Broker {
     }
 
     /// Grants `peer` the named contract under one ADMITTED typed
-    /// authority (M2-K6): path subtrees accumulate, root stays root, a
-    /// process/net policy is the grant's whole authority.
+    /// authority (M2-K6; round-2 ruling 2): grants of one contract compose
+    /// by [`GrantScope::union`] in either order — root stays root, list
+    /// scopes accumulate.
     pub fn grant_with(&self, peer: PeerId, contract: &str, scope: GrantScope) {
         if let Some(record) = self.lock().peers.get_mut(&peer) {
-            match (record.grants.get_mut(contract), scope) {
-                (Some(GrantScope::Root), _) => {}
-                (Some(GrantScope::Paths(held)), GrantScope::Paths(more)) => held.extend(more),
-                (_, scope) => {
-                    record.grants.insert(contract.to_owned(), scope);
-                }
-            }
+            record
+                .grants
+                .entry(contract.to_owned())
+                .and_modify(|held| held.union(scope.clone()))
+                .or_insert(scope);
         }
+    }
+
+    /// Attenuates `peer`'s grant of `contract` to the operation class `ops`
+    /// (M2-K8, harness #24). Classes of one contract compose by union in
+    /// either order; a class already every operation stays so.
+    pub fn grant_ops(&self, peer: PeerId, contract: &str, ops: Vec<String>) {
+        self.widen_ops(peer, contract, OpsClass::Only(ops));
+    }
+
+    /// Widens `peer`'s grant of `contract` to every operation: an
+    /// unattenuated grant of the contract, before or after an attenuated
+    /// one, makes the class every operation (absorbing, never undone).
+    pub(crate) fn lift_ops(&self, peer: PeerId, contract: &str) {
+        self.widen_ops(peer, contract, OpsClass::All);
+    }
+
+    fn widen_ops(&self, peer: PeerId, contract: &str, class: OpsClass) {
+        if let Some(record) = self.lock().peers.get_mut(&peer) {
+            record
+                .ops
+                .entry(contract.to_owned())
+                .and_modify(|held| held.union(class.clone()))
+                .or_insert(class);
+        }
+    }
+
+    /// The operation-class check every dispatch lane runs after the grant
+    /// check (M2-K8): an operation outside the caller's attenuation is a
+    /// ledgered scope refusal naming it, never a default-accept.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::EffectFailed`] with the refused operation named.
+    pub fn check_op(
+        &self,
+        peer: PeerId,
+        contract: &str,
+        operation: &str,
+    ) -> Result<(), KernelError> {
+        let (allowed, fiber) = {
+            let state = self.lock();
+            let allowed = state.peers.get(&peer).is_none_or(|record| {
+                record
+                    .ops
+                    .get(contract)
+                    .is_none_or(|class| class.admits(operation))
+            });
+            (allowed, state.fiber_of(peer))
+        };
+        if allowed {
+            return Ok(());
+        }
+        let message =
+            format!("grant refused: {contract} {operation} is outside the granted operation class");
+        self.ledger.append(
+            LedgerEventKind::GrantRefused {
+                contract: contract.to_owned(),
+                reason: RefusalReason::ScopeMismatch,
+                detail: Some(message.clone()),
+            },
+            fiber,
+        );
+        Err(refusal(ErrorCode::EffectFailed, message))
     }
 
     /// The path-prefix scopes `peer` holds `contract` under — `None` when

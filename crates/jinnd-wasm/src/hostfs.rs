@@ -34,7 +34,7 @@ use crate::peer::{LedgerSink, Peer, PeerId};
 
 mod inverses;
 mod ops;
-mod retention;
+pub(crate) mod retention;
 pub(crate) mod scope;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;

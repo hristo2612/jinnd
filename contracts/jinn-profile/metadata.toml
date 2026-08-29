@@ -1,8 +1,9 @@
-# Contract-bundle metadata for jinn:profile@0.1.0 (M2-K7)
+# Contract-bundle metadata for jinn:profile@0.2.0 (M2-K7; 0.2.0 M2-K8:
+# non-blocking `patch-entry`, `entry`/`document` reads — additive, R12)
 
 [contract]
 name    = "jinn:profile"
-version = "0.1.0"
+version = "0.2.0"
 
 [scope]
 type   = "entry-ids"
@@ -14,13 +15,28 @@ type   = "entry-ids"
 # Profile syntax (04 §Format): `{ contract = "jinn:profile", scope =
 # ["scheduler", "status"] }` or `scope = ["*"]`.
 subset = "entry-id-set-containment"
+# Operation-class attenuation (M2-K8): `ops = ["entry", "document"]` is a
+# read-only viewer; see contracts/README.md.
+ops    = "declared-operation-subset"
+
+[operations.entry]
+effect      = "read"
+sensitivity = "personal"
+
+[operations.document]
+effect      = "read"
+sensitivity = "personal"
 
 [operations.patch-entry]
 # Operator intent, not a fiber effect: applied by the loader, recorded as
 # `ProfilePatched { entry, by }`, no inverse registered in any journal.
 # History is the ledger's; a prior document is reconstructible from it,
-# never rolled back by an editor's teardown.
+# never rolled back by an editor's teardown. DEFERRED (0.2.0, #26): the
+# answer `accepted(seq)` lands once the document committed and the restart
+# is scheduled; the call never awaits the patched fiber, so a provider may
+# patch its own consumer from inside a handler (the two-hop shape).
 effect      = "operator-intent"
+settle      = "deferred-restart-scheduled-never-awaited"
 sensitivity = "personal"
 
 [equality]

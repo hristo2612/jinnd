@@ -30,6 +30,13 @@ impl DaemonPaths {
         self.data.with_extension("inverses")
     }
 
+    /// The `jinn:keystore` sealed store, master key, and inverse spill
+    /// (M2-K8): beside the root, never inside a guest's reach.
+    #[must_use]
+    pub fn keystore(&self) -> PathBuf {
+        self.data.with_extension("keystore")
+    }
+
     /// The canonical form the watcher needs (M2-K5 #18): every path
     /// resolved against `cwd`, the profile's directory canonicalized — a
     /// bare `profile.json` names the working directory, never an empty

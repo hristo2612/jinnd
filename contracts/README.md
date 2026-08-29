@@ -10,9 +10,23 @@ by `docs/constitution/01-capability-contracts.md`.
 Rules (R12): contracts are versioned; never breaking within a major version; designed
 to outlive any particular kernel implementation or host OS.
 
-Bundles: `jinn-fs` (0.2.0), `jinn-clock` (0.1.0), `jinn-process` (0.1.0),
-`jinn-net` (0.1.0, readiness wake M2-K7), `jinn-ledger` (0.1.0, finalized
-M2-K7), `jinn-introspect` (0.1.0), `jinn-profile` (0.1.0).
+Bundles: `jinn-fs` (0.2.0; atomic commits M2-K8), `jinn-clock` (0.1.0),
+`jinn-process` (0.1.0), `jinn-net` (0.1.0, readiness wake M2-K7),
+`jinn-ledger` (0.1.0, finalized M2-K7), `jinn-introspect` (0.1.0),
+`jinn-profile` (0.2.0; non-blocking patch and reads M2-K8), `jinn-keystore`
+(0.1.0, M2-K8).
+
+## Operation-class attenuation (M2-K8)
+
+Beside its scope, a grant entry may name the operation class it admits:
+`{ contract, scope, ops = ["read", "list", "meta"] }`. The names are the
+bundle's declared `[operations.*]`; the kernel refuses every other operation
+at its single dispatch point as a ledgered scope refusal, on every lane
+(host-provider imports and the `services.call` handle lane alike). Absent
+means every operation; the predicate is `a.ops ⊆ b.ops`. Admission is
+fail-closed: an unknown name, an empty list, or a non-list refuses the grant
+on the record. Several grants of one contract on one entry widen by union,
+exactly as path scopes accumulate.
 
 ## Operator contracts (M2-K7)
 

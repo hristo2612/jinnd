@@ -14,6 +14,16 @@ workspace = true
 loom = ["dep:loom"]
 
 [dependencies]
+# The jinn:keystore provider's at-rest encryption (M2-K8; R10 justification:
+# a vetted RustCrypto AEAD for secrets on disk beats any in-tree cipher;
+# no std, no rand, alloc only) and the OS entropy its master key and
+# nonces come from (getrandom is already in the tree through wasmtime).
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+getrandom = "0.3"
+# The keystore's passphrase-derived master key (M2-K8 round-2 ruling 1;
+# R10: a vetted RustCrypto scrypt beats any in-tree KDF; no default
+# features, so no password-hash framework rides along).
+scrypt = { version = "0.11", default-features = false }
 # Types-only contract crate, WITHOUT the harness lane: the production plugin
 # path is WIT/broker only (test-harness ruling 2026-08-25; M1-P8 acceptance).
 jinnd-api = { path = "../jinnd-api", default-features = false }
@@ -39,6 +49,13 @@ tracing = "0.1"
 # untouched. libc itself is already in the tree (tokio).
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["signal"] }
+
+# The kernel's own vault master key lives in the platform keychain on macOS
+# (M2-K8 round-2 ruling 1; the `security` CLI through jinn:process is not
+# acceptable for it). R10: the vetted Security-framework binding, generic
+# passwords only, no default features; this crate stays forbid(unsafe_code).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3", default-features = false }
 wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "async"] }
 
 [dev-dependencies]

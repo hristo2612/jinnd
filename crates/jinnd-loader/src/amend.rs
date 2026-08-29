@@ -55,6 +55,43 @@ impl Loader {
         entry: &EntryId,
         config: C,
     ) -> Result<(), KernelError> {
+        self.amend(entry, config, true).await
+    }
+
+    /// As [`Loader::update_entry`], except the restart is SCHEDULED, never
+    /// awaited (M2-K8, harness #26 — the Algorithm-5 deferred-amendment
+    /// shape): the answer arrives once both views committed and the
+    /// fiber's reload is stated; the fiber engine's single-flight inertia
+    /// guarantees the stated target lands (R1), and its transitions are
+    /// observable afterwards. A caller that must not await a fiber which
+    /// may be awaiting it — a provider patching its own consumer from
+    /// inside a handler — uses this lane.
+    ///
+    /// # Errors
+    ///
+    /// As [`Loader::update_entry`].
+    pub async fn update_entry_deferred<C: LaneConfig>(
+        &self,
+        entry: &EntryId,
+        config: C,
+    ) -> Result<(), KernelError> {
+        self.amend(entry, config, false).await
+    }
+
+    /// Resolves once `entry`'s fiber has settled with nothing left to do;
+    /// immediately for an entry without a live fiber.
+    pub async fn quiesce_entry(&self, entry: &EntryId) {
+        if let Some(handle) = self.live_handle(entry) {
+            let _ = handle.quiesce().await;
+        }
+    }
+
+    async fn amend<C: LaneConfig>(
+        &self,
+        entry: &EntryId,
+        config: C,
+        await_restart: bool,
+    ) -> Result<(), KernelError> {
         crate::refuse::refuse_teardown_context("the amendment")?;
         let _engaged = self.gate.engage_entry(entry)?;
         // Validation and the prior-config snapshot; the engagement keeps this
@@ -110,10 +147,13 @@ impl Loader {
             return Err(fault);
         }
         // Both views committed: the fiber reloads to observe the config.
-        // Only the engagement marker is held across the reload (R1).
+        // Only the engagement marker is held across the reload (R1); a
+        // deferred amendment releases it once the reload is stated.
         if let Some(handle) = handle {
             handle.restart(TransitionCause::ConfigChanged);
-            handle.quiesce().await?;
+            if await_restart {
+                handle.quiesce().await?;
+            }
         }
         Ok(())
     }
