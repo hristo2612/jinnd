@@ -153,13 +153,22 @@ impl Cell {
                 }
             }
             Err(error) => {
+                // The doom is COMMITTED BEFORE the cleanup it causes (M2-K9
+                // round 4). Nothing about the outcome is still open here: the
+                // activation has failed, and R9 already forbids retrying this
+                // aim. Landing that decision first is what makes the state a
+                // concurrent reader sees during the cleanup already TRUE —
+                // round 3 committed it afterwards, so the whole cleanup was
+                // spent answering callers from a snapshot this failure was
+                // about to invalidate, and they were promised a replacement
+                // R9 would never schedule.
+                self.shared.fail(error);
+                self.activation_failed(aim);
                 // Exactly what this activation applied, and nothing else, is
                 // withdrawn (I1); the fiber then rests failed rather than retrying
                 // against an environment that has not moved (R9).
-                self.shared.fail(error);
                 self.publish(FiberState::Unloading, cause.clone());
                 self.withdraw(true).await;
-                self.activation_failed(aim);
                 self.publish(FiberState::Failed, cause);
             }
         }

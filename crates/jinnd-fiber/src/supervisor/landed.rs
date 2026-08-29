@@ -41,11 +41,14 @@ impl Cell {
 
     /// A clean unload: no live activation, and the fiber is ready for
     /// whatever the next round plans.
+    /// Written through [`Committed::unloaded`], which is also what
+    /// [`crate::owed`]'s allowlist projects a clean landing to (M2-K9
+    /// round 4): one definition, so the oracle's projection and the
+    /// kernel's landing cannot drift.
     pub(super) fn unloaded(&self) {
-        self.shared.steering.commit(|committed| {
-            committed.state = FiberState::Pending;
-            committed.active_for = None;
-        });
+        self.shared
+            .steering
+            .commit(|committed| *committed = committed.unloaded());
     }
 
     /// An unclean unload: the residue is in the record and the aim it

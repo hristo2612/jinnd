@@ -19,6 +19,7 @@
 mod models {
     use jinnd_api::{Epoch, FiberState, Owed, TransitionCause};
     use loom::sync::Arc;
+    use loom::sync::atomic::{AtomicBool, Ordering};
     use loom::thread;
 
     use crate::steering::SteeringCell;
@@ -109,6 +110,52 @@ mod models {
                 cell.owed(),
                 Some(Owed::Reload),
                 "a disposed fiber promised a replacement nobody scheduled"
+            );
+        });
+    }
+
+    /// M2-K9 round 4: the doom is COMMITTED BEFORE the cleanup it causes,
+    /// so a reader that can see the cleanup in flight can already see the
+    /// decision that caused it. Round 3 committed the failure only after
+    /// the cleanup had awaited, and every reader inside that window was
+    /// promised a replacement R9 would never schedule.
+    ///
+    /// The flag stands in for the cleanup the supervisor enters; what is
+    /// modelled is the ORDERING between the commit and the cleanup, not
+    /// the cleanup's contents. Reverse the two statements in the
+    /// supervisor thread and loom finds the interleaving that reads
+    /// `Reload` — which is exactly the round-3 defect.
+    #[test]
+    fn a_reader_that_sees_the_cleanup_already_sees_the_failure_that_caused_it() {
+        loom::model(|| {
+            let cell = Arc::new(SteeringCell::new(Some(Epoch {
+                dependencies: Vec::new(),
+            })));
+            let cleaning = Arc::new(AtomicBool::new(false));
+            let aim = cell.desired().aim;
+            let supervisor = {
+                let cell = Arc::clone(&cell);
+                let cleaning = Arc::clone(&cleaning);
+                thread::spawn(move || {
+                    cell.commit(|committed| {
+                        committed.state = FiberState::Failed;
+                        committed.failed_under = Some(aim);
+                    });
+                    cleaning.store(true, Ordering::SeqCst);
+                })
+            };
+            if cleaning.load(Ordering::SeqCst) {
+                assert_ne!(
+                    cell.owed(),
+                    Some(Owed::Reload),
+                    "promised a replacement while the failure's own cleanup ran"
+                );
+            }
+            supervisor.join().unwrap_or_else(|_| unreachable!());
+            assert_ne!(
+                cell.owed(),
+                Some(Owed::Reload),
+                "a settled failure promised a replacement"
             );
         });
     }

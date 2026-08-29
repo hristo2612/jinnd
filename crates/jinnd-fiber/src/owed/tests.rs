@@ -179,6 +179,52 @@ fn owing_nothing_means_the_planner_has_nothing_to_run() {
     }
 }
 
+/// The round-4 inversion, stated as the closure of the ALLOWLIST: a
+/// committed state the allowlist does not name owes a STALL, whatever else
+/// is true of it. `Loading` and `Unloading` are the states standing in for
+/// "not named" here — the supervisor commits neither, so nothing about them
+/// can be proved from the planner, and the conservative answer is the only
+/// honest one. Rounds 1-3 each answered `Reload` from an unnamed state
+/// because the fall-through was optimistic; after the inversion an unnamed
+/// state cannot reach `Reload` at all.
+#[test]
+fn a_state_the_allowlist_does_not_name_owes_a_stall() {
+    for state in [FiberState::Loading, FiberState::Unloading] {
+        for target in [aim(0, 0), aim(0, 1)] {
+            let committed = Committed {
+                state,
+                active_for: Some(aim(0, 0)),
+                ..Committed::new()
+            };
+            assert_eq!(
+                owed(&committed, &desired(target)),
+                Some(Owed::Stalled),
+                "{state:?} is not on the allowlist and promised a replacement"
+            );
+        }
+    }
+}
+
+/// The guard that keeps the inversion from degenerating: answering
+/// `Stalled` to everything would satisfy "never promise a replacement
+/// falsely" and destroy the packet, so a stall is forbidden wherever the
+/// planner would schedule a load RIGHT NOW. The two properties together
+/// pin the answer from both sides.
+#[test]
+fn a_stall_is_never_given_where_the_planner_would_load_right_now() {
+    let mut stalled = 0u32;
+    for (committed, desired) in every_pair() {
+        if owed(&committed, &desired) == Some(Owed::Stalled) {
+            stalled += 1;
+            assert!(
+                !matches!(plan(&committed, &desired), Some(Step::Load { .. })),
+                "stalled a caller while a load was the planned step: {committed:?} / {desired:?}"
+            );
+        }
+    }
+    assert!(stalled > 0, "the enumeration never exercised a stall");
+}
+
 /// The verifier's round-2 probe, as a named case: a dependency is
 /// withdrawn, so `plan` cannot load — a stall, never a restart nobody
 /// scheduled.
@@ -213,12 +259,22 @@ fn a_target_no_round_will_ever_serve_owes_a_stall() {
         ..Committed::new()
     };
     assert_eq!(owed(&disposed, &target), Some(Owed::Stalled));
+    // The disposal this fiber could not replay is still ASKED of it — the
+    // request is sticky and never withdrawn, which is the only way this
+    // state is reached. Round 3 built the case without the request and so
+    // asserted a stall against a fiber the planner could genuinely still
+    // load; the inverted allowlist reads the planner rather than
+    // short-circuiting on the flag, and caught it.
     let unclean = Committed {
         state: FiberState::Failed,
         disposal_failed: true,
         ..Committed::new()
     };
-    assert_eq!(owed(&unclean, &target), Some(Owed::Stalled));
+    let asked = Desired {
+        disposing: true,
+        ..target.clone()
+    };
+    assert_eq!(owed(&unclean, &asked), Some(Owed::Stalled));
     let refused_retry = Committed {
         state: FiberState::Failed,
         failed_under: Some(aim(0, 1)),

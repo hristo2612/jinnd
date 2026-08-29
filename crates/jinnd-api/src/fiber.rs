@@ -20,8 +20,9 @@ pub enum FiberState {
 /// for and its committed state has not served (M2-K9). Snapshotted
 /// atomically with the rest bit, so the two can never disagree. An enum and
 /// not a bit because only [`Owed::Reload`] promises a replacement, and it
-/// is EARNED: it is answered only where a replacement is genuinely
-/// schedulable (M2-K9 round 3).
+/// is EARNED: the kernel answers it from a closed allowlist of states where
+/// a replacement is provably scheduled, and every other state — named or
+/// not — answers [`Owed::Stalled`] (M2-K9 round 4).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Owed {
     /// A fresh activation of the same entry (operator restart, config edit,

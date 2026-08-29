@@ -68,8 +68,9 @@ impl RestartOracle for Restarts {
     /// round 2): the kernel never upgrades a disposal, a suspension, or a
     /// stall into a promised restart, because a caller obeying that
     /// promise would wait for a replacement that is not coming. The fiber
-    /// earns the promise rather than defaulting to it — only a genuinely
-    /// schedulable replacement answers [`Owed::Reload`] (round 3).
+    /// earns the promise rather than defaulting to it: [`Owed::Reload`] is
+    /// answered from a closed allowlist of provably scheduled states, and
+    /// anything outside it stalls by construction (round 4).
     fn unserved(&self, fiber: FiberId) -> Option<Unserved> {
         let (entry, owed) = self.owes(fiber)?;
         let incarnation = self.lane.upgrade()?.incarnation(&entry)?;
