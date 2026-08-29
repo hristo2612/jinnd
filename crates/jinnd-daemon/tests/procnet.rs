@@ -98,7 +98,7 @@ fn grant_refusals(records: &[LedgerRecord], contract: &str) -> usize {
     records
         .iter()
         .filter(|record| {
-            matches!(&record.kind, LedgerEventKind::GrantRefused { contract: refused } if refused == contract)
+            matches!(&record.kind, LedgerEventKind::GrantRefused { contract: refused, .. } if refused == contract)
         })
         .count()
 }

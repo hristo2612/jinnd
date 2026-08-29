@@ -14,7 +14,7 @@ use crate::broker::Broker;
 use crate::handle::HostRecord;
 use crate::host::{LoadedComponent, WasmHost};
 use crate::peer::{LedgerSink, PeerId};
-use crate::slot::SharedSlot;
+use crate::slot::{SeatSummary, SharedSlot};
 use crate::swap::SwapCore;
 use crate::topics::LocalTopics;
 
@@ -80,5 +80,19 @@ impl LaneCore {
             next_slot: AtomicU64::new(0),
             journals: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// One entry's live seat as `jinn:introspect` reports it (M2-K7): the
+    /// activation's incarnation (the slot id — never reused in this
+    /// process) and its registrations by class. A snapshot of kernel-owned
+    /// state under the roster lock; no guest is ever called (R1).
+    #[must_use]
+    pub fn seat_summary(&self, entry: &EntryId) -> Option<(u64, SeatSummary)> {
+        let (slot, incarnation) = {
+            let roster = lock(&self.roster);
+            let row = roster.get(entry)?;
+            (Arc::clone(&row.slot), row.slot_id)
+        };
+        slot.summary().map(|summary| (incarnation, summary))
     }
 }

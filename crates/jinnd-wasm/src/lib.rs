@@ -49,7 +49,10 @@ pub use alarms::{
 };
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
-pub use grants::{EnvPolicy, GrantScope, NetScope, ProcessScope, ScopeValue};
+pub use grants::{
+    EnvPolicy, GrantScope, INTROSPECT_CONTRACT, NetScope, PROFILE_CONTRACT, ProcessScope,
+    ScopeValue, grant_refusals,
+};
 pub use handle::{
     ActivationOutcome, AlarmRecord, HostRecord, InstanceHandle, ListenRecord, Registration,
 };
@@ -58,7 +61,7 @@ pub use hostcaps::{NET_CONTRACT, PROCESS_CONTRACT, registration_label};
 pub use hostclock::HostClock;
 pub use hostfs::wire::FileMeta;
 pub use hostfs::{FS_CONTRACT, HostFs, UndoAction, effect_label};
-pub use hostnet::HostNet;
+pub use hostnet::{HostNet, READABLE_TOPIC};
 pub use hostprocess::HostProcess;
 pub use instance::Seat;
 pub use lane::{Grant, LaneCore, SeatSpec, WasmBody, wasm_lane};
@@ -66,6 +69,6 @@ pub use lane_swap::swap_pinned;
 pub use peer::{HandleId, LedgerSink, Peer, PeerId};
 pub use selector::{NoRealms, RealmOracle, Selector};
 pub use sha256::hex_digest;
-pub use slot::{SeatState, SharedSlot, commit_staged};
+pub use slot::{SeatState, SeatSummary, SharedSlot, commit_staged};
 pub use swap::{SlotPhase, SwapCore, SwapOutcome, SwapSlots, swap_batch};
 pub use topics::{EmitReport, EventTarget, LocalTopics, Rebind};

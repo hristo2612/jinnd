@@ -4,6 +4,7 @@
 //! and no harness lane anywhere in the build (Law 1).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{EntryId, ErrorCode, KernelError, LedgerEventKind, LedgerQuery, ReconcileReport};
@@ -16,7 +17,18 @@ use jinnd_wasm::{HostClock, HostFs, HostNet, HostProcess, LaneCore, LedgerSink};
 pub use crate::paths::DaemonPaths;
 use crate::support::{SharedFibers, Sink, error, lock};
 
+mod introspect;
+mod ledger_cap;
 mod observe;
+mod profile_cap;
+mod wire;
+
+/// What `jinn:introspect.readiness` answers (M2-K7, harness #19/#12).
+#[derive(Default)]
+pub(crate) struct Readiness {
+    pub(crate) boot_reconciled: AtomicBool,
+    pub(crate) watcher_armed: AtomicBool,
+}
 
 fn storage(refused: jinnd_ledger::LedgerError) -> KernelError {
     error(ErrorCode::EffectFailed, refused.to_string())
@@ -34,6 +46,7 @@ pub struct Daemon {
     /// Per package, the pin last applied FROM THE PROFILE (see
     /// `packages.rs`).
     pub(crate) applied_pins: Mutex<HashMap<String, String>>,
+    pub(crate) readiness: Arc<Readiness>,
     /// Keeps the context tree (and every context derived under it) alive.
     _root: jinnd_context::Context<()>,
 }
@@ -49,9 +62,13 @@ impl Daemon {
         std::fs::create_dir_all(&paths.data)
             .map_err(|refused| error(ErrorCode::InvalidProfile, refused.to_string()))?;
         let ledger = Ledger::open(&paths.ledger).map_err(storage)?;
+        let fibers: SharedFibers = Arc::new(Mutex::new(HashMap::new()));
         // ONE sink: every broker crossing and provider event lands on the
-        // same ordered ledger record lane (R6).
-        let sink: Arc<dyn LedgerSink> = Arc::new(Sink(ledger.clone()));
+        // same ordered ledger record lane (R6), entry-attributed (M2-K7).
+        let sink: Arc<dyn LedgerSink> = Arc::new(Sink {
+            ledger: ledger.clone(),
+            fibers: Arc::clone(&fibers),
+        });
         let lane = Arc::new(LaneCore::new(Arc::clone(&sink))?);
         // Inverses spill OUTSIDE the guests' containment root (M2-K3).
         let hostfs = Arc::new(HostFs::open(paths.data.clone(), paths.inverses(), sink)?);
@@ -74,6 +91,23 @@ impl Daemon {
         let root = tree.root();
         let registry = Registry::new();
         let loader = Arc::new(Loader::new(root.clone(), registry, |_context| {}));
+        let readiness = Arc::new(Readiness::default());
+        // The operator contracts (M2-K7, harness #19/#20/#21): kernel-owned
+        // facts behind the same choke point as every other provider —
+        // granted, ledgered per read, never a side door (Law 1).
+        introspect::HostIntrospect::register(
+            &lane.broker,
+            Arc::clone(&loader),
+            Arc::clone(&lane),
+            Arc::clone(&readiness),
+        )?;
+        ledger_cap::HostLedger::register(&lane.broker, ledger.clone())?;
+        profile_cap::HostProfile::register(
+            &lane.broker,
+            Arc::clone(&loader),
+            ledger.clone(),
+            Arc::clone(&fibers),
+        )?;
         Ok(Self {
             paths,
             revert: RevertLane::new(ledger.clone()),
@@ -81,8 +115,9 @@ impl Daemon {
             loader,
             lane,
             hostfs,
-            fibers: Arc::new(Mutex::new(HashMap::new())),
+            fibers,
             applied_pins: Mutex::new(HashMap::new()),
+            readiness,
             _root: root,
         })
     }
@@ -102,6 +137,7 @@ impl Daemon {
             .attach_store::<serde_json::Value>(self.paths.profile.clone(), document.clone());
         let report = self.apply(document).await?;
         self.withdraw_orphaned_journals().await;
+        self.readiness.boot_reconciled.store(true, Ordering::SeqCst);
         Ok(report)
     }
 

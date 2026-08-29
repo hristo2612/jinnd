@@ -46,6 +46,22 @@ pub enum GrantScope {
     Paths(Vec<String>),
     Process(ProcessScope),
     Net(NetScope),
+    /// `entry-ids` (`jinn:profile`, M2-K7): the entries a patch may
+    /// target; `"*"` means every entry, only when written. Empty (a bare
+    /// grant) patches nothing.
+    Entries(Vec<String>),
+}
+
+impl GrantScope {
+    /// Whether an `entry-ids` scope admits patching `entry` (fail-closed:
+    /// any other scope shape admits nothing).
+    #[must_use]
+    pub fn admits_entry(&self, entry: &str) -> bool {
+        match self {
+            Self::Entries(ids) => ids.iter().any(|id| id == "*" || id == entry),
+            _ => false,
+        }
+    }
 }
 
 fn absolute_prefix(path: &str) -> bool {
@@ -121,6 +137,21 @@ pub(super) fn process_scope(
         }
     }
     Ok(ProcessScope { exec, env })
+}
+
+/// Parses one `entry-ids` scope: a non-empty list of entry ids, or `"*"`.
+///
+/// # Errors
+///
+/// A typed refusal for any other shape (a bare string is not a list).
+pub(super) fn entry_scope(contract: &str, scope: &ScopeValue) -> Result<Vec<String>, KernelError> {
+    let ids = strings(contract, "entry-ids", scope)?;
+    if ids.is_empty() || ids.iter().any(String::is_empty) {
+        return Err(refused(format!(
+            "grant refused: {contract} scope must name at least one entry id (or \"*\"), wrote {scope}"
+        )));
+    }
+    Ok(ids)
 }
 
 /// Parses one `net-policy` scope (`{ bind, outbound }`).

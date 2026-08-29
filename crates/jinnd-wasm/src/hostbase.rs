@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
+use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind, RefusalReason};
 
 use crate::broker::Broker;
 use crate::broker_state::refusal;
@@ -55,6 +55,11 @@ impl<T: Owned> ProviderCore<T> {
         self.broker().and_then(|broker| broker.attribution(caller))
     }
 
+    /// The calling peer's delivery face, through the broker (M2-K7).
+    pub(crate) fn target_of(&self, caller: PeerId) -> Option<Arc<dyn crate::topics::EventTarget>> {
+        self.broker().and_then(|broker| broker.target_of(caller))
+    }
+
     /// The typed authority `caller` holds this contract under.
     pub(crate) fn policy(&self, caller: PeerId) -> Option<GrantScope> {
         self.broker()
@@ -62,11 +67,19 @@ impl<T: Owned> ProviderCore<T> {
     }
 
     /// One ledgered grant refusal with the caller's attribution (Law 2),
-    /// exactly like the broker's own.
-    pub(crate) fn refuse(&self, caller: PeerId, message: String) -> KernelError {
+    /// exactly like the broker's own: the typed class on the record, the
+    /// prose beside it and on the wire (R3).
+    pub(crate) fn refuse(
+        &self,
+        caller: PeerId,
+        reason: RefusalReason,
+        message: String,
+    ) -> KernelError {
         self.sink.append(
             LedgerEventKind::GrantRefused {
                 contract: self.contract.to_owned(),
+                reason,
+                detail: Some(message.clone()),
             },
             self.attribution(caller),
         );
@@ -98,6 +111,7 @@ impl<T: Owned> ProviderCore<T> {
             Some(row) if row.owner() == caller => Ok(row.clone()),
             Some(_) => Err(self.refuse(
                 caller,
+                RefusalReason::ForeignHandle,
                 format!("{} handle {handle} is not the caller's", self.contract),
             )),
             None => Err(refusal(

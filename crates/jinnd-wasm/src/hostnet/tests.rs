@@ -40,7 +40,7 @@ impl Recording {
         self.kinds()
             .iter()
             .filter(|(kind, _)| {
-                matches!(kind, LedgerEventKind::GrantRefused { contract } if contract == NET_CONTRACT)
+                matches!(kind, LedgerEventKind::GrantRefused { contract, .. } if contract == NET_CONTRACT)
             })
             .count()
     }
@@ -322,5 +322,310 @@ async fn request_is_declared_not_provided() {
     assert_eq!(
         rig.call(rig.guest, "request", Vec::new()).await,
         Err(ErrorCode::PluginFailed)
+    );
+}
+
+/// A recording delivery face: what the wake task hands the holder.
+struct Face(Mutex<Vec<(u64, String, Vec<u8>)>>);
+
+impl crate::topics::EventTarget for Face {
+    fn deliver(
+        &self,
+        token: u64,
+        topic: &str,
+        payload: Vec<u8>,
+    ) -> jinnd_api::KernelFuture<'static, Vec<u8>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push((token, topic.to_owned(), payload));
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+impl Face {
+    fn wakes(&self, handle: u64) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .filter(|(token, topic, payload)| {
+                *token == handle
+                    && topic == super::READABLE_TOPIC
+                    && payload == &handle.to_le_bytes()
+            })
+            .count()
+    }
+}
+
+impl Recording {
+    fn readable_wakes(&self, handle: u64) -> usize {
+        self.kinds()
+            .iter()
+            .filter(|(kind, fiber)| {
+                matches!(kind, LedgerEventKind::NetReadable { handle: woken } if *woken == handle)
+                    && *fiber == Some(FiberId(7))
+            })
+            .count()
+    }
+}
+
+async fn settle(condition: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !condition() {
+        assert!(Instant::now() < deadline, "the wake lands");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// M2-K7 (harness #23): a listener with a pending connection and a
+/// connection with bytes each wake the holder ONCE — `handle-event(handle,
+/// "jinn:net/readable", handle)` on its own face, ledgered as `NetReadable`
+/// with the holder's attribution — with no alarm anywhere; a guest read
+/// re-arms, so the next transition wakes again; EOF wakes once.
+#[tokio::test]
+async fn readiness_wakes_the_holder_once_per_transition_with_no_alarm() {
+    let rig = rig();
+    let face = Arc::new(Face(Mutex::new(Vec::new())));
+    rig.broker.attach_target(
+        rig.guest,
+        Arc::clone(&face) as Arc<dyn crate::topics::EventTarget>,
+    );
+    let listener = rig.listen().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(face.wakes(listener), 0, "an idle listener never wakes");
+
+    let mut client =
+        TcpStream::connect(("127.0.0.1", rig.port)).unwrap_or_else(|error| panic!("{error}"));
+    settle(|| face.wakes(listener) == 1).await;
+    assert_eq!(rig.ledger.readable_wakes(listener), 1);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        face.wakes(listener),
+        1,
+        "one wake per transition, not per poll"
+    );
+
+    let conn = rig
+        .accept(listener)
+        .await
+        .unwrap_or_else(|| panic!("accepted"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(face.wakes(conn), 0, "a quiet connection never wakes");
+    assert_eq!(
+        face.wakes(listener),
+        1,
+        "the accept consumed the transition: one connect, one wake"
+    );
+    client
+        .write_all(b"hello")
+        .unwrap_or_else(|error| panic!("{error}"));
+    settle(|| face.wakes(conn) == 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        face.wakes(conn),
+        1,
+        "unread bytes wake once until the guest reads"
+    );
+    assert_eq!(rig.read_until(conn, TAG_DATA).await, b"hello");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        face.wakes(conn),
+        1,
+        "a read that drained the bytes is not a new transition"
+    );
+    // The guest read re-armed; the next transition wakes again.
+    client
+        .write_all(b"again")
+        .unwrap_or_else(|error| panic!("{error}"));
+    settle(|| face.wakes(conn) == 2).await;
+    assert_eq!(rig.read_until(conn, TAG_DATA).await, b"again");
+    drop(client);
+    settle(|| face.wakes(conn) == 3).await;
+    assert_eq!(rig.read_until(conn, TAG_EOF).await, Vec::<u8>::new());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(face.wakes(conn), 3, "EOF wakes exactly once");
+    assert!(
+        !rig.ledger
+            .kinds()
+            .iter()
+            .any(|(kind, _)| matches!(kind, LedgerEventKind::AlarmWake { .. })),
+        "no alarm anywhere"
+    );
+}
+
+/// A guest that CLOSES the socket from inside its own readiness handler
+/// (the echo shape on EOF): the release never awaits the wake task that
+/// is awaiting the handler — no deadlock, the close lands on the record.
+#[tokio::test]
+async fn closing_from_inside_the_wake_handler_never_deadlocks() {
+    struct Closer {
+        broker: Arc<Broker>,
+        guest: u64,
+        /// Only this handle is closed from inside the handler; any other
+        /// wake is answered with nothing.
+        conn: u64,
+    }
+    impl crate::topics::EventTarget for Closer {
+        fn deliver(
+            &self,
+            token: u64,
+            _topic: &str,
+            _payload: Vec<u8>,
+        ) -> jinnd_api::KernelFuture<'static, Vec<u8>> {
+            let broker = Arc::clone(&self.broker);
+            let guest = self.guest;
+            let conn = self.conn;
+            Box::pin(async move {
+                if token != conn {
+                    return Ok(Vec::new());
+                }
+                broker
+                    .dispatch(guest, NET_CONTRACT, "close", with_handle(token, &[]))
+                    .await
+            })
+        }
+    }
+    let rig = rig();
+    let listener = rig.listen().await;
+    let mut client =
+        TcpStream::connect(("127.0.0.1", rig.port)).unwrap_or_else(|error| panic!("{error}"));
+    let conn = rig
+        .accept(listener)
+        .await
+        .unwrap_or_else(|| panic!("accepted"));
+    rig.broker.attach_target(
+        rig.guest,
+        Arc::new(Closer {
+            broker: Arc::clone(&rig.broker),
+            guest: rig.guest,
+            conn,
+        }) as Arc<dyn crate::topics::EventTarget>,
+    );
+    client
+        .write_all(b"bye")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let closed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if rig.ledger.kinds().iter().any(|(kind, _)| {
+                matches!(kind, LedgerEventKind::NetClosed { handle } if *handle == conn)
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "the close from inside the handler lands, no deadlock"
+    );
+    assert_eq!(
+        rig.provider.live(),
+        1,
+        "the connection is released, the listener stays"
+    );
+}
+
+/// Two connections pending before the guest accepts: the first accept
+/// consumes one and the OTHER is still pending — a new transition, exactly
+/// one wake; the second accept drains the listener and no wake follows
+/// (level-triggered: never lost, never doubled).
+#[tokio::test]
+async fn a_second_pending_connection_wakes_again_exactly_once() {
+    let rig = rig();
+    let face = Arc::new(Face(Mutex::new(Vec::new())));
+    rig.broker.attach_target(
+        rig.guest,
+        Arc::clone(&face) as Arc<dyn crate::topics::EventTarget>,
+    );
+    let listener = rig.listen().await;
+    let _first =
+        TcpStream::connect(("127.0.0.1", rig.port)).unwrap_or_else(|error| panic!("{error}"));
+    let _second =
+        TcpStream::connect(("127.0.0.1", rig.port)).unwrap_or_else(|error| panic!("{error}"));
+    settle(|| face.wakes(listener) == 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(face.wakes(listener), 1, "two connects, one transition");
+    rig.accept(listener)
+        .await
+        .unwrap_or_else(|| panic!("first accepted"));
+    settle(|| face.wakes(listener) == 2).await;
+    rig.accept(listener)
+        .await
+        .unwrap_or_else(|| panic!("second accepted"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        face.wakes(listener),
+        2,
+        "the drained listener does not wake"
+    );
+    assert_eq!(rig.ledger.readable_wakes(listener), 2);
+    assert_eq!(rig.provider.live(), 3, "the listener and both connections");
+}
+
+/// Under a chatty peer the wake count is bounded by what the guest does,
+/// never by the byte count (R9): a flood of writes lands ONE wake until
+/// the guest reads; and once the socket is released no wake is ever
+/// delivered or ledgered again.
+#[tokio::test]
+async fn a_flood_wakes_once_and_a_released_socket_never_wakes_again() {
+    let rig = rig();
+    let face = Arc::new(Face(Mutex::new(Vec::new())));
+    rig.broker.attach_target(
+        rig.guest,
+        Arc::clone(&face) as Arc<dyn crate::topics::EventTarget>,
+    );
+    let listener = rig.listen().await;
+    let mut client =
+        TcpStream::connect(("127.0.0.1", rig.port)).unwrap_or_else(|error| panic!("{error}"));
+    let conn = rig
+        .accept(listener)
+        .await
+        .unwrap_or_else(|| panic!("accepted"));
+    for _ in 0..200 {
+        client
+            .write_all(b"x")
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    settle(|| face.wakes(conn) == 1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(face.wakes(conn), 1, "200 writes, one wake");
+    assert_eq!(rig.ledger.readable_wakes(conn), 1);
+    let mut reads = 0;
+    while rig.read(conn).await.0 == TAG_DATA {
+        reads += 1;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        face.wakes(conn) <= 1 + reads,
+        "wakes ({}) are bounded by guest reads ({reads}) plus one",
+        face.wakes(conn)
+    );
+    rig.call(rig.guest, "close", with_handle(conn, &[]))
+        .await
+        .unwrap_or_else(|code| panic!("close: {code:?}"));
+    let before = rig.ledger.readable_wakes(conn);
+    let _ = client.write_all(b"after close");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        rig.ledger.readable_wakes(conn),
+        before,
+        "a released socket never wakes"
+    );
+    let before = rig.ledger.readable_wakes(listener);
+    rig.provider
+        .withdraw(listener)
+        .await
+        .unwrap_or_else(|error| panic!("release: {error:?}"));
+    assert!(
+        TcpStream::connect(("127.0.0.1", rig.port)).is_err(),
+        "closed at release"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        rig.ledger.readable_wakes(listener),
+        before,
+        "no wake after release"
     );
 }

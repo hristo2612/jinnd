@@ -1,27 +1,48 @@
-// jinn:ledger@0.1.0 — SKELETON (seeded at M0 ratification; finalized in M1)
-// The ledger read/subscribe contract (constitution 02). The kernel is the only
-// writer; this contract is read-only by design.
+// jinn:ledger@0.1.0 (seeded at M0; FINALIZED at M2-K7, harness #20) — the
+// ledger read contract (constitution 02). The kernel is the only writer;
+// this contract is read-only by design. Reached over
+// `services.resolve("jinn:ledger")` + `services.call`. Reads are
+// model-visible: every delivery appends a consumption receipt
+// (`LedgerConsumed { first, last, count }`, 02 family 2) under the
+// reader's attribution, and the reader's OWN receipts are excluded from
+// its feed — recursion is prevented without an off-ledger channel.
 package jinn:ledger@0.1.0;
 
 interface reader {
+  // One recorded event as the kernel keeps it (R6): the monotonic id (the
+  // ordering authority), the writer's wall-clock stamp, the attributed
+  // profile entry and fiber, the kind's canonical NAME (a variant of the
+  // kernel facade's `LedgerEventKind`, e.g. `ArtifactLoaded`), the kind's
+  // fields as JSON text (`{"hash":"..."}`; `null` for a field-less kind),
+  // and the kind's sensitivity class (`public` | `personal`) so an
+  // exporter can redact (02 §Redaction: personal is verbatim locally;
+  // secret is never stored). v0.1 records no causal parent; it is a v0.2
+  // column.
   record event {
     id: u64,
     wall-ms: u64,
-    mono-ns: u64,
-    actor: string,          // fiber id + plugin identity + grant id
-    verb: string,           // contract.function | lifecycle kind
-    payload-hash: string,   // payload stored per sensitivity class (02 §Redaction)
-    causal-parent: option<u64>,  // none => root event (explicit root-cause kind)
-    root-cause: option<string>,
+    entry: option<string>,
+    fiber: option<u64>,
+    kind: string,
+    payload: string,
+    sensitivity: string,
   }
 
-  // Reads are model-visible: the kernel appends a consumption receipt for every
-  // delivery (02 §What is recorded, family 2).
-  read-range: func(from-id: u64, limit: u32) -> list<event>;
+  // One page: the events delivered (the reader's own receipts dropped),
+  // and where the next read starts — the highest sequence FETCHED plus
+  // one, so paging progresses past dropped rows.
+  record page { events: list<event>, next-from: u64 }
 
-  // TODO(M1): subscription idiom — component-model streams vs poll handle.
-  // Whatever the mechanism, delivery MUST produce consumption receipts and the
-  // receipt stream MUST be excluded from the subscription's own feed.
+  // Effect class: read. At most `limit` (clamped to 1..=500) events with
+  // id >= `from-id`, in order. Broker wire: operation `read-range`,
+  // payload = u64-LE from-id then u32-LE limit; answer = the JSON `page`.
+  read-range: func(from-id: u64, limit: u32) -> page;
+
+  // Effect class: read. The highest committed sequence (0 when empty).
+  // Ledgered like every read: its receipt is `LedgerConsumed { first:
+  // seq, last: seq, count: 0 }` — the consulted mark, nothing delivered.
+  // Broker wire: operation `last-seq`, empty payload; answer = u64-LE.
+  last-seq: func() -> u64;
 }
 
 world ledger-provider {

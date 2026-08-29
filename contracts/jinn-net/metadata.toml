@@ -62,3 +62,9 @@ lifecycle = "kernel-registration-closed-on-suspend-relistened-on-activate"
 # Every listen, accept, and close is a ledger event with entry attribution
 # (Law 2). accept/read answer `would-block`, write answers the accepted
 # count (R1). Out of scope in v0.1: TLS, non-loopback listening, UDP.
+# Readiness wake (M2-K7, additive): `lifecycle.handle-event(handle,
+# "jinn:net/readable", 8-byte LE handle)` on a listener's pending
+# connection or a connection's bytes/EOF — one wake per transition the
+# guest has not acted on (accept/read re-arm; EOF wakes once), each a
+# `NetReadable { handle }` ledger event under the holder's attribution.
+wake = "jinn:net/readable-one-per-unacted-transition"

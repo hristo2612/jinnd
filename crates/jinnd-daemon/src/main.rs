@@ -117,6 +117,8 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // The watcher armed above; `jinn:introspect.readiness` may say so.
+    daemon.mark_watcher_armed();
     match daemon.boot().await {
         Ok(report) => log_report(&report, &daemon),
         Err(refused) => {

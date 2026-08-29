@@ -149,9 +149,10 @@ async fn an_entry_grantless_package_is_refused_at_the_broker_not_trusted() {
         .map(|record| record.kind)
         .collect();
     assert!(
-        kinds.contains(&LedgerEventKind::GrantRefused {
-            contract: "jinn:test/secret".to_owned()
-        }),
+        kinds.iter().any(|kind| matches!(
+            kind,
+            LedgerEventKind::GrantRefused { contract, .. } if contract == "jinn:test/secret"
+        )),
         "every denial is a ledger event (constitution 01)"
     );
 }

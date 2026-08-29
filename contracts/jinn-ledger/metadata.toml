@@ -1,17 +1,33 @@
-# Contract-bundle metadata for jinn:ledger@0.1.0 — SKELETON
+# Contract-bundle metadata for jinn:ledger@0.1.0 (finalized M2-K7)
 # Constitution 01 §What a contract is: CI rejects bundles missing any field below.
 
 [contract]
 name    = "jinn:ledger"
 version = "0.1.0"
 
+# No scope type: ledger reads are unscoped in v0.1 (whole-ledger grant); a
+# scoped grant refuses fail-closed.
+
 [operations.read-range]
-effect      = "read"          # read | revertible | irreversible
+effect      = "read"
 sensitivity = "personal"      # payloads may reference personal events
-scope-type  = "none"          # ledger reads are unscoped in v0.1 (whole-ledger grant)
+# Every delivery appends `LedgerConsumed { first, last, count }` under the
+# reader's attribution (02 family 2); the reader's own receipts are not in
+# its feed. An empty page delivers nothing and appends no receipt.
+
+[operations.last-seq]
+effect      = "read"
+sensitivity = "public"
 
 [equality]
 # Observational equivalence for this contract's state (02/03): two ledgers are
 # equal iff they contain the same events by id in the same order. Derived indexes
 # are not part of the observable state.
 relation = "event-sequence-by-id"
+
+[notes]
+# Each delivered event carries its kind's sensitivity class; a device-local
+# read delivers `personal` verbatim (02), an exporter redacts by the tag.
+# Subscription (push) is a v0.2 idiom: v0.1 pages by `last-seq` + `read-range`,
+# typically from a `jinn:clock` alarm.
+lifecycle = "read-only"

@@ -212,18 +212,20 @@ impl HostFs {
             ));
         };
         let (root, path) = (self.root.clone(), path.to_owned());
-        let outcome = blocking(move || scope::authorized(&root, &scopes, &path)).await;
-        if let Err(error) = &outcome
-            && error.code == ErrorCode::EffectFailed
-        {
-            self.sink.append(
-                LedgerEventKind::GrantRefused {
-                    contract: FS_CONTRACT.to_owned(),
-                },
-                self.attribution(caller),
-            );
+        match blocking(move || Ok(scope::authorized(&root, &scopes, &path))).await? {
+            Ok(resolved) => Ok(resolved),
+            Err(refused) => {
+                self.sink.append(
+                    LedgerEventKind::GrantRefused {
+                        contract: FS_CONTRACT.to_owned(),
+                        reason: refused.reason,
+                        detail: Some(refused.error.message.clone()),
+                    },
+                    self.attribution(caller),
+                );
+                Err(refused.error)
+            }
         }
-        outcome
     }
 }
 

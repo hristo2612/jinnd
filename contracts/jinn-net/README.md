@@ -21,8 +21,19 @@ for the peer that minted it (R4).
 ## Non-blocking shape (v0.1)
 
 `accept` and `read` answer `would-block`; `write` answers the byte count the
-socket accepted. The guest polls, typically from a `jinn:clock` alarm
-handler.
+socket accepted.
+
+## Readiness wake (M2-K7)
+
+The kernel delivers `lifecycle.handle-event(handle, "jinn:net/readable",
+<8-byte LE handle>)` — the token is the socket handle — when a listener
+has a pending connection or a connection has bytes or EOF. One wake per
+readiness transition the guest has not yet acted on: a flood of bytes is
+one wake until the guest reads, EOF wakes once, `accept`/`read` consume
+then re-arm (a level probe: what is still pending wakes again exactly
+once; what was just consumed never re-announces).
+A server holds no alarm. A guest that ignores wakes and polls (from a
+`jinn:clock` alarm) still works.
 
 ## Not provided in v0.1
 
@@ -34,5 +45,6 @@ non-loopback listening, and UDP are out of scope.
 ## Ledger
 
 `NetListening { handle, port }`, `NetAccepted { listener, handle }`,
-`NetClosed { handle }` — with the calling entry's attribution. Bytes are
-data plane and are not ledgered.
+`NetClosed { handle }`, `NetReadable { handle }` (one per delivered wake)
+— with the calling entry's attribution. Bytes are data plane and are not
+ledgered.

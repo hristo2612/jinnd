@@ -299,7 +299,17 @@ interface process {
 /// connections are KERNEL REGISTRATIONS: closed on suspend and on
 /// dispose, ledgered; a plugin re-listens in `activate`. Every call is
 /// non-blocking (R1): `accept` and `read` answer `would-block`, `write`
-/// answers what the socket accepted.
+/// answers what the socket accepted. READINESS WAKE (M2-K7 edition,
+/// additive — no signature changed): the kernel delivers
+/// `lifecycle.handle-event(handle, "jinn:net/readable", <8-byte LE
+/// handle>)` to the holding instance when a listener has a pending
+/// connection or a connection has bytes or EOF — the token IS the socket
+/// handle. One wake per readiness transition the guest has not yet acted
+/// on (level-triggered, coalesced; a flood of bytes is one wake until the
+/// guest reads; EOF wakes once — R9), each a `NetReadable` ledger event.
+/// A server therefore holds NO alarm; the guest that ignores wakes and
+/// polls still works. `accept` and `read` re-arm the handle's wake;
+/// nothing else does.
 interface net {
   /// The bundle's own error, verbatim (R3, R12; round 4): `not-found` is
   /// an unknown or foreign handle, `denied` a ledgered grant refusal,

@@ -64,6 +64,13 @@ impl WasmBody {
     pub fn restate_seat(&self, seat: SeatSpec) {
         *lock(&self.seat) = seat;
     }
+
+    /// The profile entry this body hosts (M2-K7: the ledger's entry column
+    /// is filled from the fiber → entry mapping the lane knows).
+    #[must_use]
+    pub fn entry(&self) -> &EntryId {
+        &self.entry
+    }
 }
 
 impl Rebind for WasmBody {
@@ -141,6 +148,12 @@ impl FiberBody for WasmBody {
                     slot: Some(Arc::clone(&self.slot)),
                     staging: false,
                 },
+            );
+            // Host-provider wakes (M2-K7 `jinn:net/readable`) deliver to
+            // THIS instance's own face, like a listener's or an alarm's.
+            core.broker.attach_target(
+                peer,
+                crate::handle::peer_face(&handle) as Arc<dyn crate::topics::EventTarget>,
             );
             lock(&core.roster).insert(
                 self.entry.clone(),

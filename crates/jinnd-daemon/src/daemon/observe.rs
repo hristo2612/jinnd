@@ -3,11 +3,11 @@
 //! `daemon.rs` by responsibility (R10 file hygiene).
 
 use jinnd_api::{
-    EffectId, EntryId, ErrorCode, FiberId, FiberState, KernelError, LedgerEventKind, LedgerQuery,
-    LedgerRecord, RevertKey, RevertResolution,
+    EffectId, EntryId, ErrorCode, FiberId, FiberState, KernelError, LedgerQuery, LedgerRecord,
+    RevertKey, RevertResolution,
 };
 
-use crate::support::{error, lock};
+use crate::support::error;
 
 use super::{Daemon, storage};
 
@@ -104,17 +104,15 @@ impl Daemon {
     /// Emits every committed fiber transition the ledger has not yet seen
     /// (R6: transitions are ledger events; ordered, unreceipted lane).
     pub fn sync_transitions(&self) {
-        let mut fibers = lock(&self.fibers);
-        for tracked in fibers.values_mut() {
-            let transitions = tracked.fiber.record().transitions;
-            for transition in transitions.iter().skip(tracked.recorded) {
-                self.ledger.record(
-                    LedgerEventKind::FiberTransition(transition.clone()),
-                    None,
-                    Some(tracked.fiber.id()),
-                );
-            }
-            tracked.recorded = transitions.len();
-        }
+        crate::support::sync_transitions(&self.fibers, &self.ledger);
+    }
+
+    /// The file watcher is armed (M2-K7 `jinn:introspect` readiness): the
+    /// shell says so once `Watch::start` returned — the daemon never
+    /// claims a watcher it cannot see.
+    pub fn mark_watcher_armed(&self) {
+        self.readiness
+            .watcher_armed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

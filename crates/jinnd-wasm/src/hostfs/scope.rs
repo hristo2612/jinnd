@@ -9,15 +9,32 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use jinnd_api::{ErrorCode, KernelError};
+use jinnd_api::{ErrorCode, KernelError, RefusalReason};
 
 use crate::broker_state::refusal;
 
-fn escapes(path: &str) -> KernelError {
-    refusal(
-        ErrorCode::EffectFailed,
-        format!("fs path escapes its scope: {path:?}"),
-    )
+/// One containment refusal: the typed class the ledger records (R3) and
+/// the error the caller receives.
+#[derive(Debug)]
+pub(crate) struct Refused {
+    pub(crate) reason: RefusalReason,
+    pub(crate) error: KernelError,
+}
+
+impl From<Refused> for KernelError {
+    fn from(refused: Refused) -> Self {
+        refused.error
+    }
+}
+
+fn escapes(path: &str) -> Refused {
+    Refused {
+        reason: RefusalReason::ScopeMismatch,
+        error: refusal(
+            ErrorCode::EffectFailed,
+            format!("fs path escapes its scope: {path:?}"),
+        ),
+    }
 }
 
 /// The lexical shape every scoped path and every scope must have: rooted
@@ -28,7 +45,7 @@ fn escapes(path: &str) -> KernelError {
 /// # Errors
 ///
 /// A path with any non-normal component.
-pub(crate) fn lexical(path: &str) -> Result<PathBuf, KernelError> {
+pub(crate) fn lexical(path: &str) -> Result<PathBuf, Refused> {
     let relative = Path::new(path.trim_start_matches('/'));
     if relative
         .components()
@@ -47,7 +64,7 @@ pub(crate) fn lexical(path: &str) -> Result<PathBuf, KernelError> {
 ///
 /// A lexically escaping path, a resolved path outside `root` (a link out),
 /// or an unresolvable existing ancestor (refused, never lexically checked).
-pub(crate) fn resolve(root: &Path, path: &str) -> Result<PathBuf, KernelError> {
+pub(crate) fn resolve(root: &Path, path: &str) -> Result<PathBuf, Refused> {
     let candidate = root.join(lexical(path)?);
     let mut existing = candidate.as_path();
     let mut tail = Vec::new();
@@ -73,10 +90,13 @@ pub(crate) fn resolve(root: &Path, path: &str) -> Result<PathBuf, KernelError> {
                 existing = parent;
             }
             Err(unresolvable) => {
-                return Err(refusal(
-                    ErrorCode::EffectFailed,
-                    format!("fs path unresolvable, refused: {path:?}: {unresolvable}"),
-                ));
+                return Err(Refused {
+                    reason: RefusalReason::Unresolvable,
+                    error: refusal(
+                        ErrorCode::EffectFailed,
+                        format!("fs path unresolvable, refused: {path:?}: {unresolvable}"),
+                    ),
+                });
             }
         }
     }
@@ -88,11 +108,7 @@ pub(crate) fn resolve(root: &Path, path: &str) -> Result<PathBuf, KernelError> {
 /// # Errors
 ///
 /// As [`resolve`], or a resolved path beside every granted scope.
-pub(crate) fn authorized(
-    root: &Path,
-    scopes: &[String],
-    path: &str,
-) -> Result<PathBuf, KernelError> {
+pub(crate) fn authorized(root: &Path, scopes: &[String], path: &str) -> Result<PathBuf, Refused> {
     let resolved = resolve(root, path)?;
     if scopes.is_empty() {
         return Ok(resolved);
@@ -102,8 +118,11 @@ pub(crate) fn authorized(
             return Ok(resolved);
         }
     }
-    Err(refusal(
-        ErrorCode::EffectFailed,
-        format!("fs path outside the caller's granted scope: {path:?}"),
-    ))
+    Err(Refused {
+        reason: RefusalReason::ScopeMismatch,
+        error: refusal(
+            ErrorCode::EffectFailed,
+            format!("fs path outside the caller's granted scope: {path:?}"),
+        ),
+    })
 }

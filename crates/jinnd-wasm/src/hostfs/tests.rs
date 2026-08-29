@@ -40,7 +40,7 @@ impl Recording {
         self.kinds()
             .iter()
             .filter(|(kind, attributed)| {
-                matches!(kind, LedgerEventKind::GrantRefused { contract } if contract == FS_CONTRACT)
+                matches!(kind, LedgerEventKind::GrantRefused { contract, .. } if contract == FS_CONTRACT)
                     && *attributed == Some(fiber)
             })
             .count()

@@ -234,7 +234,7 @@ async fn a_wrong_typed_scope_refuses_on_the_record_and_never_widens() {
     assert!(
         records.iter().any(|record| matches!(
             &record.kind,
-            LedgerEventKind::GrantRefused { contract } if contract == "jinn:fs"
+            LedgerEventKind::GrantRefused { contract, .. } if contract == "jinn:fs"
         )),
         "the guest's fs call was refused at the broker choke point — the \
          wrong-typed scope never widened into root authority: {records:?}"
