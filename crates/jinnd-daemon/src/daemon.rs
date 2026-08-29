@@ -61,9 +61,12 @@ impl Daemon {
     ///
     /// # Errors
     ///
-    /// Ledger storage refusals and wasm engine construction failures.
+    /// Ledger storage refusals, wasm engine construction failures, and a
+    /// configured `jinn:keystore` master-key source that cannot be read
+    /// (fail-closed: the daemon refuses to start rather than fall through
+    /// to a different key).
     pub fn open(paths: DaemonPaths) -> Result<Self, KernelError> {
-        Self::open_with(paths, MasterKeySource::from_env())
+        Self::open_with(paths, MasterKeySource::from_env()?)
     }
 
     /// [`Daemon::open`] with an explicit `jinn:keystore` master-key source

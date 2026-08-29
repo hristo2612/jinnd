@@ -8,7 +8,7 @@ use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use jinnd_api::{ErrorCode, FiberId, LedgerEventKind};
+use jinnd_api::{ErrorCode, FiberId, LedgerEventKind, RefusalReason};
 
 use super::HostNet;
 use crate::broker::Broker;
@@ -77,7 +77,7 @@ fn rig() -> Rig {
         guest,
         NET_CONTRACT,
         GrantScope::Net(NetScope {
-            bind: Some((port, port)),
+            bind: vec![(port, port)],
             outbound: Vec::new(),
         }),
     );
@@ -627,5 +627,47 @@ async fn a_flood_wakes_once_and_a_released_socket_never_wakes_again() {
         rig.ledger.readable_wakes(listener),
         before,
         "no wake after release"
+    );
+}
+
+/// Round-3 ruling (Law 1), red-first at the provider seam: a peer holding
+/// two DISJOINT single-port grants may bind either granted port and is
+/// refused, on the record, for the port between them — the hull an earlier
+/// composition took would have served a port no grant conferred.
+#[tokio::test]
+async fn a_port_between_two_disjoint_grants_refuses_on_the_record() {
+    let rig = rig();
+    let peer = rig.broker.register_peer(Some(FiberId(11)));
+    let low = free_port();
+    let high = low.wrapping_add(2);
+    for port in [low, high] {
+        rig.broker.grant_with(
+            peer,
+            NET_CONTRACT,
+            GrantScope::Net(NetScope {
+                bind: vec![(port, port)],
+                outbound: Vec::new(),
+            }),
+        );
+    }
+    let listen = |port: u16| rig.call(peer, "listen", format!("127.0.0.1:{port}").into_bytes());
+    assert!(listen(low).await.is_ok(), "the lower granted port binds");
+    assert!(listen(high).await.is_ok(), "the upper granted port binds");
+    assert_eq!(
+        listen(low.wrapping_add(1)).await,
+        Err(ErrorCode::EffectFailed),
+        "the port between two disjoint grants was never conferred"
+    );
+    assert_eq!(rig.ledger.refusals(), 1, "the refusal is on the record");
+    assert!(
+        rig.ledger.kinds().iter().any(|(kind, by)| matches!(
+            kind,
+            LedgerEventKind::GrantRefused {
+                reason: RefusalReason::ScopeMismatch,
+                contract,
+                ..
+            } if contract == NET_CONTRACT
+        ) && *by == Some(FiberId(11))),
+        "refused as a scope mismatch, attributed to the caller"
     );
 }

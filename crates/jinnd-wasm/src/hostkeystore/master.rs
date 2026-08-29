@@ -6,6 +6,7 @@
 //! decrypt: it holds the sealed document, the (public) derivation salt,
 //! and sealed inverses, nothing more.
 
+use std::ffi::OsString;
 use std::path::Path;
 
 use jinnd_api::{ErrorCode, KernelError};
@@ -54,31 +55,60 @@ impl std::fmt::Debug for MasterKeySource {
 
 impl MasterKeySource {
     /// The daemon's source, from its environment: the passphrase variable,
-    /// else the passphrase file, else the platform keychain (macOS), else
-    /// none. An empty passphrase is no passphrase (fail-closed).
-    #[must_use]
-    pub fn from_env() -> Self {
-        let mut passphrase = std::env::var(PASSPHRASE_ENV)
-            .map(String::into_bytes)
-            .ok()
-            .or_else(|| std::fs::read(std::env::var(PASSPHRASE_FILE_ENV).ok()?).ok())
-            .unwrap_or_default();
-        while passphrase
-            .last()
-            .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
-        {
-            passphrase.pop();
+    /// else the passphrase file, else the platform default (the keychain on
+    /// macOS, no source elsewhere).
+    ///
+    /// # Errors
+    ///
+    /// A CONFIGURED source that cannot be read fails closed (round-3
+    /// Major): a variable set empty, or a file that is missing, unreadable,
+    /// or empty, is a typed error NAMING the source — it never degrades to
+    /// [`Self::Absent`] or to another backend.
+    pub fn from_env() -> Result<Self, KernelError> {
+        Self::from_vars(
+            std::env::var_os(PASSPHRASE_ENV),
+            std::env::var_os(PASSPHRASE_FILE_ENV),
+        )
+    }
+
+    /// [`Self::from_env`] over explicit variable values (its whole rule,
+    /// testable without mutating the process environment).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_env`].
+    pub(crate) fn from_vars(
+        passphrase: Option<OsString>,
+        file: Option<OsString>,
+    ) -> Result<Self, KernelError> {
+        if let Some(value) = passphrase {
+            let bytes = trimmed(os_bytes(&value, PASSPHRASE_ENV)?);
+            if bytes.is_empty() {
+                return Err(unreadable(PASSPHRASE_ENV, None, &"it is set but empty"));
+            }
+            return Ok(Self::Passphrase(bytes));
         }
-        if !passphrase.is_empty() {
-            return Self::Passphrase(passphrase);
+        if let Some(path) = file {
+            let path = std::path::PathBuf::from(path);
+            let read = std::fs::read(&path)
+                .map_err(|error| unreadable(PASSPHRASE_FILE_ENV, Some(&path), &error))?;
+            let bytes = trimmed(read);
+            if bytes.is_empty() {
+                return Err(unreadable(
+                    PASSPHRASE_FILE_ENV,
+                    Some(&path),
+                    &"the passphrase file is empty",
+                ));
+            }
+            return Ok(Self::Passphrase(bytes));
         }
         #[cfg(target_os = "macos")]
         {
-            Self::Keychain
+            Ok(Self::Keychain)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            Self::Absent
+            Ok(Self::Absent)
         }
     }
 
@@ -102,6 +132,38 @@ impl MasterKeySource {
             )),
         }
     }
+}
+
+/// The configured source is named, with why it could not be read and
+/// never any of its bytes; the daemon refuses to start rather than fall
+/// through to a different key.
+fn unreadable(variable: &str, path: Option<&Path>, why: &dyn std::fmt::Display) -> KernelError {
+    let named = path.map_or_else(String::new, |path| format!(" ({})", path.display()));
+    refusal(
+        ErrorCode::InvalidProfile,
+        format!("keystore master key source {variable}{named} cannot be read: {why}"),
+    )
+}
+
+/// A variable's raw bytes; a value the platform cannot render as text is
+/// unreadable, not absent.
+fn os_bytes(value: &OsString, variable: &str) -> Result<Vec<u8>, KernelError> {
+    value
+        .clone()
+        .into_string()
+        .map(String::into_bytes)
+        .map_err(|_| unreadable(variable, None, &"it is not valid text"))
+}
+
+/// Trailing newlines are the shell's, not the operator's.
+fn trimmed(mut bytes: Vec<u8>) -> Vec<u8> {
+    while bytes
+        .last()
+        .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
+    {
+        bytes.pop();
+    }
+    bytes
 }
 
 /// OS entropy into `into`, or a typed refusal.

@@ -8,7 +8,8 @@ use std::sync::Arc;
 use jinnd_api::{FiberId, LedgerEventKind};
 
 use crate::broker::Broker;
-use crate::grants::GrantScope;
+use crate::grants::{GrantScope, NetScope};
+use crate::hostcaps::NET_CONTRACT;
 use crate::hostfs::FS_CONTRACT;
 use crate::hostkeystore::KEYSTORE_CONTRACT;
 use crate::peer::LedgerSink;
@@ -21,6 +22,20 @@ impl LedgerSink for Silent {
 
 fn broker() -> Broker {
     Broker::new(Arc::new(Silent) as Arc<dyn LedgerSink>)
+}
+
+fn net(ranges: &[(u16, u16)]) -> GrantScope {
+    GrantScope::Net(NetScope {
+        bind: ranges.to_vec(),
+        outbound: Vec::new(),
+    })
+}
+
+fn bind_of(broker: &Broker, peer: u64) -> NetScope {
+    match broker.policy(peer, NET_CONTRACT) {
+        Some(GrantScope::Net(policy)) => policy,
+        other => panic!("net policy: {other:?}"),
+    }
 }
 
 fn ops(names: &[&str]) -> Vec<String> {
@@ -101,4 +116,50 @@ fn two_attenuated_grants_union_their_classes_and_stay_attenuated() {
             "the union of two attenuations is still attenuated"
         );
     }
+}
+
+/// Round-3 ruling (Law 1), red-first: two disjoint bind grants compose to
+/// their EXACT set of ranges, never the numeric hull — a hull over
+/// `[1000,1000] ∪ [2000,2000]` would confer port 1500 that no grant named.
+/// Normalization (sort, coalesce overlapping and adjacent) keeps equal sets
+/// equal, so composition stays order-independent.
+#[test]
+fn disjoint_bind_ranges_compose_to_their_exact_set_never_the_hull() {
+    let broker = broker();
+    let forward = broker.register_peer(Some(FiberId(3)));
+    let reverse = broker.register_peer(Some(FiberId(4)));
+    let low = || net(&[(1000, 1000)]);
+    let high = || net(&[(2000, 2000)]);
+    broker.grant_with(forward, NET_CONTRACT, low());
+    broker.grant_with(forward, NET_CONTRACT, high());
+    broker.grant_with(reverse, NET_CONTRACT, high());
+    broker.grant_with(reverse, NET_CONTRACT, low());
+    for peer in [forward, reverse] {
+        let policy = bind_of(&broker, peer);
+        assert_eq!(policy.bind, vec![(1000, 1000), (2000, 2000)], "{policy:?}");
+        assert!(policy.admits_port(1000) && policy.admits_port(2000));
+        assert!(
+            !policy.admits_port(1500),
+            "the hull would confer a port no grant named: {policy:?}"
+        );
+    }
+}
+
+/// Normalization is what makes the set commutative: overlapping and
+/// ADJACENT ranges coalesce, so `[10,20] ∪ [21,30]` and its reverse are the
+/// same one range, while a gap of one port stays two.
+#[test]
+fn bind_sets_normalize_so_either_order_compares_equal() {
+    let broker = broker();
+    let forward = broker.register_peer(Some(FiberId(5)));
+    let reverse = broker.register_peer(Some(FiberId(6)));
+    broker.grant_with(forward, NET_CONTRACT, net(&[(10, 20), (40, 41)]));
+    broker.grant_with(forward, NET_CONTRACT, net(&[(21, 30), (15, 18)]));
+    broker.grant_with(reverse, NET_CONTRACT, net(&[(15, 18), (21, 30)]));
+    broker.grant_with(reverse, NET_CONTRACT, net(&[(40, 41), (10, 20)]));
+    let a = bind_of(&broker, forward);
+    assert_eq!(a.bind, bind_of(&broker, reverse).bind, "order-independent");
+    assert_eq!(a.bind, vec![(10, 30), (40, 41)], "{a:?}");
+    assert!(a.admits_port(30) && a.admits_port(40));
+    assert!(!a.admits_port(31) && !a.admits_port(39), "{a:?}");
 }

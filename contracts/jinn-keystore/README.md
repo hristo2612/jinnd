@@ -34,7 +34,12 @@ ciphertext only.
 The master key comes from ONE of two sources, chosen at daemon start:
 
 - **Passphrase** (`JINND_KEYSTORE_PASSPHRASE`, or a file named by
-  `JINND_KEYSTORE_PASSPHRASE_FILE`; trailing newline ignored; empty = none).
+  `JINND_KEYSTORE_PASSPHRASE_FILE`; trailing newline ignored). A CONFIGURED
+  source that cannot be read FAILS CLOSED: a variable set empty, or a file
+  that is missing, unreadable, or empty, refuses daemon start with a typed
+  error naming the variable and the path — it never degrades to "no source"
+  or to the keychain, because a silent fall-through would seal the next
+  secret under a key the operator did not choose.
   The key is derived with scrypt (N = 2^15, r = 8, p = 1) over the store's
   salt. The store is exactly as confidential as the passphrase's keeping;
   a lost passphrase loses every secret (no recovery, by design). This is

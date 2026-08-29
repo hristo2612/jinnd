@@ -28,12 +28,44 @@ pub struct ProcessScope {
     pub env: EnvPolicy,
 }
 
-/// One `net-policy` scope: an inclusive loopback bind port range and the
+/// One `net-policy` scope: the inclusive loopback bind port ranges and the
 /// outbound host allowlist (carried for the edition that consumes it).
+///
+/// `bind` is a SET of ranges, normalized (sorted, overlapping and adjacent
+/// ranges coalesced) so equal sets compare equal and composition stays
+/// order-independent. It is never the numeric HULL of what was granted: a
+/// hull over `[1000,1000]` and `[2000,2000]` would admit port 1500 that no
+/// grant conferred (Law 1, M2-K8 round-3 ruling). Empty admits no bind.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NetScope {
-    pub bind: Option<(u16, u16)>,
+    pub bind: Vec<(u16, u16)>,
     pub outbound: Vec<String>,
+}
+
+impl NetScope {
+    /// Whether the granted set admits binding `port` — true iff SOME range
+    /// contains it (fail-closed: the empty set admits nothing).
+    #[must_use]
+    pub fn admits_port(&self, port: u16) -> bool {
+        self.bind
+            .iter()
+            .any(|(low, high)| (*low..=*high).contains(&port))
+    }
+}
+
+/// Sorts and coalesces `ranges` in place: overlapping and ADJACENT ranges
+/// merge (`[10,20]` with `[21,30]` is one `[10,30]`), a gap of one port
+/// stays two. The normal form is what makes union commutative.
+fn coalesce(ranges: &mut Vec<(u16, u16)>) {
+    ranges.sort_unstable();
+    let mut normal: Vec<(u16, u16)> = Vec::with_capacity(ranges.len());
+    for (low, high) in ranges.drain(..) {
+        match normal.last_mut() {
+            Some((_, held)) if low <= held.saturating_add(1) => *held = (*held).max(high),
+            _ => normal.push((low, high)),
+        }
+    }
+    *ranges = normal;
 }
 
 /// The authority one admitted grant holds at the broker (R4: the caller's
@@ -67,8 +99,8 @@ impl GrantScope {
     /// Composes a second grant of the same contract into this authority
     /// (round-2 ruling 2, Law 1): commutative, so grant order never
     /// changes what a peer holds. Root absorbs; list scopes (paths, keys,
-    /// entries, exec/env/outbound allowlists) union; two bind ranges
-    /// compose to their hull, the one single-range commutative form.
+    /// entries, exec/env/outbound allowlists) union; bind ranges union as
+    /// a normalized SET, never a hull (round-3 ruling, Law 1).
     /// Scopes of different kinds cannot both be admitted for one contract
     /// (the bundle declares one scope type), so a mismatch keeps the held
     /// authority rather than inventing one.
@@ -89,10 +121,8 @@ impl GrantScope {
             }
             (Self::Net(held), Self::Net(more)) => {
                 extend_unique(&mut held.outbound, more.outbound);
-                held.bind = match (held.bind, more.bind) {
-                    (Some((lo, hi)), Some((lo2, hi2))) => Some((lo.min(lo2), hi.max(hi2))),
-                    (held, more) => held.or(more),
-                };
+                held.bind.extend(more.bind);
+                coalesce(&mut held.bind);
             }
             _ => {}
         }
@@ -240,10 +270,10 @@ pub(super) fn net_scope(contract: &str, scope: &ScopeValue) -> Result<NetScope, 
         )));
     };
     let bind = match field(fields, "bind") {
-        None => None,
+        None => Vec::new(),
         Some(ScopeValue::List(range)) => match range.as_slice() {
             [ScopeValue::Rate(low), ScopeValue::Rate(high)] if low <= high && *high <= 65_535 => {
-                Some((*low as u16, *high as u16))
+                vec![(*low as u16, *high as u16)]
             }
             _ => {
                 return Err(refused(format!(

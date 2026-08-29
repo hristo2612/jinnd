@@ -3,7 +3,8 @@
 //! value-never-on-record law (ledger, labels, errors, disk). Split by
 //! seam (test-file cap soft): `authority` (bare grant, attenuation),
 //! `retention` (LIFO withdrawal, witness, reopen, key names), `vault`
-//! (the master key is never on the data root).
+//! (the master key is never on the data root), `source` (a configured
+//! master-key source that cannot be read fails closed).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,6 +13,7 @@ use jinnd_api::{EffectId, ErrorCode, FiberId, LedgerEventKind, RefusalReason};
 
 mod authority;
 mod retention;
+mod source;
 mod vault;
 
 use super::{HostKeystore, KEYSTORE_CONTRACT, MasterKeySource};

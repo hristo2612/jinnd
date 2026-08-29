@@ -337,7 +337,7 @@ fn a_net_policy_parses_its_declared_shape_and_refuses_the_rest() {
     assert_eq!(
         authority(&grant),
         GrantScope::Net(NetScope {
-            bind: Some((7800, 7899)),
+            bind: vec![(7800, 7899)],
             outbound: vec!["example.invalid".into()],
         })
     );
