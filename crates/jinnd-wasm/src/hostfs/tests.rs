@@ -774,8 +774,7 @@ async fn a_reader_racing_a_large_write_never_sees_a_torn_document() {
         let fill = if round % 2 == 0 { b'B' } else { b'A' };
         rig.ok("write", write_wire("/big.bin", &vec![fill; SIZE]))
             .await;
-        rig.ok("append", write_wire("/big.bin", &vec![fill; 64]))
-            .await;
+        rig.ok("append", write_wire("/big.bin", &[fill; 64])).await;
     }
     done.store(true, std::sync::atomic::Ordering::SeqCst);
     let torn: Vec<usize> = readers
