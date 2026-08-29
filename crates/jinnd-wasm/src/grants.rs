@@ -16,6 +16,7 @@ use crate::hostfs::FS_CONTRACT;
 use crate::hostkeystore::KEYSTORE_CONTRACT;
 
 mod ops;
+mod parse;
 mod policy;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
@@ -177,10 +178,10 @@ fn admit(grant: &Grant) -> Result<(), KernelError> {
             "grant refused: {contract} declares scope type path-prefix; \
              scope {wrote} is not a path"
         ))),
-        (Declared::ProcessPolicy, wrote) => policy::process_scope(contract, wrote).map(|_| ()),
-        (Declared::NetPolicy, wrote) => policy::net_scope(contract, wrote).map(|_| ()),
-        (Declared::EntryIds, wrote) => policy::entry_scope(contract, wrote).map(|_| ()),
-        (Declared::KeyPrefix, wrote) => policy::key_scope(contract, wrote).map(|_| ()),
+        (Declared::ProcessPolicy, wrote) => parse::process_scope(contract, wrote).map(|_| ()),
+        (Declared::NetPolicy, wrote) => parse::net_scope(contract, wrote).map(|_| ()),
+        (Declared::EntryIds, wrote) => parse::entry_scope(contract, wrote).map(|_| ()),
+        (Declared::KeyPrefix, wrote) => parse::key_scope(contract, wrote).map(|_| ()),
         (Declared::NoScope, wrote) => Err(refused(format!(
             "grant refused: {contract} declares no scope type; scope {wrote} cannot validate"
         ))),
@@ -203,27 +204,27 @@ pub(crate) fn authority(grant: &Grant) -> GrantScope {
         (Declared::ProcessPolicy, scope) => GrantScope::Process(
             scope
                 .as_ref()
-                .and_then(|wrote| policy::process_scope(contract, wrote).ok())
+                .and_then(|wrote| parse::process_scope(contract, wrote).ok())
                 .unwrap_or_default(),
         ),
         (Declared::NetPolicy, scope) => GrantScope::Net(
             scope
                 .as_ref()
-                .and_then(|wrote| policy::net_scope(contract, wrote).ok())
+                .and_then(|wrote| parse::net_scope(contract, wrote).ok())
                 .unwrap_or_default(),
         ),
         // A bare profile grant patches NOTHING (default deny, M2-K2 law).
         (Declared::EntryIds, scope) => GrantScope::Entries(
             scope
                 .as_ref()
-                .and_then(|wrote| policy::entry_scope(contract, wrote).ok())
+                .and_then(|wrote| parse::entry_scope(contract, wrote).ok())
                 .unwrap_or_default(),
         ),
         // A bare keystore grant admits NO key (default deny, M2-K8).
         (Declared::KeyPrefix, scope) => GrantScope::Keys(
             scope
                 .as_ref()
-                .and_then(|wrote| policy::key_scope(contract, wrote).ok())
+                .and_then(|wrote| parse::key_scope(contract, wrote).ok())
                 .unwrap_or_default(),
         ),
         (_, Some(ScopeValue::Path(path))) => GrantScope::Paths(vec![path.clone()]),
