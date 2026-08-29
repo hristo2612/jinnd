@@ -5,20 +5,31 @@
 //! digests only: the value bytes appear NOWHERE on disk (ledger file,
 //! sealed store, inverses); the daemon's keyed revert restores a deleted
 //! value from the sealed spill; dispose withdraws the entry's keystore
-//! trail LIFO. A read-only keystore grant refuses put/delete and a
-//! read-only fs grant refuses write/append/remove, each a ledgered scope
-//! refusal with the entry Active (the guest saw the typed denial).
+//! trail LIFO. The grant-attenuation pins live in `authority`, the
+//! journal-identity pins in `journal` (split by seam; test-file cap soft).
 
+#[path = "../support/mod.rs"]
 mod support;
+
+mod authority;
+mod journal;
 
 use std::path::PathBuf;
 
 use jinnd_api::{FiberState, LedgerEventKind, LedgerRecord, RefusalReason, RevertResolution};
-use jinnd_daemon::{Daemon, DaemonPaths};
+use jinnd_daemon::{Daemon, DaemonPaths, MasterKeySource};
 
 /// The fixture's secret (fixtures/counter-plugin `SECRET`).
 const SECRET: &[u8] = b"sk-live-0xDEADBEEF-fixture-secret";
 const KEPT: &[u8] = b"kept-0xCAFEBABE-value";
+/// The operator passphrase the tests supply OUTSIDE the data root (round-2
+/// vault ruling): the daemon derives the master key from it; nothing under
+/// the home may ever hold it.
+const PASSPHRASE: &[u8] = b"operator-passphrase-0xFEEDFACE";
+
+fn passphrase() -> MasterKeySource {
+    MasterKeySource::Passphrase(PASSPHRASE.to_vec())
+}
 
 struct Home(PathBuf);
 
@@ -64,7 +75,8 @@ fn paths(home: &Home, grants: serde_json::Value, mode: &str) -> DaemonPaths {
 }
 
 async fn booted(paths: DaemonPaths) -> Daemon {
-    let daemon = Daemon::open(paths).unwrap_or_else(|error| panic!("open: {error:?}"));
+    let daemon =
+        Daemon::open_with(paths, passphrase()).unwrap_or_else(|error| panic!("open: {error:?}"));
     let report = daemon
         .boot()
         .await
@@ -283,47 +295,4 @@ async fn the_keystore_bundle_round_trips_and_the_value_is_nowhere_on_disk() {
         contains(&disk, b"engines/openai"),
         "the key NAME is on the record"
     );
-}
-
-#[tokio::test]
-async fn a_read_only_keystore_grant_refuses_put_and_delete_on_the_record() {
-    let home = home("read-only");
-    let paths = paths(
-        &home,
-        serde_json::json!([{ "contract": "jinn:keystore", "scope": ["engines/"], "ops": ["get", "list"] }]),
-        "keystore-readonly",
-    );
-    let daemon = booted(paths).await;
-    assert!(active(&daemon), "the guest saw typed denials, not a fault");
-    let refused = scope_refusals(&events(&daemon).await, "jinn:keystore");
-    assert_eq!(refused.len(), 2, "{refused:?}");
-    assert!(refused[0].contains("put") && refused[1].contains("delete"));
-    daemon
-        .shutdown()
-        .await
-        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
-}
-
-#[tokio::test]
-async fn a_read_only_fs_grant_refuses_write_append_and_remove_on_the_record() {
-    let home = home("fs-read-only");
-    let paths = paths(
-        &home,
-        serde_json::json!([{ "contract": "jinn:fs", "ops": ["read", "list", "meta"] }]),
-        "fs-readonly",
-    );
-    let daemon = booted(paths.clone()).await;
-    assert!(active(&daemon), "the guest saw typed denials, not a fault");
-    assert!(!paths.data.join("doc.txt").exists(), "nothing landed");
-    let refused = scope_refusals(&events(&daemon).await, "jinn:fs");
-    assert_eq!(refused.len(), 3, "{refused:?}");
-    assert!(
-        refused[0].contains("write")
-            && refused[1].contains("append")
-            && refused[2].contains("remove")
-    );
-    daemon
-        .shutdown()
-        .await
-        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }

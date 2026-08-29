@@ -145,11 +145,14 @@ impl SeatState {
         ledger: Option<(&dyn LedgerSink, FiberId)>,
     ) -> Vec<HostRecord> {
         // The world effects, in registration order, once each (a keyed
-        // replay journaled its id again).
+        // replay journaled its id again) — identity is (contract, effect):
+        // ids are per provider (round-2 ruling 3; R5).
         let mut retained: Vec<HostRecord> = Vec::new();
         for registration in &self.registrations {
             if let Registration::Host(record) = registration
-                && !retained.iter().any(|held| held.effect == record.effect)
+                && !retained
+                    .iter()
+                    .any(|held| held.contract == record.contract && held.effect == record.effect)
             {
                 retained.push(record.clone());
             }

@@ -62,7 +62,10 @@ pub use hostcaps::{NET_CONTRACT, PROCESS_CONTRACT, registration_label};
 pub use hostclock::HostClock;
 pub use hostfs::wire::FileMeta;
 pub use hostfs::{FS_CONTRACT, HostFs, UndoAction, effect_label};
-pub use hostkeystore::{HostKeystore, KEYSTORE_CONTRACT, keystore_label};
+pub use hostkeystore::{
+    HostKeystore, KEYSTORE_CONTRACT, MasterKeySource, PASSPHRASE_ENV, PASSPHRASE_FILE_ENV,
+    keystore_label,
+};
 pub use hostnet::{HostNet, READABLE_TOPIC};
 pub use hostprocess::HostProcess;
 pub use instance::Seat;

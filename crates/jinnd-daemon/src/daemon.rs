@@ -12,7 +12,9 @@ use jinnd_context::ContextTree;
 use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::{Document, FileStore, Loader};
 use jinnd_registry::Registry;
-use jinnd_wasm::{HostClock, HostFs, HostKeystore, HostNet, HostProcess, LaneCore, LedgerSink};
+use jinnd_wasm::{
+    HostClock, HostFs, HostKeystore, HostNet, HostProcess, LaneCore, LedgerSink, MasterKeySource,
+};
 
 pub use crate::paths::DaemonPaths;
 use crate::support::{SharedFibers, Sink, error, lock};
@@ -61,6 +63,18 @@ impl Daemon {
     ///
     /// Ledger storage refusals and wasm engine construction failures.
     pub fn open(paths: DaemonPaths) -> Result<Self, KernelError> {
+        Self::open_with(paths, MasterKeySource::from_env())
+    }
+
+    /// [`Daemon::open`] with an explicit `jinn:keystore` master-key source
+    /// (M2-K8 round-2 ruling 1): the key is never under the data root, so
+    /// the daemon is told where it comes from.
+    ///
+    /// # Errors
+    ///
+    /// As [`Daemon::open`]; also an existing sealed store the source
+    /// cannot open (fail-closed).
+    pub fn open_with(paths: DaemonPaths, master: MasterKeySource) -> Result<Self, KernelError> {
         std::fs::create_dir_all(&paths.data)
             .map_err(|refused| error(ErrorCode::InvalidProfile, refused.to_string()))?;
         let ledger = Ledger::open(&paths.ledger).map_err(storage)?;
@@ -87,6 +101,7 @@ impl Daemon {
         // reach; its retained journal spans processes like the fs one.
         let keystore = Arc::new(HostKeystore::open(
             paths.keystore(),
+            master,
             Arc::clone(&lane.sink),
         )?);
         keystore.register(&lane.broker)?;

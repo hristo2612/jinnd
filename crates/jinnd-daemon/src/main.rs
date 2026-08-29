@@ -14,6 +14,8 @@ fn usage() -> ! {
     eprintln!(
         "usage: jinnd --profile <profile.json> --ledger <ledger.sqlite> \
          [--artifacts <dir>] [--data <dir>]\n\
+         env: JINND_KEYSTORE_PASSPHRASE | JINND_KEYSTORE_PASSPHRASE_FILE \
+         (keystore master key; macOS default: the keychain)\n\
          stdin: revert <effect-id> <key> | status"
     );
     std::process::exit(2);

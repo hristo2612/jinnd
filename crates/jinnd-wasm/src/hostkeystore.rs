@@ -32,10 +32,12 @@ use crate::lane::lock;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
 mod effects;
+mod master;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
 mod vault;
 
+pub use master::{MasterKeySource, PASSPHRASE_ENV, PASSPHRASE_FILE_ENV};
 use vault::Vault;
 
 /// The provider's contract name.
@@ -71,16 +73,21 @@ pub struct HostKeystore {
 }
 
 impl HostKeystore {
-    /// Opens the provider under `dir` (the sealed store, its master key,
-    /// and its inverse spill), appending its Law-2 events to `sink`.
-    /// Blocking — construction only.
+    /// Opens the provider under `dir` (the sealed store and its inverse
+    /// spill; the master key comes from `master`, never from `dir`),
+    /// appending its Law-2 events to `sink`. Blocking — construction only.
     ///
     /// # Errors
     ///
-    /// The store cannot be created, read, or authenticated, or its
-    /// retention store is unreadable (fail-closed, as `jinn:fs`).
-    pub fn open(dir: PathBuf, sink: Arc<dyn LedgerSink>) -> Result<Self, KernelError> {
-        let vault = Vault::open(&dir)?;
+    /// The store cannot be created, read, or authenticated (an existing
+    /// document whose key `master` cannot supply is refused whole), or
+    /// its retention store is unreadable (fail-closed, as `jinn:fs`).
+    pub fn open(
+        dir: PathBuf,
+        master: MasterKeySource,
+        sink: Arc<dyn LedgerSink>,
+    ) -> Result<Self, KernelError> {
+        let vault = Vault::open(&dir, master)?;
         let (store, epoch, spilled) = Retention::open(dir.join("inverses"))?;
         let base = (epoch + 1) << 32;
         let next = spilled
@@ -127,6 +134,30 @@ impl HostKeystore {
             KEYSTORE_CONTRACT,
             Arc::new(KeystorePeer(Arc::clone(self))),
         )
+    }
+
+    /// Resolves the master key before the store's first commit — the
+    /// keychain call or the passphrase derivation runs off the async
+    /// threads (R1) — or refuses typed when no source exists. Idempotent;
+    /// callers hold `serial`, so the key resolves once.
+    async fn unlock(&self) -> Result<(), KernelError> {
+        let (source, dir) = {
+            let vault = lock(&self.vault);
+            if !vault.locked() {
+                return Ok(());
+            }
+            vault.pending()
+        };
+        let key = tokio::task::spawn_blocking(move || source.resolve(&dir))
+            .await
+            .map_err(|joined| {
+                refusal(
+                    ErrorCode::EffectFailed,
+                    format!("keystore master key: {joined}"),
+                )
+            })??;
+        lock(&self.vault).install(key);
+        Ok(())
     }
 
     fn broker(&self) -> Option<Arc<Broker>> {

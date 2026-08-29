@@ -1,15 +1,20 @@
-//! Provider-seam pins for M2-K8 (`jinn:keystore`): the bundle's four
-//! operations under a prefix grant, typed not-found, the bare grant that
-//! admits nothing, read-only attenuation, the value-never-on-record law
-//! (ledger, labels, errors, disk), LIFO withdrawal from sealed inverses,
-//! the keyed-revert witness, reopen from disk, and malformed key names.
+//! Provider-seam pins for M2-K8 (`jinn:keystore`): the rig, and the
+//! bundle's four operations under a prefix grant with the
+//! value-never-on-record law (ledger, labels, errors, disk). Split by
+//! seam (test-file cap soft): `authority` (bare grant, attenuation),
+//! `retention` (LIFO withdrawal, witness, reopen, key names), `vault`
+//! (the master key is never on the data root).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{EffectId, ErrorCode, FiberId, LedgerEventKind, RefusalReason};
 
-use super::{HostKeystore, KEYSTORE_CONTRACT};
+mod authority;
+mod retention;
+mod vault;
+
+use super::{HostKeystore, KEYSTORE_CONTRACT, MasterKeySource};
 use crate::broker::Broker;
 use crate::grants::GrantScope;
 use crate::hostwire::Reader;
@@ -17,6 +22,13 @@ use crate::peer::LedgerSink;
 
 const SECRET: &[u8] = b"sk-live-0xDEADBEEF-never-on-the-record";
 const OTHER: &[u8] = b"rotated-0xCAFEBABE-value";
+/// The rig's operator passphrase: supplied to the provider, never under
+/// its home.
+const PASSPHRASE: &[u8] = b"rig-passphrase-0xFEEDFACE";
+
+fn passphrase() -> MasterKeySource {
+    MasterKeySource::Passphrase(PASSPHRASE.to_vec())
+}
 
 struct Recording(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
 
@@ -77,13 +89,20 @@ struct Rig {
 }
 
 fn open(home: &Home, ledger: &Arc<Recording>) -> Arc<HostKeystore> {
-    Arc::new(
-        HostKeystore::open(
-            home.0.join("keystore"),
-            Arc::clone(ledger) as Arc<dyn LedgerSink>,
-        )
-        .unwrap_or_else(|error| panic!("open: {error:?}")),
+    open_with(home, ledger, passphrase()).unwrap_or_else(|error| panic!("open: {error:?}"))
+}
+
+fn open_with(
+    home: &Home,
+    ledger: &Arc<Recording>,
+    master: MasterKeySource,
+) -> Result<Arc<HostKeystore>, jinnd_api::KernelError> {
+    HostKeystore::open(
+        home.0.join("keystore"),
+        master,
+        Arc::clone(ledger) as Arc<dyn LedgerSink>,
     )
+    .map(Arc::new)
 }
 
 fn rig(name: &str) -> Rig {
@@ -248,172 +267,4 @@ async fn the_bundle_round_trips_under_a_prefix_grant_and_never_records_a_value()
         ],
         "name and digest per crossing, never the value"
     );
-}
-
-#[tokio::test]
-async fn a_bare_grant_admits_no_key() {
-    let rig = rig("bare");
-    assert_eq!(
-        rig.call(rig.bare, "put", put_wire("anything", SECRET))
-            .await,
-        Err(ErrorCode::EffectFailed)
-    );
-    assert_eq!(
-        rig.call(rig.bare, "get", b"anything".to_vec()).await,
-        Err(ErrorCode::EffectFailed)
-    );
-    assert!(
-        names(
-            &rig.call(rig.bare, "list", Vec::new())
-                .await
-                .unwrap_or_default()
-        )
-        .is_empty()
-    );
-    assert_eq!(rig.ledger.scope_refusals(FiberId(8)), 2);
-}
-
-#[tokio::test]
-async fn a_read_only_attenuation_refuses_put_and_delete() {
-    let rig = rig("read-only");
-    rig.ok("put", put_wire("engines/a", SECRET)).await;
-    assert_eq!(
-        rig.call(rig.reader, "get", b"engines/a".to_vec()).await,
-        Ok(SECRET.to_vec())
-    );
-    assert_eq!(
-        names(
-            &rig.call(rig.reader, "list", Vec::new())
-                .await
-                .unwrap_or_default()
-        ),
-        vec!["engines/a".to_owned()]
-    );
-    for (op, payload) in [
-        ("put", put_wire("engines/a", OTHER)),
-        ("delete", b"engines/a".to_vec()),
-    ] {
-        assert_eq!(
-            rig.call(rig.reader, op, payload).await,
-            Err(ErrorCode::EffectFailed),
-            "{op} under a read-only grant refuses"
-        );
-    }
-    assert_eq!(rig.ledger.scope_refusals(FiberId(9)), 2);
-    assert_eq!(rig.ok("get", b"engines/a".to_vec()).await, SECRET.to_vec());
-}
-
-#[tokio::test]
-async fn withdrawal_restores_each_prior_lifo_and_the_witness_attests() {
-    let rig = rig("withdraw");
-    let first = effect_of(&rig.ok("put", put_wire("engines/k", SECRET)).await);
-    let second = effect_of(&rig.ok("put", put_wire("engines/k", OTHER)).await);
-    let third = effect_of(&rig.ok("delete", b"engines/k".to_vec()).await);
-    assert_eq!(rig.keystore.effects().len(), 3);
-    let (witness, inverse) = rig
-        .keystore
-        .undo_action(third)
-        .unwrap_or_else(|| panic!("revertible"));
-    assert!(!witness(), "before the inverse the key is not at its prior");
-    inverse()
-        .await
-        .unwrap_or_else(|error| panic!("inverse: {error:?}"));
-    assert!(witness(), "the deleted value is back");
-    rig.keystore
-        .reclaim(third)
-        .await
-        .unwrap_or_else(|error| panic!("reclaim: {error:?}"));
-    assert_eq!(rig.ok("get", b"engines/k".to_vec()).await, OTHER.to_vec());
-    rig.keystore
-        .withdraw(second)
-        .await
-        .unwrap_or_else(|error| panic!("withdraw: {error:?}"));
-    assert_eq!(rig.ok("get", b"engines/k".to_vec()).await, SECRET.to_vec());
-    rig.keystore
-        .withdraw(first)
-        .await
-        .unwrap_or_else(|error| panic!("withdraw: {error:?}"));
-    assert_eq!(
-        rig.call(rig.guest, "get", b"engines/k".to_vec()).await,
-        Err(ErrorCode::NotFound),
-        "the trail withdrawn LIFO leaves prior absence"
-    );
-    assert!(rig.keystore.effects().is_empty());
-    assert!(
-        rig.keystore.withdraw(third).await.is_ok(),
-        "an already-consumed effect withdraws clean"
-    );
-    assert!(rig.keystore.withdraw(EffectId(999)).await.is_err());
-}
-
-#[tokio::test]
-async fn the_store_reopens_from_disk_with_its_journal() {
-    let home = home("reopen");
-    let ledger = Arc::new(Recording(Mutex::new(Vec::new())));
-    {
-        let broker = Arc::new(Broker::new(Arc::clone(&ledger) as Arc<dyn LedgerSink>));
-        let keystore = open(&home, &ledger);
-        keystore
-            .register(&broker)
-            .unwrap_or_else(|error| panic!("{error:?}"));
-        let guest = broker.register_peer(Some(FiberId(7)));
-        broker.attribute_entry(guest, "holder");
-        broker.grant_with(
-            guest,
-            KEYSTORE_CONTRACT,
-            GrantScope::Keys(vec!["e/".to_owned()]),
-        );
-        broker
-            .dispatch(guest, KEYSTORE_CONTRACT, "put", put_wire("e/k", SECRET))
-            .await
-            .unwrap_or_else(|error| panic!("{error:?}"));
-    }
-    let reopened = open(&home, &ledger);
-    let broker = Arc::new(Broker::new(Arc::clone(&ledger) as Arc<dyn LedgerSink>));
-    reopened
-        .register(&broker)
-        .unwrap_or_else(|error| panic!("{error:?}"));
-    let guest = broker.register_peer(Some(FiberId(11)));
-    broker.grant_with(
-        guest,
-        KEYSTORE_CONTRACT,
-        GrantScope::Keys(vec!["e/".to_owned()]),
-    );
-    assert_eq!(
-        broker
-            .dispatch(guest, KEYSTORE_CONTRACT, "get", b"e/k".to_vec())
-            .await
-            .map_err(|error| error.code),
-        Ok(SECRET.to_vec()),
-        "the sealed document reopens under the same master key"
-    );
-    let journals = reopened.journals();
-    assert_eq!(journals.len(), 1);
-    assert_eq!(journals[0].0, "holder");
-    assert!(journals[0].1[0].label.starts_with("keystore put e/k"));
-    // A tampered master key refuses the whole store (fail-closed), never
-    // serves it empty.
-    std::fs::write(home.0.join("keystore/master.key"), [7u8; 32])
-        .unwrap_or_else(|error| panic!("{error}"));
-    assert!(
-        HostKeystore::open(
-            home.0.join("keystore"),
-            Arc::clone(&ledger) as Arc<dyn LedgerSink>
-        )
-        .is_err()
-    );
-}
-
-#[tokio::test]
-async fn malformed_key_names_are_the_typed_invalid() {
-    let rig = rig("invalid");
-    for key in ["", "engines/\0nul", &"x".repeat(513)] {
-        assert_eq!(
-            rig.call(rig.guest, "put", put_wire(key, SECRET)).await,
-            Err(ErrorCode::InvalidProfile),
-            "{key:?} refuses typed"
-        );
-    }
-    assert_eq!(rig.ledger.scope_refusals(FiberId(7)), 0);
-    assert!(rig.keystore.effects().is_empty());
 }

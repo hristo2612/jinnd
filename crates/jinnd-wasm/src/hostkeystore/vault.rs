@@ -1,22 +1,20 @@
 //! The `jinn:keystore` at-rest store (M2-K8): ONE sealed document holding
-//! the whole name→value map, a master key from OS entropy (mode 0600), and
-//! the seal/unseal the retained inverses share. The honest boundary is
-//! the bundle README's: as confidential as the master key's file
-//! permissions; values are plaintext only in the daemon's memory.
+//! the whole name→value map under a master key that is NEVER on the data
+//! root (see [`super::master`]), and the seal/unseal the retained inverses
+//! share. Values are plaintext only in the daemon's memory.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use jinnd_api::{ErrorCode, KernelError};
 
+use super::master::{MasterKeySource, entropy};
 use crate::broker_state::refusal;
 use crate::hostfs::retention::commit_atomic;
 use crate::hostwire::{Reader, put_segment};
 
-const MASTER_FILE: &str = "master.key";
 const STORE_FILE: &str = "secrets.bin";
 /// The sealed-document magic: format 1, ChaCha20-Poly1305, 12-byte nonce.
 const MAGIC: &[u8; 4] = b"JKS1";
@@ -36,41 +34,6 @@ fn corrupt(detail: &str) -> KernelError {
         ErrorCode::EffectFailed,
         format!("keystore store unreadable: {detail}"),
     )
-}
-
-/// Reads the master key, or creates it from OS entropy on first boot —
-/// created mode 0600, never widened.
-fn master_key(path: &Path) -> Result<[u8; 32], KernelError> {
-    let mut key = [0u8; 32];
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.len() == key.len() => {
-            key.copy_from_slice(&bytes);
-            return Ok(key);
-        }
-        Ok(_) => return Err(corrupt("master key is not 32 bytes")),
-        Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(failed("master key", &error)),
-    }
-    getrandom::fill(&mut key).map_err(|error| {
-        refusal(
-            ErrorCode::EffectFailed,
-            format!("keystore entropy: {error}"),
-        )
-    })?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| failed("master key", &error))?;
-    file.write_all(&key)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| failed("master key", &error))?;
-    Ok(key)
 }
 
 /// The map's plain encoding: u32-LE count, then per entry a prefixed name
@@ -100,10 +63,12 @@ fn decode(plain: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, KernelError> {
 }
 
 /// The in-memory map and its cipher; the document on disk is one sealed
-/// encoding of it.
+/// encoding of it. The cipher is absent until the key is first needed —
+/// at open when a document exists, else at the first mutation.
 pub(crate) struct Vault {
-    store: PathBuf,
-    cipher: ChaCha20Poly1305,
+    dir: PathBuf,
+    source: MasterKeySource,
+    cipher: Option<ChaCha20Poly1305>,
     entries: BTreeMap<String, Vec<u8>>,
 }
 
@@ -112,28 +77,52 @@ impl Vault {
     ///
     /// # Errors
     ///
-    /// The directory or master key cannot be created or read, or the
-    /// sealed document does not authenticate (fail-closed: a store that
-    /// cannot be trusted is refused, never served empty).
-    pub(crate) fn open(dir: &Path) -> Result<Self, KernelError> {
+    /// The directory cannot be created or read; or a sealed document
+    /// exists and the key cannot be resolved or does not authenticate it
+    /// (fail-closed: a store that cannot be trusted is refused, never
+    /// served empty).
+    pub(crate) fn open(dir: &Path, source: MasterKeySource) -> Result<Self, KernelError> {
         std::fs::create_dir_all(dir).map_err(|error| failed("create", &error))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         }
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&master_key(&dir.join(MASTER_FILE))?));
-        let store = dir.join(STORE_FILE);
-        let entries = match std::fs::read(&store) {
-            Ok(sealed) => decode(&unseal_with(&cipher, &sealed)?)?,
-            Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        let (cipher, entries) = match std::fs::read(dir.join(STORE_FILE)) {
+            Ok(sealed) => {
+                let cipher = ChaCha20Poly1305::new(Key::from_slice(&source.resolve(dir)?));
+                let entries = decode(&unseal_with(&cipher, &sealed)?)?;
+                (Some(cipher), entries)
+            }
+            Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => (None, BTreeMap::new()),
             Err(error) => return Err(failed("open", &error)),
         };
         Ok(Self {
-            store,
+            dir: dir.to_path_buf(),
+            source,
             cipher,
             entries,
         })
+    }
+
+    /// Whether the key is still unresolved.
+    pub(crate) fn locked(&self) -> bool {
+        self.cipher.is_none()
+    }
+
+    /// What resolving the key needs, for a resolution off the lock.
+    pub(crate) fn pending(&self) -> (MasterKeySource, PathBuf) {
+        (self.source.clone(), self.dir.clone())
+    }
+
+    pub(crate) fn install(&mut self, key: [u8; 32]) {
+        self.cipher = Some(ChaCha20Poly1305::new(Key::from_slice(&key)));
+    }
+
+    fn cipher(&self) -> Result<&ChaCha20Poly1305, KernelError> {
+        self.cipher
+            .as_ref()
+            .ok_or_else(|| corrupt("master key not resolved"))
     }
 
     pub(crate) fn get(&self, key: &str) -> Option<&[u8]> {
@@ -157,14 +146,9 @@ impl Vault {
     /// Seals `plain` under a fresh random nonce: magic, nonce, ciphertext.
     pub(crate) fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, KernelError> {
         let mut nonce = [0u8; NONCE_LEN];
-        getrandom::fill(&mut nonce).map_err(|error| {
-            refusal(
-                ErrorCode::EffectFailed,
-                format!("keystore entropy: {error}"),
-            )
-        })?;
+        entropy(&mut nonce)?;
         let sealed = self
-            .cipher
+            .cipher()?
             .encrypt(Nonce::from_slice(&nonce), plain)
             .map_err(|_| corrupt("seal"))?;
         let mut wire = MAGIC.to_vec();
@@ -174,12 +158,15 @@ impl Vault {
     }
 
     pub(crate) fn unseal(&self, sealed: &[u8]) -> Result<Vec<u8>, KernelError> {
-        unseal_with(&self.cipher, sealed)
+        unseal_with(self.cipher()?, sealed)
     }
 
     /// The sealed document to commit, and where.
     pub(crate) fn sealed(&self) -> Result<(PathBuf, Vec<u8>), KernelError> {
-        Ok((self.store.clone(), self.seal(&encode(&self.entries))?))
+        Ok((
+            self.dir.join(STORE_FILE),
+            self.seal(&encode(&self.entries))?,
+        ))
     }
 }
 

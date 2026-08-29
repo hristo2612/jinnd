@@ -17,27 +17,41 @@ error message ever carries a value (02 §Redaction, class `secret`).
 
 ## The honest security boundary (v0.1)
 
-The v0.1 backend is an **encrypted file**, on every platform:
+The store is an **encrypted file** whose master key is **never under the
+data root** (round-2 ruling): possession of the data root yields
+ciphertext only.
 
 - `<data>.keystore/secrets.bin` — the whole name→value map, sealed with
   ChaCha20-Poly1305 under a fresh random nonce on every commit, written by
   stage + fsync + rename (whole or absent, never torn).
-- `<data>.keystore/master.key` — 32 bytes from OS entropy, created mode
-  0600 on first boot. This is the "platform secret" the card names: the
-  store is exactly as confidential as the file permissions on this key.
-  An operator who moves the data root moves both files together; losing
-  `master.key` loses every secret (there is no recovery, by design).
+- `<data>.keystore/salt` — 16 public bytes for the passphrase derivation
+  below. Not a secret; useless without the passphrase.
 - Retained inverses (`<data>.keystore/inverses/`) hold prior values sealed
   under the same key; a completed revert or withdrawal reclaims them.
 - Values are plaintext **in the daemon's memory** while it runs, as any
   provider that answers them must be; they are never logged.
 
-The platform keychain (macOS Security framework) is **deferred**: a
-launchd-hosted daemon hits keychain ACL prompts and locked-keychain
-refusals with no operator present, which would make the provider's
-availability depend on a GUI session — the soak's exact shape. When a
-headless-safe keychain path exists it lands as a second backend behind the
-same contract; nothing in this bundle changes.
+The master key comes from ONE of two sources, chosen at daemon start:
+
+- **Passphrase** (`JINND_KEYSTORE_PASSPHRASE`, or a file named by
+  `JINND_KEYSTORE_PASSPHRASE_FILE`; trailing newline ignored; empty = none).
+  The key is derived with scrypt (N = 2^15, r = 8, p = 1) over the store's
+  salt. The store is exactly as confidential as the passphrase's keeping;
+  a lost passphrase loses every secret (no recovery, by design). This is
+  the only source on non-macOS platforms and the operator's choice for a
+  headless macOS daemon.
+- **Platform keychain** (macOS default when no passphrase is set): one
+  generic-password item per store path (service `jinnd keystore`), 32
+  bytes from OS entropy created on first need. The item carries the
+  keychain's own ACL: the same binary reads it silently; a rebuilt or
+  different binary is prompted by the OS, and a locked keychain with no
+  operator present REFUSES — the daemon then refuses the mutation (or the
+  boot, when a document already exists) typed, never serves an empty
+  store. A launchd-hosted daemon should set the passphrase instead.
+
+The key is resolved at boot when a sealed document exists, else at the
+first mutation; reads of an absent store need no key. With neither source
+the first `put` is a typed `EffectFailed` naming the variables.
 
 Out of scope (the card): rotation policies, remote stores, TLS.
 

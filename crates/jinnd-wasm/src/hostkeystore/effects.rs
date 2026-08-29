@@ -91,6 +91,7 @@ impl HostKeystore {
         value: Option<Vec<u8>>,
     ) -> Result<Vec<u8>, KernelError> {
         let _serial = self.serial.lock().await;
+        self.unlock().await?;
         let attribution = self.attribution(caller);
         let prior = {
             let vault = lock(&self.vault);
@@ -178,6 +179,7 @@ impl HostKeystore {
     /// or is absent; the sealed document commits atomically.
     async fn apply_inverse(&self, record: Record) -> Result<(), KernelError> {
         let _serial = self.serial.lock().await;
+        self.unlock().await?;
         let key = record.header.label;
         let (target, sealed) = {
             let mut vault = lock(&self.vault);
