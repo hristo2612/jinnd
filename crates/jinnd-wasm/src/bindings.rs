@@ -51,6 +51,7 @@ pub fn wire_refusal(topic: &str, refused: &crate::topics::Unserved) -> types::Ke
         Owed::Reload => types::KernelError::Restarting(target),
         Owed::Disposal => types::KernelError::Gone(target),
         Owed::Suspension => types::KernelError::Suspended(target),
+        Owed::Stalled => types::KernelError::Stalled(target),
     }
 }
 

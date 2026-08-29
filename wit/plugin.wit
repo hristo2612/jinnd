@@ -16,11 +16,12 @@
 /// 0.5.0 (M2-K8): the `keystore` import is finalized to its bundle
 /// (`contracts/jinn-keystore`, 0.1.0) — `delete` and `list` join `get`
 /// and `put`, and the bundle's `keystore-error` crosses verbatim.
-/// 0.6.0 (M2-K9): `kernel-error` gains `restarting`, `gone` and `suspended`
-/// — the three typed refusals a reply-expecting `events.emit` answers when
-/// a selected listener's incarnation already owes a transition, each
-/// carrying a `refused-target`. Additive: no existing case, signature, or
-/// meaning changes.
+/// 0.6.0 (M2-K9): `kernel-error` gains `restarting`, `gone`, `suspended`
+/// and `stalled` — the four typed refusals a reply-expecting `events.emit`
+/// answers when a selected listener's incarnation already owes a
+/// transition, each carrying a `refused-target`. They are four cases and
+/// not one because they are four different NEXT MOVES for the caller.
+/// Additive: no existing case, signature, or meaning changes.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -81,6 +82,15 @@ interface types {
     /// stops and the entry persists. Retry after a resume — which may
     /// never come on its own, so a caller must not spin on it.
     suspended(refused-target),
+    /// The same refusal, for a target that owes a change NOTHING WILL
+    /// SCHEDULE from where it stands (M2-K9): a dependency it needs has
+    /// been withdrawn, a failed activation is not retried against an
+    /// unchanged environment (R9), or the fiber is terminal. The kernel
+    /// says so rather than promising a restart it cannot deliver: a
+    /// caller must NOT spin waiting for one. Re-resolve, or watch the
+    /// entry (`jinn:introspect`, or its transitions on the ledger) and
+    /// act when the environment actually moves.
+    stalled(refused-target),
   }
 
   /// Who a dispatch refusal was refused BY, typed so a caller acts on

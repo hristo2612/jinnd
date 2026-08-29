@@ -17,7 +17,7 @@
 
 #[cfg(all(test, feature = "loom"))]
 mod models {
-    use jinnd_api::TransitionCause;
+    use jinnd_api::{Epoch, FiberState, Owed, TransitionCause};
     use loom::sync::Arc;
     use loom::thread;
 
@@ -30,7 +30,7 @@ mod models {
     fn a_restart_is_never_observed_at_rest() {
         loom::model(|| {
             let cell = Arc::new(SteeringCell::new(None));
-            let (_, observed) = cell.observed();
+            let (_, _, observed) = cell.observed();
             assert!(cell.settle_rest(observed), "a fiber owing nothing rests");
             let supervisor = {
                 let cell = Arc::clone(&cell);
@@ -56,7 +56,7 @@ mod models {
     fn a_disposal_request_is_never_observed_at_rest() {
         loom::model(|| {
             let cell = Arc::new(SteeringCell::new(None));
-            let (_, observed) = cell.observed();
+            let (_, _, observed) = cell.observed();
             assert!(cell.settle_rest(observed), "a fiber owing nothing rests");
             let supervisor = {
                 let cell = Arc::clone(&cell);
@@ -79,9 +79,37 @@ mod models {
         loom::model(|| {
             let cell = SteeringCell::new(None);
             cell.restart(TransitionCause::ExplicitRestart);
-            let (_, observed) = cell.observed();
+            let (_, _, observed) = cell.observed();
             assert!(cell.settle_rest(observed), "the served target rests");
             assert!(cell.resting());
+        });
+    }
+
+    /// M2-K9 round 3: what a fiber owes is read in the SAME critical
+    /// section as the landed state, so a committed disposal and a racing
+    /// restart request can never combine into a promise of a replacement.
+    /// Whichever way the two threads interleave, the terminal state wins
+    /// the answer — the fall-through that produced a cheerful `Reload`
+    /// cannot come back as a race.
+    #[test]
+    fn a_committed_disposal_is_never_answered_as_a_coming_restart() {
+        loom::model(|| {
+            let cell = Arc::new(SteeringCell::new(Some(Epoch {
+                dependencies: Vec::new(),
+            })));
+            let supervisor = {
+                let cell = Arc::clone(&cell);
+                thread::spawn(move || {
+                    cell.commit(|committed| committed.state = FiberState::Disposed);
+                })
+            };
+            cell.restart(TransitionCause::ExplicitRestart);
+            supervisor.join().unwrap_or_else(|_| unreachable!());
+            assert_ne!(
+                cell.owed(),
+                Some(Owed::Reload),
+                "a disposed fiber promised a replacement nobody scheduled"
+            );
         });
     }
 }

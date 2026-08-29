@@ -38,8 +38,8 @@ fn the_world_carries_the_typed_dispatch_refusals() {
     assert!(INTROSPECT.contains("unserved: option<unserved>,"));
 }
 
-/// M2-K9 round 2: the three dispositions map to three DIFFERENT wire
-/// cases, because they are three different next moves for the caller.
+/// M2-K9: the four dispositions map to four DIFFERENT wire cases,
+/// because they are four different next moves for the caller.
 /// Folding a disposal into `restarting` would tell a caller to wait for a
 /// replacement that is never coming — the defect this mapping exists to
 /// prevent — so the mapping is pinned per disposition, not in aggregate.
@@ -69,6 +69,10 @@ fn each_disposition_maps_to_its_own_wire_case() {
     match wire_refusal("t", &unserved(Owed::Suspension)) {
         types::KernelError::Suspended(target) => assert!(expected(&target), "{target:?}"),
         other => panic!("a suspension awaits a resume, not a restart: {other:?}"),
+    }
+    match wire_refusal("t", &unserved(Owed::Stalled)) {
+        types::KernelError::Stalled(target) => assert!(expected(&target), "{target:?}"),
+        other => panic!("a stall promises nothing — never `restarting`: {other:?}"),
     }
 }
 

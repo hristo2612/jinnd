@@ -19,7 +19,9 @@ pub enum FiberState {
 /// The transition a fiber already OWES: what its latest desired state asks
 /// for and its committed state has not served (M2-K9). Snapshotted
 /// atomically with the rest bit, so the two can never disagree. An enum and
-/// not a bit because only [`Owed::Reload`] promises a replacement.
+/// not a bit because only [`Owed::Reload`] promises a replacement, and it
+/// is EARNED: it is answered only where a replacement is genuinely
+/// schedulable (M2-K9 round 3).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum Owed {
     /// A fresh activation of the same entry (operator restart, config edit,
@@ -31,6 +33,10 @@ pub enum Owed {
     /// Suspension (M2-K4): the cell stops, the entry persists. A resume may
     /// bring it back, and may never come.
     Suspension,
+    /// A change no round will schedule from here: the environment must
+    /// move first (a withdrawn dependency returns, a failure clears) or
+    /// the fiber is terminal. Nothing is coming — do not retry blindly.
+    Stalled,
 }
 
 /// Why a fiber's desired activation changed.

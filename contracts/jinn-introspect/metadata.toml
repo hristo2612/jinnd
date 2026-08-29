@@ -33,5 +33,8 @@ relation = "composition-report-modulo-incarnation"
 # entry's live seat; listeners and alarms count the live ones. `unserved`
 # (0.2.0) is the same snapshot the kernel refuses a reply-expecting
 # dispatch on, read from one source, so ASKING and BEING REFUSED agree —
-# same vocabulary, same answer.
+# same vocabulary, same answer. `restarting` is the only value that
+# promises a replacement and is reported only where the kernel can
+# schedule one; `stalled` is the honest answer everywhere else that owes
+# a change no round will serve.
 lifecycle = "read-only"

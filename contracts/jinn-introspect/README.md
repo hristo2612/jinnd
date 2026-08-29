@@ -9,15 +9,19 @@ knowledge instead of probing.
 
 Additive: `entry` gains `unserved`. It names what the entry's live
 incarnation already owes — `restarting` (a replacement is scheduled),
-`gone` (disposal is owed, and disposal is terminal) or `suspended` — and
-is absent when the entry can serve. That is exactly the window in which a
-reply-expecting `events.emit` selecting one of its listeners is refused,
-with the `kernel-error` case of the same name.
+`gone` (disposal is owed, and disposal is terminal), `suspended`, or
+`stalled` (a change nothing will schedule from here: a withdrawn
+dependency, an activation not retried against an unchanged environment
+per R9, or a terminal fiber) — and is absent when the entry can serve.
+That is exactly the window in which a reply-expecting `events.emit`
+selecting one of its listeners is refused, with the `kernel-error` case
+of the same name.
 
-Three answers rather than a bit because they are three different next
+Four answers rather than a bit because they are four different next
 moves: only `restarting` promises a replacement, so only `restarting`
-means "retry after it lands". A caller told to wait on a `gone` target
-would wait forever. Callers ASK here instead of discovering the state by
+means "retry after it lands", and the kernel answers it only where it can
+genuinely schedule one. A caller told to wait on a `gone` or `stalled`
+target would wait forever. Callers ASK here instead of discovering the state by
 stalling on it; the refusal and this field are read from one snapshot
 source, so they never disagree.
 

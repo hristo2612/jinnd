@@ -65,9 +65,11 @@ impl RestartOracle for Restarts {
     /// own gate takes over with its typed sealed refusal.
     ///
     /// The `owed` field is carried through UNCHANGED from the fiber (M2-K9
-    /// round 2): the kernel never upgrades a disposal or a suspension into
-    /// a promised restart, because a caller obeying that promise would
-    /// wait for a replacement that is not coming.
+    /// round 2): the kernel never upgrades a disposal, a suspension, or a
+    /// stall into a promised restart, because a caller obeying that
+    /// promise would wait for a replacement that is not coming. The fiber
+    /// earns the promise rather than defaulting to it — only a genuinely
+    /// schedulable replacement answers [`Owed::Reload`] (round 3).
     fn unserved(&self, fiber: FiberId) -> Option<Unserved> {
         let (entry, owed) = self.owes(fiber)?;
         let incarnation = self.lane.upgrade()?.incarnation(&entry)?;

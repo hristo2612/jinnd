@@ -529,6 +529,10 @@ fn notify(consumer: &str) -> Result<Vec<u8>, GuestFault> {
                 outcome = refusal(5, "suspended", &target);
                 break;
             }
+            Err(jinn::plugin::types::KernelError::Stalled(target)) => {
+                outcome = refusal(6, "stalled", &target);
+                break;
+            }
             Err(other) => {
                 outcome = vec![2];
                 outcome.extend(format!("{other:?}").into_bytes());

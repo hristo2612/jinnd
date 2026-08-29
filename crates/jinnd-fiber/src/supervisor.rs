@@ -1,10 +1,12 @@
 //! The per-fiber supervisor task (R1).
 //!
-//! One tokio task owns one fiber's whole life. It holds the plugin body, the
-//! activation's effect scope and the committed state, so none of those is ever
-//! behind a lock that a plugin call could be holding — the fiber's state is
-//! published through a `watch` channel instead, and the only shared mutable cell is
-//! the steering one, whose lock is never held across an `await`.
+//! One tokio task owns one fiber's whole life. It holds the plugin body and the
+//! activation's effect scope, so neither is ever behind a lock that a plugin call
+//! could be holding — the fiber's state is published through a `watch` channel,
+//! and the only shared mutable cell is the steering one, whose lock is never held
+//! across an `await`. What has LANDED lives in that cell too (M2-K9 round 3), with
+//! this task as its only writer: a reader asking what the fiber owes then reads the
+//! landed state and the target together, never one of them stale.
 //!
 //! The loop is: read every input, ask [`plan`] for the one transition owed, run it
 //! to completion, then read every input again. A transition that is launched always
@@ -20,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::body::FiberBody;
 use crate::landing::land;
-use crate::plan::{Aim, Committed, Step, plan};
+use crate::plan::{Aim, Step, plan};
 use crate::readiness::ReadinessSignal;
 use crate::shared::Shared;
 
@@ -34,7 +36,6 @@ pub(crate) struct Cell {
     body: Arc<dyn FiberBody>,
     signal: Box<dyn ReadinessSignal>,
     scope: EffectScope,
-    committed: Committed,
 }
 
 impl Cell {
@@ -48,7 +49,6 @@ impl Cell {
             body,
             signal,
             scope: EffectScope::new(),
-            committed: Committed::new(),
         }
     }
 }
@@ -71,14 +71,14 @@ pub(crate) async fn supervise(mut cell: Cell) {
         // fiber at rest. The settle below presents the stamp this read
         // observed: a target that moves meanwhile makes the settle stale and
         // rest stays lowered until the next round serves it.
-        let (desired, observed) = cell.shared.steering.observed();
-        if let Some(step) = plan(&cell.committed, &desired) {
+        let (committed, desired, observed) = cell.shared.steering.observed();
+        if let Some(step) = plan(&committed, &desired) {
             cell.run(step).await;
             continue;
         }
         cell.shared.steering.settle_rest(observed);
         cell.shared.settle(asked);
-        if cell.committed.state == FiberState::Disposed || cell.committed.disposal_failed {
+        if committed.state == FiberState::Disposed || committed.disposal_failed {
             // Settled for good: no probe will ever go unanswered again.
             cell.shared.settle(u64::MAX);
             return;
@@ -94,7 +94,8 @@ impl Cell {
     }
 
     fn next_step(&self) -> Option<Step> {
-        plan(&self.committed, &self.shared.steering.desired())
+        let (committed, desired, _) = self.shared.steering.observed();
+        plan(&committed, &desired)
     }
 
     /// Blocks until some input may have moved.
@@ -143,9 +144,11 @@ impl Cell {
 
         match outcome {
             Ok(()) => {
-                self.committed.state = FiberState::Active;
-                self.committed.active_for = Some(aim);
-                self.committed.failed_under = None;
+                self.shared.steering.commit(|committed| {
+                    committed.state = FiberState::Active;
+                    committed.active_for = Some(aim);
+                    committed.failed_under = None;
+                });
                 self.publish_effects();
                 self.sync_signal();
                 if self.next_step().is_none() {
@@ -159,9 +162,11 @@ impl Cell {
                 self.shared.fail(error);
                 self.publish(FiberState::Unloading, cause.clone());
                 self.withdraw(true).await;
-                self.committed.state = FiberState::Failed;
-                self.committed.active_for = None;
-                self.committed.failed_under = Some(aim);
+                self.shared.steering.commit(|committed| {
+                    committed.state = FiberState::Failed;
+                    committed.active_for = None;
+                    committed.failed_under = Some(aim);
+                });
                 self.publish(FiberState::Failed, cause);
             }
         }
@@ -177,18 +182,24 @@ impl Cell {
         self.publish(FiberState::Unloading, cause.clone());
         let full = cause == TransitionCause::ExplicitDispose;
         let report = self.withdraw(full).await;
-        self.committed.active_for = None;
+        self.shared
+            .steering
+            .commit(|committed| committed.active_for = None);
 
         let desired = self.shared.steering.desired();
         if desired.disposing || desired.suspending {
             self.disposal_landed(&report, cause);
         } else if report.is_clean() {
-            self.committed.state = FiberState::Pending;
+            self.shared
+                .steering
+                .commit(|committed| committed.state = FiberState::Pending);
             self.publish(FiberState::Pending, cause);
         } else {
             self.shared.fail(unclean(self.shared.id, &report));
-            self.committed.state = FiberState::Failed;
-            self.committed.failed_under = Some(self.shared.steering.desired().aim);
+            self.shared.steering.commit(|committed| {
+                committed.state = FiberState::Failed;
+                committed.failed_under = Some(desired.aim.clone());
+            });
             self.publish(FiberState::Failed, cause);
         }
     }
@@ -213,12 +224,16 @@ impl Cell {
     /// way the replay has completed and reported, under `cause`.
     fn disposal_landed(&mut self, report: &ReplayReport, cause: TransitionCause) {
         if report.is_clean() {
-            self.committed.state = FiberState::Disposed;
+            self.shared
+                .steering
+                .commit(|committed| committed.state = FiberState::Disposed);
             self.publish(FiberState::Disposed, cause);
         } else {
             self.shared.fail(unclean(self.shared.id, report));
-            self.committed.state = FiberState::Failed;
-            self.committed.disposal_failed = true;
+            self.shared.steering.commit(|committed| {
+                committed.state = FiberState::Failed;
+                committed.disposal_failed = true;
+            });
             self.publish(FiberState::Failed, cause);
         }
     }

@@ -142,8 +142,8 @@ pub enum LedgerEventKind {
     /// (M2-K9, harness finding 31; Law 2): `target`'s live incarnation
     /// already owes `owed`, so the walk never landed in it. Its own kind —
     /// a reader tells a dispatch refusal from a scope refusal by the kind
-    /// alone, and the three refusals apart by `owed`. A refused walk lands
-    /// this row INSTEAD of a `DispatchTrace`. (Authorized M2-K9 delta.)
+    /// alone, and one refusal from another by `owed`. A refused walk
+    /// lands this row INSTEAD of a `DispatchTrace`. (Authorized delta.)
     DispatchRefused {
         topic: String,
         mode: DispatchMode,

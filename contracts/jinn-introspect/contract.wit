@@ -29,8 +29,9 @@ interface composition {
   // Absent for an entry that can serve, and for one with no installed
   // incarnation (arriving, torn down, disabled, or a group).
   // What a live incarnation already owes, and therefore what a caller
-  // refused by it must do next (0.2.0). The three are different futures,
-  // so they are three answers: only `restarting` promises a replacement.
+  // refused by it must do next (0.2.0). The four are different futures,
+  // so they are four answers: only `restarting` promises a replacement,
+  // and it is answered only where the kernel can genuinely schedule one.
   enum unserved {
     // A replacement is scheduled: retry once the restart lands.
     restarting,
@@ -38,6 +39,11 @@ interface composition {
     gone,
     // Suspension is owed: retry after a resume, which may never come.
     suspended,
+    // A change nothing will schedule from here is owed: a dependency has
+    // been withdrawn, a failure is not retried against an unchanged
+    // environment (R9), or the fiber is terminal. Never retry blindly —
+    // watch for the environment to move.
+    stalled,
   }
 
   record entry {

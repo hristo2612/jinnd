@@ -472,14 +472,20 @@ async fn a_refusal_storm_records_every_attempt_and_reaches_no_guest() {
 }
 
 /// Each disposition is REFUSED UNDER ITS OWN NAME, on the wire and on the
-/// record (M2-K9 round 2). This is the whole point of the reason: a caller
-/// refused by a fiber being DISPOSED must never be told to wait for a
-/// restart, because a well-behaved caller obeying that instruction waits
-/// forever — disposal is terminal. Suspension is its own answer too: a
-/// resume may never come on its own.
+/// record (M2-K9). This is the whole point of the reason: a caller refused
+/// by a fiber being DISPOSED must never be told to wait for a restart,
+/// because a well-behaved caller obeying that instruction waits forever —
+/// disposal is terminal. Suspension is its own answer too: a resume may
+/// never come on its own. So is a STALL (round 3): nothing is scheduled
+/// and nothing will be until the environment moves.
 #[tokio::test]
 async fn each_disposition_is_refused_under_its_own_name() {
-    for owed in [Owed::Reload, Owed::Disposal, Owed::Suspension] {
+    for owed in [
+        Owed::Reload,
+        Owed::Disposal,
+        Owed::Suspension,
+        Owed::Stalled,
+    ] {
         let sink = Arc::new(RecordingSink::default());
         let topics = LocalTopics::traced(Arc::clone(&sink) as Arc<dyn LedgerSink>);
         topics.watch_restarts(owing(FiberId(9), owed) as Arc<dyn RestartOracle>);
@@ -526,7 +532,7 @@ async fn each_disposition_is_refused_under_its_own_name() {
                 },
                 Some(FiberId(4)),
             )],
-            "{owed:?}: the ledger reader tells the three apart too (Law 2)"
+            "{owed:?}: the ledger reader tells the four apart too (Law 2)"
         );
     }
 }

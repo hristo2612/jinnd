@@ -163,3 +163,42 @@ async fn the_oracle_never_promises_a_restart_for_a_disposal_or_a_suspension() {
     stopping.release.add_permits(1);
     stop.await.unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// M2-K9 round 3, the verifier's dependency-loss probe against the real
+/// oracle: a fiber whose dependency is WITHDRAWN is owed a teardown that
+/// no round will follow with a load — `plan` cannot load with no epoch —
+/// so the honest answer is a stall, never a promised restart. The round-2
+/// defect answered `Reload` here through a fall-through, and a caller
+/// obeying "retry once the restart lands" would have waited forever for a
+/// replacement nobody scheduled.
+///
+/// The activation is held at its gate throughout, so the window is
+/// OBSERVED rather than raced for: the fiber cannot rest and the answer
+/// cannot lapse under the assertion.
+#[tokio::test]
+async fn a_withdrawn_dependency_is_never_answered_as_a_coming_restart() {
+    let (fibers, fiber, source, body) = tracked("consumer");
+    let oracle = over(&fibers);
+    entered(&body).await;
+
+    // The dependency goes away while the activation is still in flight.
+    // What follows the landing is a teardown, and nothing after it: no
+    // replacement is scheduled or schedulable.
+    source.withdraw();
+    settles(&oracle, fiber.id(), Owed::Stalled).await;
+    assert_eq!(
+        oracle.owes(fiber.id()),
+        Some((EntryId("consumer".to_owned()), Owed::Stalled)),
+        "no replacement is scheduled, and the caller is told exactly that"
+    );
+
+    // The dependency returns: a replacement IS schedulable again, so the
+    // promise is honest and the answer says so.
+    source.ready(Epoch {
+        dependencies: Vec::new(),
+    });
+    settles(&oracle, fiber.id(), Owed::Reload).await;
+
+    body.release.add_permits(2);
+    fiber.dispose().await;
+}

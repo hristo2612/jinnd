@@ -14,10 +14,14 @@
 //!
 //! The refusal is TYPED all the way out (R3): it names the entry, the
 //! incarnation, and — the part a caller acts on — WHAT the target owes.
-//! Those are three different next moves, so the kernel never folds them
+//! Those are four different next moves, so the kernel never folds them
 //! into one. Telling a caller to await a restart that is not coming is
 //! worse than refusing without a reason: it talks a caller that could have
-//! handled a terminal target out of handling it.
+//! handled a terminal target out of handling it. The promise is earned
+//! rather than assumed: [`Owed::Reload`] is derived only where the fiber
+//! engine can genuinely schedule a replacement, and everything else that
+//! owes a change no round will serve says so as [`Owed::Stalled`]
+//! (round 3).
 
 use jinnd_api::{DispatchMode, EntryId, FiberId, Owed};
 
@@ -34,7 +38,9 @@ pub struct Unserved {
     /// The transition the target already owes, which IS the caller's next
     /// move: [`Owed::Reload`] — retry once the restart lands;
     /// [`Owed::Disposal`] — terminal, never retry, re-resolve or give up;
-    /// [`Owed::Suspension`] — retry after a resume, which may never come.
+    /// [`Owed::Suspension`] — retry after a resume, which may never come;
+    /// [`Owed::Stalled`] — nothing is scheduled and nothing will be until
+    /// the environment moves, so never spin on it.
     pub owed: Owed,
 }
 

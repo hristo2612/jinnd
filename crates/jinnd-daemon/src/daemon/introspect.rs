@@ -88,6 +88,7 @@ impl HostIntrospect {
                             Owed::Reload => "restarting",
                             Owed::Disposal => "gone",
                             Owed::Suspension => "suspended",
+                            Owed::Stalled => "stalled",
                         });
                 serde_json::json!({
                     "id": id.0,

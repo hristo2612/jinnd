@@ -12,7 +12,7 @@
 
 use jinnd_api::{Epoch, Owed, TransitionCause};
 
-use crate::plan::{Aim, Desired};
+use crate::plan::{Aim, Committed, Desired};
 use crate::sync::Mutex;
 
 /// The shared cell every input writes to and the supervisor reads from.
@@ -28,6 +28,11 @@ pub(crate) struct SteeringCell {
 #[derive(Debug)]
 struct Inner {
     desired: Desired,
+    /// What has LANDED. It lives here, beside the target, so the gap
+    /// between them — the rest bit, and what the fiber owes — is read in
+    /// ONE critical section and can never be observed half-stale (M2-K9
+    /// round 3). The supervisor is its only writer.
+    committed: Committed,
     /// The aim of the in-flight activation, while there is one.
     in_flight: Option<Aim>,
     /// True while the fiber owes no transition: the last one landed and the
@@ -58,6 +63,7 @@ impl SteeringCell {
                     disposing: false,
                     suspending: false,
                 },
+                committed: Committed::new(),
                 in_flight: None,
                 // A fresh fiber still owes its first reconciliation pass.
                 resting: false,
@@ -71,11 +77,20 @@ impl SteeringCell {
         self.with(|inner| inner.desired.clone())
     }
 
-    /// The latest desired state, stamped: the stamp is what a later
-    /// [`SteeringCell::settle_rest`] must present, so rest is only ever
-    /// raised over the exact target this read observed (M1-P6c round 3).
-    pub(crate) fn observed(&self) -> (Desired, u64) {
-        self.with(|inner| (inner.desired.clone(), inner.moved))
+    /// The whole gap, stamped: what has landed, what is wanted, and the
+    /// stamp a later [`SteeringCell::settle_rest`] must present, so rest is
+    /// only ever raised over the exact target this read observed (M1-P6c
+    /// round 3). One critical section, so the supervisor plans against a
+    /// pair that was true at the same instant.
+    pub(crate) fn observed(&self) -> (Committed, Desired, u64) {
+        self.with(|inner| (inner.committed.clone(), inner.desired.clone(), inner.moved))
+    }
+
+    /// Records what a transition landed. The supervisor is the only caller:
+    /// one writer, so the cell holds one copy of the truth rather than a
+    /// mirror that could drift from it.
+    pub(crate) fn commit(&self, land: impl FnOnce(&mut Committed)) {
+        self.with(|inner| land(&mut inner.committed));
     }
 
     /// True while the fiber owes no transition (the REST gate). Lowered
@@ -85,25 +100,21 @@ impl SteeringCell {
         self.with(|inner| inner.resting)
     }
 
-    /// What the fiber owes, when it owes anything (M2-K9). Read in the SAME
-    /// critical section as the rest bit, so a caller never sees "owes
-    /// something" paired with a stale answer about WHAT.
+    /// What the fiber owes, when it owes anything (M2-K9). The rest bit,
+    /// the committed state and the target are read in ONE critical
+    /// section, so a caller never sees "owes something" paired with a
+    /// stale answer about WHAT.
     ///
-    /// Disposal outranks suspension exactly as the planner ranks them: a
-    /// fiber asked to suspend and then to dispose owes a disposal, and a
-    /// caller told so must not wait for a resume that would not help.
+    /// The answer itself is [`crate::owed::owed`]'s — derived from the
+    /// same gap the planner reads, exhaustively and with no fall-through,
+    /// so a promise of a replacement is only ever made where the planner
+    /// can genuinely reach one (round 3).
     pub(crate) fn owed(&self) -> Option<Owed> {
         self.with(|inner| {
             if inner.resting {
                 return None;
             }
-            Some(if inner.desired.disposing {
-                Owed::Disposal
-            } else if inner.desired.suspending {
-                Owed::Suspension
-            } else {
-                Owed::Reload
-            })
+            crate::owed::owed(&inner.committed, &inner.desired)
         })
     }
 
