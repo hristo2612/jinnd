@@ -20,6 +20,10 @@ pub(crate) struct PeerRecord {
     /// (M2-K6): root, path-prefix subtrees, or a process/net policy.
     /// Root is the explicit maximum, never a default.
     pub(crate) grants: HashMap<String, GrantScope>,
+    /// Per granted contract, the operation class the grant is attenuated
+    /// to (M2-K8, harness #24): absent means every declared operation;
+    /// several grants of one contract widen by union, as path scopes do.
+    pub(crate) ops: HashMap<String, Vec<String>>,
     /// The peer's own delivery face (M2-K7): where a host provider delivers
     /// a wake for a registration this peer holds. A Mode-1 commit
     /// re-attaches it to the successor instance (R8).

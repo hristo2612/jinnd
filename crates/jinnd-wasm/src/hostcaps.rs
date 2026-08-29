@@ -169,10 +169,20 @@ fn alarm(
     token: u64,
 ) -> Result<u64, bindings::types::KernelError> {
     state.admit("alarm").map_err(bindings::wire_error)?;
+    let operation = match spec {
+        AlarmSpec::At(_) => "alarm-at",
+        AlarmSpec::Every(_) => "alarm-every",
+    };
     state
         .seat
         .broker
         .check_grant(state.seat.peer, CLOCK_CONTRACT)
+        .and_then(|()| {
+            state
+                .seat
+                .broker
+                .check_op(state.seat.peer, CLOCK_CONTRACT, operation)
+        })
         .map_err(bindings::wire_error)?;
     // The floor is THIS entry's own grant scope (M2-K2, R9): grants cap
     // how fine a timer an entry may hold, never assembly-wide.

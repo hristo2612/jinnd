@@ -695,3 +695,47 @@ fn a_pre_entry_record_still_decodes_and_the_new_header_round_trips() {
         record
     );
 }
+
+/// M2-K8 (harness #24): a read-only fs grant — `ops: [read, list, meta]`
+/// — reads its subtree and REFUSES write, append, and remove, each a
+/// ledgered scope refusal with attribution; nothing lands, no inverse
+/// spills.
+#[tokio::test]
+async fn a_read_only_grant_refuses_every_mutation_on_the_record() {
+    let rig = rig("read-only");
+    rig.ok("write", write_wire("/doc.txt", b"whole")).await;
+    let viewer = rig.broker.register_peer(Some(FiberId(10)));
+    rig.broker.grant(viewer, FS_CONTRACT);
+    rig.broker.grant_ops(
+        viewer,
+        FS_CONTRACT,
+        ["read", "list", "meta"].map(str::to_owned).to_vec(),
+    );
+    assert_eq!(
+        rig.call(viewer, "read", b"/doc.txt".to_vec()).await,
+        Ok(b"whole".to_vec())
+    );
+    assert!(rig.call(viewer, "meta", b"/doc.txt".to_vec()).await.is_ok());
+    assert!(rig.call(viewer, "list", b"/".to_vec()).await.is_ok());
+    for (op, payload) in [
+        ("write", write_wire("/doc.txt", b"clobbered")),
+        ("append", write_wire("/doc.txt", b"more")),
+        ("remove", keyed("/doc.txt", "", b"")),
+    ] {
+        assert_eq!(
+            rig.call(viewer, op, payload).await,
+            Err(ErrorCode::EffectFailed),
+            "{op} under a read-only grant refuses"
+        );
+    }
+    assert_eq!(
+        std::fs::read(rig.data("doc.txt")).ok(),
+        Some(b"whole".to_vec())
+    );
+    assert_eq!(rig.ledger.grant_refusals(FiberId(10)), 3);
+    assert_eq!(
+        rig.fs.effects().len(),
+        1,
+        "no inverse for a refused mutation"
+    );
+}

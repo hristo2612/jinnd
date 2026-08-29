@@ -53,6 +53,7 @@ impl Broker {
                 fiber,
                 entry: None,
                 grants: std::collections::HashMap::new(),
+                ops: std::collections::HashMap::new(),
                 target: None,
             },
         );

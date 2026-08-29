@@ -53,6 +53,7 @@ fn grant(value: &serde_json::Value) -> Result<Grant, String> {
         serde_json::Value::String(contract) => Ok(Grant {
             contract: contract.clone(),
             scope: None,
+            ops: None,
         }),
         serde_json::Value::Object(fields) => {
             let Some(contract) = fields.get("contract").and_then(|name| name.as_str()) else {
@@ -62,9 +63,16 @@ fn grant(value: &serde_json::Value) -> Result<Grant, String> {
                 None | Some(serde_json::Value::Null) => None,
                 Some(scope) => Some(scope_value(scope)),
             };
+            // The operation class (M2-K8, harness #24), by written shape,
+            // judged at admission like the scope.
+            let ops = match fields.get("ops") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(ops) => Some(scope_value(ops)),
+            };
             Ok(Grant {
                 contract: contract.to_owned(),
                 scope,
+                ops,
             })
         }
         other => Err(format!("not a grant entry: {other}")),
@@ -102,6 +110,7 @@ mod tests {
         Grant {
             contract: contract.to_owned(),
             scope: None,
+            ops: None,
         }
     }
 
@@ -143,6 +152,7 @@ mod tests {
                 Grant {
                     contract: "jinn:clock".to_owned(),
                     scope: Some(ScopeValue::Rate(1000)),
+                    ops: None,
                 }
             ]
         );
@@ -170,10 +180,12 @@ mod tests {
                 Grant {
                     contract: "jinn:clock".to_owned(),
                     scope: Some(ScopeValue::Path("fine".to_owned())),
+                    ops: None,
                 },
                 Grant {
                     contract: "jinn:clock".to_owned(),
                     scope: Some(ScopeValue::Malformed("-5".to_owned())),
+                    ops: None,
                 },
             ],
         );
@@ -194,11 +206,33 @@ mod tests {
             vec![Grant {
                 contract: "jinn:fs".to_owned(),
                 scope: Some(ScopeValue::Rate(9)),
+                ops: None,
             }],
         );
     }
 
     /// A structured entry without a scope is the bare grant.
+    /// M2-K8 (harness #24): the operation class decodes by written shape
+    /// beside the scope; admission judges it.
+    #[test]
+    fn seat_config_decodes_an_ops_attenuation() {
+        let value = serde_json::json!({
+            "grants": [{ "contract": "jinn:fs", "scope": "/doc", "ops": ["read", "meta"] }],
+        });
+        let seat = seat_config(&value);
+        assert_eq!(
+            seat.grants,
+            vec![Grant {
+                contract: "jinn:fs".to_owned(),
+                scope: Some(ScopeValue::Path("/doc".to_owned())),
+                ops: Some(ScopeValue::List(vec![
+                    ScopeValue::Path("read".to_owned()),
+                    ScopeValue::Path("meta".to_owned()),
+                ])),
+            }]
+        );
+    }
+
     #[test]
     fn seat_config_decodes_a_structured_grant_without_scope() {
         let value = serde_json::json!({

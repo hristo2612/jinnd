@@ -414,3 +414,82 @@ async fn vitality_routes_to_the_provider_per_consumer() {
         "no provider means not vital"
     );
 }
+
+/// M2-K8 (harness #24): an operation outside the caller's attenuation is
+/// refused at the choke point — on both dispatch lanes — as a ledgered
+/// scope refusal naming the operation; the granted operations answer.
+#[tokio::test]
+async fn an_attenuated_grant_refuses_operations_outside_its_class() {
+    let ledger = Arc::new(CapturedLedger::default());
+    let broker = Arc::new(Broker::new(Arc::clone(&ledger) as Arc<dyn LedgerSink>));
+    let provider = broker.register_peer(None);
+    broker.grant(provider, "jinn:fs");
+    broker
+        .provide(provider, "jinn:fs", Arc::new(Echo))
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    let reader = broker.register_peer(Some(FiberId(3)));
+    broker.grant(reader, "jinn:fs");
+    broker.grant_ops(reader, "jinn:fs", vec!["read".to_owned()]);
+    assert!(
+        broker
+            .dispatch(reader, "jinn:fs", "read", Vec::new())
+            .await
+            .is_ok()
+    );
+    let refused = broker
+        .dispatch(reader, "jinn:fs", "write", Vec::new())
+        .await
+        .map_err(|error| error.code);
+    assert_eq!(refused, Err(ErrorCode::EffectFailed));
+    let handle = broker
+        .resolve(reader, "jinn:fs")
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    assert!(
+        broker
+            .call(reader, handle, "read", Vec::new())
+            .await
+            .is_ok()
+    );
+    assert!(
+        broker
+            .call(reader, handle, "remove", Vec::new())
+            .await
+            .is_err()
+    );
+    let refusals: Vec<String> = ledger
+        .events
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .iter()
+        .filter_map(|(kind, fiber)| match kind {
+            LedgerEventKind::GrantRefused {
+                contract,
+                reason: RefusalReason::ScopeMismatch,
+                detail: Some(detail),
+            } if contract == "jinn:fs" && *fiber == Some(FiberId(3)) => Some(detail.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        refusals.len(),
+        2,
+        "each refusal is on the record: {refusals:?}"
+    );
+    assert!(refusals[0].contains("write") && refusals[1].contains("remove"));
+    assert!(
+        !ledger
+            .kinds()
+            .iter()
+            .any(|kind| matches!(kind, LedgerEventKind::ContractCall { operation, .. } if operation == "write")),
+        "a refused operation never crosses"
+    );
+    // A second, wider grant of the same contract widens the class (union,
+    // exactly as path scopes accumulate).
+    broker.grant_ops(reader, "jinn:fs", vec!["write".to_owned()]);
+    assert!(
+        broker
+            .dispatch(reader, "jinn:fs", "write", Vec::new())
+            .await
+            .is_ok()
+    );
+}

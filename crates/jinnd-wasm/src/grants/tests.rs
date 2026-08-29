@@ -19,7 +19,20 @@ fn scoped(contract: &str, scope: ScopeValue) -> Grant {
     Grant {
         contract: contract.to_owned(),
         scope: Some(scope),
+        ops: None,
     }
+}
+
+fn attenuated(contract: &str, ops: ScopeValue) -> Grant {
+    Grant {
+        contract: contract.to_owned(),
+        scope: None,
+        ops: Some(ops),
+    }
+}
+
+fn names(items: &[&str]) -> ScopeValue {
+    ScopeValue::List(items.iter().map(|item| text(item)).collect())
 }
 
 fn refusal_of(verdict: Result<(), String>) -> String {
@@ -147,6 +160,7 @@ fn bare_grants_admit_unchanged_and_process_net_default_to_deny() {
         let grant = Grant {
             contract: contract.to_owned(),
             scope: None,
+            ops: None,
         };
         assert!(
             only(grant.clone()).is_ok(),
@@ -222,6 +236,7 @@ fn admission_partitions_a_mixed_grant_list() {
         Grant {
             contract: "jinn:test/counter".to_owned(),
             scope: None,
+            ops: None,
         },
         scoped("jinn:fs", ScopeValue::Rate(9)),
         scoped("jinn:clock", ScopeValue::Rate(1000)),
@@ -348,4 +363,29 @@ fn a_net_policy_parses_its_declared_shape_and_refuses_the_rest() {
         let message = refusal_of(only(scoped("jinn:net", bad)));
         assert!(message.contains(needle), "{message}");
     }
+}
+
+/// M2-K8 (harness #24): an operation-class attenuation names only
+/// operations the contract bundle declares — read-only fs and keystore
+/// grants admit; an unknown operation, a non-list, an empty list, and an
+/// attenuation on a contract with no bundle each refuse (fail-closed).
+#[test]
+fn an_ops_attenuation_admits_declared_operations_only() {
+    assert!(only(attenuated("jinn:fs", names(&["read", "list", "meta"]))).is_ok());
+    assert!(only(attenuated("jinn:keystore", names(&["get", "list"]))).is_ok());
+    assert!(only(attenuated("jinn:profile", names(&["entry", "document"]))).is_ok());
+    let message = refusal_of(only(attenuated("jinn:fs", names(&["read", "format"]))));
+    assert!(
+        message.contains("jinn:fs") && message.contains("format"),
+        "the refusal names the unknown operation: {message}"
+    );
+    assert!(only(attenuated("jinn:fs", text("read"))).is_err());
+    assert!(only(attenuated("jinn:fs", names(&[]))).is_err());
+    assert!(only(attenuated("jinn:test/counter", names(&["get"]))).is_err());
+    assert_eq!(
+        super::attenuation(&attenuated("jinn:fs", names(&["read", "read"]))),
+        Some(vec!["read".to_owned()]),
+        "the admitted attenuation is the deduplicated operation set"
+    );
+    assert_eq!(super::attenuation(&scoped("jinn:fs", text("/log"))), None);
 }

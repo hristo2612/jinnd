@@ -71,6 +71,7 @@ impl WasmLane for Adapter {
                 .map(|contract| Grant {
                     contract,
                     scope: None,
+                    ops: None,
                 })
                 .collect(),
         );

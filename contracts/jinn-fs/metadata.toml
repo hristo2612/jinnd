@@ -12,6 +12,16 @@ type   = "path-prefix"
 # subset(a, b) := normalize(a) starts-with normalize(b), after symlink and
 # dot-segment resolution. A grant with no scope is the root scope.
 subset = "path-prefix-containment"
+# Operation-class attenuation (M2-K8, harness #24; additive, R12): a grant
+# entry may carry `ops = [<operation>...]` beside its scope — a non-empty
+# subset of the operations declared below — and the kernel refuses any
+# other operation at its choke point as a ledgered scope refusal. Absent
+# means every operation. subset(a, b) := a.ops ⊆ b.ops. FAIL-CLOSED: an
+# unknown name, an empty list, or a non-list refuses the grant on the
+# record. Several grants of one contract on one entry widen by union, as
+# path scopes do. Profile syntax: `{ contract = "jinn:fs", scope = "/doc",
+# ops = ["read", "list", "meta"] }` is a read-only viewer.
+ops = "declared-operation-subset"
 
 [operations.list]
 effect      = "read"

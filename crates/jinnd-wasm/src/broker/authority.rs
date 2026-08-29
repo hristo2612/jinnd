@@ -94,6 +94,67 @@ impl Broker {
         }
     }
 
+    /// Attenuates `peer`'s grant of `contract` to the operation class `ops`
+    /// (M2-K8, harness #24). Classes of one contract accumulate by union;
+    /// a grant already unattenuated (every operation) stays so.
+    pub fn grant_ops(&self, peer: PeerId, contract: &str, ops: Vec<String>) {
+        if let Some(record) = self.lock().peers.get_mut(&peer) {
+            let held = record.ops.entry(contract.to_owned()).or_default();
+            for op in ops {
+                if !held.contains(&op) {
+                    held.push(op);
+                }
+            }
+        }
+    }
+
+    /// Widens `peer`'s grant of `contract` to every operation: a later
+    /// unattenuated grant of a contract already attenuated lifts the class.
+    pub(crate) fn lift_ops(&self, peer: PeerId, contract: &str) {
+        if let Some(record) = self.lock().peers.get_mut(&peer) {
+            record.ops.remove(contract);
+        }
+    }
+
+    /// The operation-class check every dispatch lane runs after the grant
+    /// check (M2-K8): an operation outside the caller's attenuation is a
+    /// ledgered scope refusal naming it, never a default-accept.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::EffectFailed`] with the refused operation named.
+    pub fn check_op(
+        &self,
+        peer: PeerId,
+        contract: &str,
+        operation: &str,
+    ) -> Result<(), KernelError> {
+        let (allowed, fiber) = {
+            let state = self.lock();
+            let allowed = state.peers.get(&peer).is_none_or(|record| {
+                record
+                    .ops
+                    .get(contract)
+                    .is_none_or(|ops| ops.iter().any(|op| op == operation))
+            });
+            (allowed, state.fiber_of(peer))
+        };
+        if allowed {
+            return Ok(());
+        }
+        let message =
+            format!("grant refused: {contract} {operation} is outside the granted operation class");
+        self.ledger.append(
+            LedgerEventKind::GrantRefused {
+                contract: contract.to_owned(),
+                reason: RefusalReason::ScopeMismatch,
+                detail: Some(message.clone()),
+            },
+            fiber,
+        );
+        Err(refusal(ErrorCode::EffectFailed, message))
+    }
+
     /// The path-prefix scopes `peer` holds `contract` under — `None` when
     /// ungranted, empty when root — for a provider enforcing its declared
     /// scope type per call (R4: the caller's scope travels with the call).

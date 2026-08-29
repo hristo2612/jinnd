@@ -13,6 +13,7 @@ use crate::alarms::CLOCK_CONTRACT;
 use crate::broker_state::refusal;
 use crate::hostcaps::{NET_CONTRACT, PROCESS_CONTRACT};
 use crate::hostfs::FS_CONTRACT;
+use crate::hostkeystore::KEYSTORE_CONTRACT;
 
 mod policy;
 #[cfg(all(test, not(feature = "loom")))]
@@ -77,6 +78,9 @@ impl std::fmt::Display for ScopeValue {
 pub struct Grant {
     pub contract: String,
     pub scope: Option<ScopeValue>,
+    /// The operation-class attenuation (M2-K8, harness #24): the written
+    /// `ops` list, or `None` for every operation the bundle declares.
+    pub ops: Option<ScopeValue>,
 }
 
 /// One entry's seat configuration: `grants` are the contracts the profile
@@ -129,6 +133,67 @@ fn refused(message: String) -> KernelError {
     refusal(ErrorCode::EffectFailed, message)
 }
 
+/// The operations each shipped bundle declares (contracts/*/metadata.toml
+/// `[operations.*]`): the closed vocabulary an `ops` attenuation may name.
+fn declared_ops(contract: &str) -> Option<&'static [&'static str]> {
+    Some(match contract {
+        FS_CONTRACT => &["read", "list", "meta", "write", "append", "remove"],
+        KEYSTORE_CONTRACT => &["get", "put", "delete", "list"],
+        PROFILE_CONTRACT => &["patch-entry", "entry", "document"],
+        CLOCK_CONTRACT => &["now", "alarm-at", "alarm-every"],
+        PROCESS_CONTRACT => &[
+            "run",
+            "spawn",
+            "write-stdin",
+            "close-stdin",
+            "read",
+            "wait",
+            "kill",
+        ],
+        NET_CONTRACT => &["request", "listen", "accept", "read", "write", "close"],
+        "jinn:ledger" => &["read-range", "last-seq"],
+        INTROSPECT_CONTRACT => &["entries", "readiness"],
+        _ => return None,
+    })
+}
+
+/// Validates one written `ops` attenuation against the bundle's declared
+/// operations (M2-K8; fail-closed): a non-empty list of declared names.
+fn admit_ops(contract: &str, wrote: &ScopeValue) -> Result<Vec<String>, KernelError> {
+    let Some(declared) = declared_ops(contract) else {
+        return Err(refused(format!(
+            "grant refused: no contract bundle declares operations for {contract}; \
+             ops {wrote} cannot validate"
+        )));
+    };
+    let ScopeValue::List(items) = wrote else {
+        return Err(refused(format!(
+            "grant refused: {contract} ops must be a list of operation names, wrote {wrote}"
+        )));
+    };
+    let mut ops: Vec<String> = Vec::new();
+    for item in items {
+        match item {
+            ScopeValue::Path(name) if declared.contains(&name.as_str()) => {
+                if !ops.contains(name) {
+                    ops.push(name.clone());
+                }
+            }
+            other => {
+                return Err(refused(format!(
+                    "grant refused: {contract} declares no operation {other}"
+                )));
+            }
+        }
+    }
+    if ops.is_empty() {
+        return Err(refused(format!(
+            "grant refused: {contract} ops names no operation (drop the grant instead)"
+        )));
+    }
+    Ok(ops)
+}
+
 /// THE fail-closed judgment on one grant (round-3 ruling). A bare grant
 /// admits (the contract's root/default scope — for the process and net
 /// bundles that is the EMPTY policy, M2-K6). A scoped grant admits only
@@ -141,6 +206,9 @@ fn refused(message: String) -> KernelError {
 ///
 /// A typed refusal for a malformed, wrong-type, or undeclared scope.
 fn admit(grant: &Grant) -> Result<(), KernelError> {
+    if let Some(ops) = &grant.ops {
+        admit_ops(&grant.contract, ops)?;
+    }
     let Some(scope) = &grant.scope else {
         return Ok(());
     };
@@ -207,6 +275,16 @@ pub(crate) fn authority(grant: &Grant) -> GrantScope {
         (_, Some(ScopeValue::Path(path))) => GrantScope::Paths(vec![path.clone()]),
         _ => GrantScope::Root,
     }
+}
+
+/// The operation class one ADMITTED grant is attenuated to (M2-K8): the
+/// deduplicated declared names, or `None` for every operation.
+#[must_use]
+pub(crate) fn attenuation(grant: &Grant) -> Option<Vec<String>> {
+    grant
+        .ops
+        .as_ref()
+        .and_then(|wrote| admit_ops(&grant.contract, wrote).ok())
 }
 
 /// The fail-closed verdicts a grant list would draw at activation, for a

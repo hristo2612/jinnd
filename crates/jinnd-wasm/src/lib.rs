@@ -28,6 +28,7 @@ mod hostbase;
 mod hostcaps;
 mod hostclock;
 mod hostfs;
+mod hostkeystore;
 mod hostnet;
 mod hostprocess;
 mod hostwire;
