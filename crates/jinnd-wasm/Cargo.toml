@@ -14,6 +14,12 @@ workspace = true
 loom = ["dep:loom"]
 
 [dependencies]
+# The wasm host runtime. MUST stay in the general dependency table: it is the
+# core runtime of this crate on every platform. It was captured by the macOS
+# keychain target block in 8d58501 (M2-K8 round 2), which left Linux CI without
+# it and turned `gates`, `invariants` and `loom` red on every commit for days
+# while macOS dev machines stayed green.
+wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "async"] }
 # The jinn:keystore provider's at-rest encryption (M2-K8; R10 justification:
 # a vetted RustCrypto AEAD for secrets on disk beats any in-tree cipher;
 # no std, no rand, alloc only) and the OS entropy its master key and
@@ -56,7 +62,6 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 # passwords only, no default features; this crate stays forbid(unsafe_code).
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { version = "3", default-features = false }
-wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "async"] }
 
 [dev-dependencies]
 # test-util: paused-clock tests drive the alarm timers deterministically
