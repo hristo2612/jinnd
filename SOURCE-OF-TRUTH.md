@@ -181,6 +181,10 @@ doubt, the code goes above the line, not below it. Metric note (2026-08-25): the
 kernel-core count excludes the conformance-harness lane (`jinnd-api` facade +
 `jinnd-adapter`), loom-only models, and cfg(test) code — the ceiling exists to keep
 the kernel small, never to incentivize golfing containment or honesty code.
+A packet card's restatement of the meter NEVER narrows this exclusion list
+(promoted 2026-08-30 after M2-K10 restated it as "files under tests/ or named
+tests.rs" and a correct loom-only model was counted against the ceiling): a card
+may set the ceiling number, the law sets what is counted.
 Per-file cap note (2026-08-29, promoted from the M2-K8 card so it stops being
 re-litigated card by card): the 300-line per-file cap is **hard for `src/`** and
 **soft for coherent test suites** — a test file over the cap is split where a natural
