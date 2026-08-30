@@ -247,10 +247,6 @@ impl Inner {
     /// lock and never across a call out (R1). `from == goal` is a path of
     /// length zero: the fiber IS the goal.
     fn reaches(&self, from: FiberId, goal: FiberId) -> Option<Vec<WaitEdge>> {
-        // TDD STUB (round 1, red pass): no wait is ever a cycle yet.
-        let _ = (from, goal);
-        return None;
-        #[allow(unreachable_code)]
         if from == goal {
             return Some(Vec::new());
         }
