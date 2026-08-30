@@ -11,9 +11,7 @@ use std::sync::atomic::Ordering;
 
 use jinnd_api::{EntryId, KernelError, KernelFuture, Owed};
 use jinnd_loader::Loader;
-use jinnd_wasm::{
-    Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId, RestartOracle, WaitGraph,
-};
+use jinnd_wasm::{Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId, RestartOracle, WaitGraph};
 
 use super::Readiness;
 use super::wire::{json, unknown};

@@ -1,4 +1,4 @@
-/// jinn:plugin@0.6.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.7.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every

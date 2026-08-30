@@ -65,11 +65,7 @@ pub fn wire_cycle(cycle: &crate::waits::Cycle) -> types::KernelError {
         on: cycle.on.clone(),
         waiter: cycle.waiter_name(),
         target: cycle.target_name(),
-        through: cycle
-            .through
-            .iter()
-            .map(|edge| edge.on.clone())
-            .collect(),
+        through: cycle.through.iter().map(|edge| edge.on.clone()).collect(),
     })
 }
 

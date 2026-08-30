@@ -47,7 +47,10 @@ fn a_cycle_is_never_admitted_by_both_halves() {
             "an admitted wait is exactly one edge; a refused one is none"
         );
         drop(held);
-        assert!(graph.edges().is_empty(), "and every ticket retired its edge");
+        assert!(
+            graph.edges().is_empty(),
+            "and every ticket retired its edge"
+        );
     });
 }
 

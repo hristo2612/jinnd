@@ -193,10 +193,7 @@ fn edges_report_every_live_wait() {
             .iter()
             .map(|edge| (edge.waiter, edge.target, edge.on.clone()))
             .collect::<Vec<_>>(),
-        vec![
-            (A, B, "a.b".to_owned()),
-            (B, C, "b.c".to_owned()),
-        ]
+        vec![(A, B, "a.b".to_owned()), (B, C, "b.c".to_owned()),]
     );
 }
 

@@ -101,8 +101,8 @@ impl Broker {
             Ok(looked_up) => looked_up,
         };
         Ok(match provider {
-                // The operation class is checked before the crossing is
-                // appended (M2-K8): a refused operation never crosses.
+            // The operation class is checked before the crossing is
+            // appended (M2-K8): a refused operation never crosses.
             _ if self.check_op(caller, &contract, &operation).is_err() => {
                 let error = refusal(
                     ErrorCode::EffectFailed,
@@ -194,7 +194,10 @@ impl Broker {
             let state = self.lock();
             (
                 state.providers.get(contract).map(|provider| {
-                    (Arc::clone(&provider.callable), state.fiber_of(provider.peer))
+                    (
+                        Arc::clone(&provider.callable),
+                        state.fiber_of(provider.peer),
+                    )
                 }),
                 state.fiber_of(caller),
             )
