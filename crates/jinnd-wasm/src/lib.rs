@@ -44,6 +44,7 @@ mod surfaces;
 mod swap;
 mod sync;
 mod topics;
+mod waits;
 
 pub use alarms::{
     AlarmSpec, Alarms, ArmRequest, CLOCK_CONTRACT, DEFAULT_MIN_PERIOD_MS, WAKE_TOPIC, now_unix_ms,
@@ -77,3 +78,4 @@ pub use sha256::hex_digest;
 pub use slot::{SeatState, SeatSummary, SharedSlot, commit_staged};
 pub use swap::{SlotPhase, SwapCore, SwapOutcome, SwapSlots, swap_batch};
 pub use topics::{EmitReport, EventTarget, LocalTopics, Rebind, RestartOracle, Unserved};
+pub use waits::{Cycle, FiberNames, WaitEdge, WaitGraph, WaitTicket};
