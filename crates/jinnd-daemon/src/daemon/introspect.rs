@@ -11,7 +11,9 @@ use std::sync::atomic::Ordering;
 
 use jinnd_api::{EntryId, KernelError, KernelFuture, Owed};
 use jinnd_loader::Loader;
-use jinnd_wasm::{Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId, RestartOracle};
+use jinnd_wasm::{
+    Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId, RestartOracle, WaitGraph,
+};
 
 use super::Readiness;
 use super::wire::{json, unknown};
@@ -26,6 +28,10 @@ pub(crate) struct HostIntrospect {
     /// a caller that asks is told exactly what a caller that dispatches
     /// would be refused for.
     restarts: Arc<dyn RestartOracle>,
+    /// The same wait graph a cycle refusal is decided against (M2-K10):
+    /// an operator asking why a crossing refused is told what the kernel
+    /// actually saw, from one source.
+    waits: Arc<WaitGraph>,
 }
 
 impl HostIntrospect {
@@ -41,6 +47,7 @@ impl HostIntrospect {
         lane: Arc<LaneCore>,
         readiness: Arc<Readiness>,
         restarts: Arc<dyn RestartOracle>,
+        waits: Arc<WaitGraph>,
     ) -> Result<(), KernelError> {
         let peer = broker.register_peer(None);
         broker.grant(peer, INTROSPECT_CONTRACT);
@@ -52,6 +59,7 @@ impl HostIntrospect {
                 lane,
                 readiness,
                 restarts,
+                waits,
             }),
         )
     }
@@ -109,6 +117,28 @@ impl HostIntrospect {
         serde_json::Value::Array(entries)
     }
 
+    /// The bundle's `wait` record per LIVE wait, in the order the waits
+    /// were taken. A moment, not a composition (the bundle says so): two
+    /// reads of an unchanged composition legitimately differ.
+    fn waits(&self) -> serde_json::Value {
+        let named = |fiber| self.waits.entry(fiber).map(|entry| entry.0);
+        let edges: Vec<serde_json::Value> = self
+            .waits
+            .edges()
+            .into_iter()
+            .map(|edge| {
+                serde_json::json!({
+                    "waiter": edge.waiter.0,
+                    "waiter-entry": named(edge.waiter),
+                    "target": edge.target.0,
+                    "target-entry": named(edge.target),
+                    "on": edge.on,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(edges)
+    }
+
     fn readiness(&self) -> serde_json::Value {
         serde_json::json!({
             "boot-reconciled": self.readiness.boot_reconciled.load(Ordering::SeqCst),
@@ -128,6 +158,7 @@ impl Peer for HostIntrospect {
         let answer = match operation {
             "entries" => Ok(json(&self.entries())),
             "readiness" => Ok(json(&self.readiness())),
+            "waits" => Ok(json(&self.waits())),
             other => Err(unknown(INTROSPECT_CONTRACT, other)),
         };
         Box::pin(async move { answer })

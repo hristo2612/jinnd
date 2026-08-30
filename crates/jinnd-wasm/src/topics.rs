@@ -14,6 +14,7 @@ use jinnd_api::{DispatchMode, FiberId, KernelError, KernelFuture, LedgerEventKin
 
 use crate::peer::LedgerSink;
 use crate::selector::{RealmOracle, Selector, selects};
+use crate::waits::{Cycle, WaitGraph, WaitTicket};
 
 mod restarting;
 
@@ -65,6 +66,15 @@ pub struct EmitReport {
     /// the boundary names the target and the caller's next move rather
     /// than handing a guest a sentence to parse (R3).
     pub refused: Option<Unserved>,
+    /// The walk was REFUSED because it would close a WAIT CYCLE (M2-K10):
+    /// a selected listener's fiber is, transitively, already awaiting the
+    /// emitter, so the emitter would have parked on a peer that cannot
+    /// answer until the guest deadline killed them both. Outputs and
+    /// failures are empty — nothing ran. Unlike the pending-transition
+    /// refusal above this holds in EVERY mode, `Emit` included: the kernel
+    /// awaits every listener delivery end to end, so fire-and-forget
+    /// discards the answer, never the wait (packet card, fact 1).
+    pub cycle: Option<Cycle>,
 }
 
 /// Topic registry + dispatcher.
@@ -77,6 +87,12 @@ pub struct LocalTopics {
     /// `DispatchRefused` row instead (M2-K9). `None` keeps the registry a
     /// pure port (crate tests, pre-tap callers).
     sink: Option<Arc<dyn LedgerSink>>,
+    /// The assembly's wait graph (M2-K10): a walk takes one edge per
+    /// selected listener for its whole duration, so a listener that calls
+    /// back into the emitter is refused instead of deadlocking it. Unset,
+    /// no walk ever records or refuses a wait — the registry stays the
+    /// pure port it is for crate tests.
+    waits: OnceLock<Arc<WaitGraph>>,
     /// The pending-restart oracle (M2-K9): set once by the assembly that
     /// owns the fibers. Unset, no walk is ever refused — the registry
     /// stays the pure port it is for crate tests.
@@ -91,6 +107,7 @@ impl LocalTopics {
             inner: Mutex::new(Inner::default()),
             sink: Some(sink),
             restarts: OnceLock::new(),
+            waits: OnceLock::new(),
         }
     }
 
@@ -99,6 +116,35 @@ impl LocalTopics {
     /// before it dispatches. Idempotent — a second install is ignored.
     pub fn watch_restarts(&self, oracle: Arc<dyn RestartOracle>) {
         let _ = self.restarts.set(oracle);
+    }
+
+    /// Installs the assembly's wait graph (M2-K10): from here every walk
+    /// declares the waits it is about to take, and one that would close a
+    /// cycle is refused before it dispatches. Idempotent.
+    pub fn watch_waits(&self, graph: Arc<WaitGraph>) {
+        let _ = self.waits.set(graph);
+    }
+
+    /// Takes ONE wait per selected listener, held for the whole walk. All
+    /// or nothing: a walk that cannot take every edge takes none, so a
+    /// dispatch is never half-landed and never refused midway (the K9
+    /// shape). The edges cover the walk rather than the current delivery
+    /// because the emitter's guest stays parked for the whole of it — a
+    /// listener that calls back is deadlocking the emitter whether or not
+    /// its own delivery has started yet.
+    fn park(
+        &self,
+        emitter: Option<FiberId>,
+        selected: &[(Option<FiberId>, u64, Arc<dyn EventTarget>)],
+        topic: &str,
+    ) -> Result<Vec<WaitTicket>, Cycle> {
+        let Some(graph) = self.waits.get() else {
+            return Ok(Vec::new());
+        };
+        selected
+            .iter()
+            .map(|(listener, _, _)| graph.enter(emitter, *listener, topic))
+            .collect()
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -209,6 +255,29 @@ impl LocalTopics {
                 .filter(|listener| selects(selector, oracle, emitter, listener.context))
                 .map(|listener| (listener.fiber, listener.token, Arc::clone(&listener.target)))
                 .collect()
+        };
+        // A walk that would close a wait cycle is refused FIRST (M2-K10):
+        // it is the one refusal no amount of waiting cures, so a caller is
+        // never told to retry a crossing that can only ever deadlock.
+        let _parked = match self.park(fiber, &selected, topic) {
+            Ok(parked) => parked,
+            Err(cycle) => {
+                if let Some(sink) = &self.sink {
+                    sink.append(
+                        LedgerEventKind::CycleRefused {
+                            on: topic.to_owned(),
+                            target: cycle.target,
+                            target_entry: cycle.target_entry.clone(),
+                            through: cycle.through.iter().map(|edge| edge.target).collect(),
+                        },
+                        fiber,
+                    );
+                }
+                return EmitReport {
+                    cycle: Some(cycle),
+                    ..EmitReport::default()
+                };
+            }
         };
         // A reply-expecting walk is DECIDED before it dispatches (M2-K9):
         // one selected listener in a doomed incarnation refuses the whole

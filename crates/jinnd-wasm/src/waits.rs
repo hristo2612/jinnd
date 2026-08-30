@@ -37,11 +37,11 @@
 //! kernel's own traffic, not a plugin parking on a peer.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, MutexGuard, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use jinnd_api::{EntryId, FiberId};
 
-use crate::sync::Mutex;
+use crate::sync::{Mutex, MutexGuard};
 
 #[cfg(all(test, feature = "loom"))]
 mod cycle_model;
@@ -136,7 +136,11 @@ impl WaitGraph {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn entry(&self, fiber: FiberId) -> Option<EntryId> {
+    /// The profile entry `fiber` serves, when the assembly names fibers.
+    /// The read is the seam's own snapshot; no lock of this graph is held
+    /// across it (R1).
+    #[must_use]
+    pub fn entry(&self, fiber: FiberId) -> Option<EntryId> {
         self.names.get()?.entry(fiber)
     }
 

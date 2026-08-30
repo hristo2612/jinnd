@@ -25,6 +25,7 @@ mod observe;
 mod profile_cap;
 mod profile_read;
 mod restarts;
+mod waits;
 mod wire;
 
 /// What `jinn:introspect.readiness` answers (M2-K7, harness #19/#12).
@@ -123,6 +124,10 @@ impl Daemon {
         // source, installed on the topic registry and handed to
         // `jinn:introspect`.
         let restarts = restarts::Restarts::install(&lane, &fibers);
+        // The wait graph (M2-K10, harness #32): ONE graph across the
+        // broker and the topic registry, so a cycle that closes through a
+        // contract call and a dispatch is seen as the one cycle it is.
+        let waits = waits::Names::install(&lane, &fibers);
         let tree = ContextTree::new();
         let root = tree.root();
         let registry = Registry::new();
@@ -137,6 +142,7 @@ impl Daemon {
             Arc::clone(&lane),
             Arc::clone(&readiness),
             restarts,
+            waits,
         )?;
         ledger_cap::HostLedger::register(&lane.broker, ledger.clone())?;
         profile_cap::HostProfile::register(

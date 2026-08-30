@@ -21,6 +21,12 @@
 /// answers when a selected listener's incarnation already owes a
 /// transition, each carrying a `refused-target`. They are four cases and
 /// not one because they are four different NEXT MOVES for the caller.
+/// 0.7.0 (M2-K10): `kernel-error` gains `cycle` — the typed refusal of a
+/// crossing that would close a WAIT CYCLE, carrying a `wait-cycle` record
+/// that names both ends and the wait path between them. It answers a
+/// `services.call` and an `events.emit` in EVERY dispatch mode, `emit`
+/// included: the kernel awaits every listener delivery end to end, so
+/// fire-and-forget discards the answer, never the wait.
 /// Additive: no existing case, signature, or meaning changes.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
@@ -34,7 +40,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.6.0;
+package jinn:plugin@0.7.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -91,6 +97,36 @@ interface types {
     /// entry (`jinn:introspect`, or its transitions on the ledger) and
     /// act when the environment actually moves.
     stalled(refused-target),
+    /// The crossing would have CLOSED A WAIT CYCLE (M2-K10): its target
+    /// is, transitively, already awaiting this caller, so parking on it
+    /// could only end at the guest deadline with both ends dead. Nothing
+    /// crossed and nothing was delivered — the walk or call is refused
+    /// whole, immediately.
+    ///
+    /// This is neither a pending transition nor a scope denial, and it is
+    /// its own next move: NOTHING here is cured by waiting, so a caller
+    /// must never retry it unchanged. Break the cycle instead — answer the
+    /// crossing you are already inside before making this one, or stop
+    /// needing this one's answer. Every refusal is a ledger event, and the
+    /// live wait behind it is readable through `jinn:introspect.waits`.
+    cycle(wait-cycle),
+  }
+
+  /// Why a crossing would deadlock, typed so a caller acts on identity
+  /// instead of parsing prose (M2-K10; R3).
+  record wait-cycle {
+    /// The crossing refused: `"contract.operation"` for a contract call,
+    /// the topic for a dispatch.
+    on: string,
+    /// The profile entry that would have parked — the caller itself. The
+    /// fiber id when the kernel has no entry name for it.
+    waiter: string,
+    /// The entry it would have parked on, which is already awaiting the
+    /// waiter. Named as `waiter` is.
+    target: string,
+    /// The waits leading from `target` back to `waiter`, in wait order:
+    /// what each hop is parked on. Evidence, never a routing instruction.
+    through: list<string>,
   }
 
   /// Who a dispatch refusal was refused BY, typed so a caller acts on
@@ -183,7 +219,15 @@ interface events {
   /// target owes — and nothing is delivered. A dispatch is therefore never
   /// half-landed, and never landed in an incarnation the kernel is already
   /// taking down. `emit` — the fire-and-forget mode, whose outputs are
-  /// discarded — is unaffected: it is DELIVERED exactly as before.
+  /// discarded — is unaffected by THAT refusal: it is delivered exactly as
+  /// before.
+  ///
+  /// A walk that would close a WAIT CYCLE is refused in EVERY mode,
+  /// `emit` included (M2-K10): the kernel awaits every listener delivery
+  /// end to end, so fire-and-forget discards the answer, never the wait,
+  /// and an emitter whose listener calls back into it deadlocks in `emit`
+  /// exactly as in `serial`. The whole walk is refused with `cycle`
+  /// before any listener runs.
   emit: func(topic: string, mode: dispatch-mode, target: selector, payload: list<u8>)
     -> result<list<list<u8>>, kernel-error>;
 

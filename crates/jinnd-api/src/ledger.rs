@@ -151,6 +151,25 @@ pub enum LedgerEventKind {
         incarnation: u64,
         owed: Owed,
     },
+    /// A crossing was refused because it would CLOSE A WAIT CYCLE
+    /// (M2-K10, harness finding 32; Law 2): `target` is, transitively,
+    /// already awaiting the refused caller, so parking on it could only
+    /// end at the guest deadline with both ends dead. Its own kind, like
+    /// [`LedgerEventKind::DispatchRefused`]: a cycle is neither a pending
+    /// transition nor a scope denial, and a reader tells them apart by the
+    /// kind alone. The refused caller rides the record's own entry/fiber
+    /// columns; `through` is the wait path from `target` back to it, in
+    /// wait order. A refused crossing lands this row INSTEAD of the
+    /// `ContractCall` or `DispatchTrace` it would have written.
+    /// (Authorized M2-K10 additive delta.)
+    CycleRefused {
+        /// `"contract.operation"` for a contract call; the topic for a
+        /// dispatch.
+        on: String,
+        target: FiberId,
+        target_entry: Option<EntryId>,
+        through: Vec<FiberId>,
+    },
     /// A capability grant was exercised: the broker resolved a granted
     /// contract to a caller-scoped handle (constitution 01 §Grants;
     /// authorized M1-P8 additive delta).

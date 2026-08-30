@@ -1,4 +1,4 @@
-# jinn:introspect 0.2.0
+# jinn:introspect 0.3.0
 
 The read-only composition contract (M2-K7; harness finding 19). A status
 or health plugin answers `fiber`, `state`, `incarnation`, `unserved`,
@@ -24,6 +24,24 @@ genuinely schedule one. A caller told to wait on a `gone` or `stalled`
 target would wait forever. Callers ASK here instead of discovering the state by
 stalling on it; the refusal and this field are read from one snapshot
 source, so they never disagree.
+
+## 0.3.0 (M2-K10, harness finding 32)
+
+Additive: the `waits` operation, answering the kernel's live WAIT GRAPH —
+one record per crossing a fiber is currently parked on, naming both ends
+and what is being waited on.
+
+A crossing whose target is, transitively, already awaiting the caller
+would deadlock: a Tier A instance serves one guest entry at a time, so a
+fiber parked outbound cannot answer an inbound crossing. The kernel
+REFUSES such a crossing immediately, with the `cycle` case of
+`kernel-error`, rather than letting both ends run to the guest deadline.
+This operation is the same graph that refusal is decided against, so an
+operator asking why is told what the kernel actually saw.
+
+Waits are a moment, not a composition: edges exist only while somebody is
+parked, so two reads of an unchanged composition legitimately differ.
+Nothing is reverted or gated on this answer.
 
 ## Grant
 
