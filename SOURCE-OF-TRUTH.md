@@ -246,9 +246,17 @@ within a major version.
   restarts, siblings untouched; hot-swap one WASM plugin with rollback; dispose one and
   watch the ledger show exactly what was undone; revert works.* Packet 0 of M1 is the
   test port — the suite lands red before any kernel code.
-- **M2 — Dogfood slice.** One real capability (cron or todos) rebuilt as plugins on the
-  kernel, running for real, ledger-visible. *Acceptance: the slice does its production
-  job for a week without touching the old gateway's data.*
+- **M2 — Dogfood slice, widened to a core port (amended 2026-08-30, see Decision Log).**
+  Originally: one real capability (cron or todos) rebuilt as plugins, running for real.
+  Hristo redirected on 2026-08-28 to port the gateway's core pieces FIRST — API,
+  settings, engines, sessions, todos, workflows, plugins UX — each as a seam-triple whose
+  provider is swappable by profile edit, "so we can switch and extend any piece".
+  *Acceptance, BOTH halves required and neither retired:* (a) every named seam proven by
+  the real-composition suite against the pinned daemon, provider swappable by profile
+  alone; and (b) **the original bar, unchanged — a slice does its production job for a
+  week without touching the old gateway's data.** (b) is currently carried by the cron
+  soak (PLA-297). Widening the port does not lower the bar for calling M2 done; it only
+  changes what is built before the week is run.
 - **M3 — Profiles & parity.** The `company` profile takes over slices of production
   one at a time; web UI runs against the kernel API. *Acceptance: an instance runs a
   full day on jinnd alone.*
@@ -266,6 +274,20 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-08-30** — **M2 widened to a core port; recorded LATE and flagged as such
+  (Jimbo).** Hristo directed on 2026-08-28: "push reliability wait after we port most
+  core pieces including API, sessions, engines, workflows, todos, settings, plugins…
+  we want to build new jinn from ground up with malleability in mind. we should be able
+  to switch and extend any piece." The soak stopped gating packet dispatch from that
+  point. **This should have been logged the day it was given.** It was not, so §7 and
+  the actual work diverged silently for two days — the precise failure this file's
+  preamble forbids. Recorded now with the delay named rather than back-dated. The
+  week-of-duty acceptance is explicitly NOT retired by the widening: M2 needs both the
+  seams and the week. As of this entry: seams 2.1 API, 2.2 settings, 2.3 engines, 2.4
+  sessions, 2.5 todos landed; 2.6 workflows in verify; 2.7 plugins UX queued. Kernel
+  K1–K10 landed, K11 carded. Cutover rule untouched — the old gateway keeps ALL
+  production.
 
 - **2026-08-23** — All-in ground-up rewrite in Rust; Cordis paradigm reimplemented, not
   wrapped; one plugin contract, static-native + WASM hosting; old gateway keeps
