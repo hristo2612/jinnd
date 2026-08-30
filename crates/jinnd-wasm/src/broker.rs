@@ -6,12 +6,13 @@
 //! defect. The harness lane routes through THIS SAME broker (test-harness
 //! ruling closure c).
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
 
 use crate::broker_state::{PeerRecord, Provider, refusal};
 use crate::peer::{HandleId, LedgerSink, Peer, PeerId};
+use crate::waits::{Cycle, WaitGraph};
 
 use crate::broker_state::{Handle, State};
 
@@ -25,6 +26,12 @@ mod calls;
 pub struct Broker {
     state: Mutex<State>,
     ledger: Arc<dyn LedgerSink>,
+    /// The assembly's wait graph (M2-K10): a contract call parks the
+    /// caller's fiber on the provider's for the length of the call, and
+    /// one that would close a cycle is refused instead of parking until
+    /// the guest deadline. Unset, no call ever records or refuses a wait —
+    /// the broker stays the pure dispatch point it is for crate tests.
+    waits: OnceLock<Arc<WaitGraph>>,
 }
 
 impl Broker {
@@ -32,6 +39,48 @@ impl Broker {
         Self {
             state: Mutex::new(State::default()),
             ledger,
+            waits: OnceLock::new(),
+        }
+    }
+
+    /// Installs the assembly's wait graph (M2-K10). Idempotent.
+    pub fn watch_waits(&self, graph: Arc<WaitGraph>) {
+        let _ = self.waits.set(graph);
+    }
+
+    /// Parks `caller`'s fiber on `provider`'s for the length of one call,
+    /// and records the refusal when that would close a cycle. A provider
+    /// with no fiber — every kernel-supplied base host provider is
+    /// registered that way — has no far end to close through, so it is
+    /// never refused and records no edge.
+    ///
+    /// # Errors
+    ///
+    /// [`Cycle`] when the provider is, transitively, already awaiting the
+    /// caller.
+    pub(crate) fn park(
+        &self,
+        caller: Option<FiberId>,
+        provider: Option<FiberId>,
+        on: &str,
+    ) -> Result<Option<crate::waits::WaitTicket>, Cycle> {
+        let Some(graph) = self.waits.get() else {
+            return Ok(None);
+        };
+        match graph.enter(caller, provider, on) {
+            Ok(ticket) => Ok(Some(ticket)),
+            Err(cycle) => {
+                self.ledger.append(
+                    LedgerEventKind::CycleRefused {
+                        on: on.to_owned(),
+                        target: cycle.target,
+                        target_entry: cycle.target_entry.clone(),
+                        through: cycle.through.iter().map(|edge| edge.target).collect(),
+                    },
+                    caller,
+                );
+                Err(cycle)
+            }
         }
     }
 

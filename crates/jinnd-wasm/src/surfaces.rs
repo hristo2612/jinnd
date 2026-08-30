@@ -91,9 +91,14 @@ impl bindings::services::Host for HostState {
         operation: String,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, bindings::types::KernelError> {
+        // A call that would close a wait cycle is refused TYPED (M2-K10):
+        // the guest is handed both ends and the wait between them, not a
+        // sentence — and not a five-second stall ending in two dead
+        // fibers.
         self.seat
             .broker
-            .call(self.seat.peer, handle, &operation, payload)
+            .call_or_refuse(self.seat.peer, handle, &operation, payload)
+            .map_err(|cycle| bindings::wire_cycle(&cycle))?
             .await
             .map_err(bindings::wire_error)
     }
@@ -124,6 +129,12 @@ impl bindings::events::Host for HostState {
         // so the guest is told so — typed, naming the target and its own
         // next move — instead of waiting on an incarnation the kernel is
         // already taking down.
+        // The wait-cycle refusal (M2-K10), in every mode: the walk never
+        // dispatched because delivering it would have parked the emitter
+        // on a listener that is already parked on the emitter.
+        if let Some(cycle) = &report.cycle {
+            return Err(bindings::wire_cycle(cycle));
+        }
         if let Some(refused) = report.refused {
             return Err(bindings::wire_refusal(&topic, &refused));
         }

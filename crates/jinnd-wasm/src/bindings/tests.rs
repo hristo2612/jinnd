@@ -9,8 +9,9 @@ const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
-    // 0.6.0 (M2-K9): `kernel-error` gains the typed `restarting` refusal.
-    assert!(WORLD.contains("package jinn:plugin@0.6.0;"));
+    // 0.7.0 (M2-K10): `kernel-error` gains the typed `cycle` refusal;
+    // 0.6.0 (M2-K9) gave it the typed `restarting` refusal.
+    assert!(WORLD.contains("package jinn:plugin@0.7.0;"));
     assert!(WORLD.contains("Suspend ≠ dispose"));
 }
 
@@ -33,9 +34,61 @@ fn the_world_carries_the_typed_dispatch_refusals() {
     assert!(WORLD.contains("REPLY-EXPECTING modes"));
     // The ask that replaces discovering a pending transition by stalling,
     // in the SAME vocabulary the refusal uses.
-    assert!(INTROSPECT.contains("package jinn:introspect@0.2.0;"));
+    assert!(INTROSPECT.contains("package jinn:introspect@0.3.0;"));
     assert!(INTROSPECT.contains("enum unserved {"));
     assert!(INTROSPECT.contains("unserved: option<unserved>,"));
+}
+
+/// M2-K10 (R3/R12): the wait-cycle refusal is a CASE of the world's own
+/// error carrying a RECORD naming both ends, and the live wait behind it
+/// is readable through `jinn:introspect` — one vocabulary, additively
+/// versioned, so a guest author learns the rule from the contract.
+#[test]
+fn the_world_carries_the_typed_wait_cycle() {
+    const INTROSPECT: &str = include_str!("../../../../contracts/jinn-introspect/contract.wit");
+    assert!(WORLD.contains("cycle(wait-cycle),"));
+    assert!(WORLD.contains("record wait-cycle {"));
+    for field in ["on: string,", "waiter: string,", "target: string,"] {
+        assert!(WORLD.contains(field), "{field}");
+    }
+    // Every mode is decided, `emit` included: the kernel awaits every
+    // delivery end to end, so fire-and-forget is not an escape.
+    assert!(WORLD.contains("refused in EVERY mode"));
+    assert!(INTROSPECT.contains("waits: func() -> list<wait>;"));
+    assert!(INTROSPECT.contains("record wait {"));
+}
+
+/// M2-K10: the typed cycle reaches the wire naming BOTH ENDS and the
+/// waits between them. A caller reads identity off the record; the prose
+/// lane exists only for the bundles whose error type cannot carry one.
+#[test]
+fn the_wait_cycle_names_both_ends_on_the_wire() {
+    use jinnd_api::{EntryId, FiberId};
+
+    use super::{types, wire_cycle};
+    use crate::waits::{Cycle, WaitEdge};
+
+    let cycle = Cycle {
+        waiter: FiberId(2),
+        waiter_entry: Some(EntryId("owner".to_owned())),
+        target: FiberId(1),
+        target_entry: Some(EntryId("provider".to_owned())),
+        on: "jinn:test/settings.get".to_owned(),
+        through: vec![WaitEdge {
+            waiter: FiberId(1),
+            target: FiberId(2),
+            on: "jinn:test/notice".to_owned(),
+        }],
+    };
+    match wire_cycle(&cycle) {
+        types::KernelError::Cycle(wire) => {
+            assert_eq!(wire.on, "jinn:test/settings.get");
+            assert_eq!(wire.waiter, "owner");
+            assert_eq!(wire.target, "provider");
+            assert_eq!(wire.through, vec!["jinn:test/notice".to_owned()]);
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// M2-K9: the four dispositions map to four DIFFERENT wire cases,

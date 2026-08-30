@@ -1,5 +1,5 @@
-// jinn:introspect@0.2.0 (M2-K9, harness #31; 0.1.0 M2-K7, #19) — the
-// read-only composition
+// jinn:introspect@0.3.0 (M2-K10, harness #32; 0.2.0 M2-K9, #31; 0.1.0
+// M2-K7, #19) — the read-only composition
 // contract. The kernel supplies it (01 §Mechanical closure); a plugin sees
 // the composition only when its profile entry grants this contract. Every
 // read crosses the broker (grant check → ledger append → dispatch) and is
@@ -7,7 +7,7 @@
 // this path (R1). Reached over `services.resolve("jinn:introspect")` +
 // `services.call(handle, <operation>, [])`; answers are the UTF-8 JSON of
 // the records below, field names as written (kebab-case).
-package jinn:introspect@0.2.0;
+package jinn:introspect@0.3.0;
 
 interface composition {
   // The kernel registrations one live seat holds, by class.
@@ -56,6 +56,26 @@ interface composition {
     registrations: registrations,
   }
 
+  // One LIVE wait: `waiter` is parked on `target` until the crossing
+  // named by `on` settles, and cannot answer anything else meanwhile
+  // (0.3.0). This is the graph the kernel refuses a cycle-closing
+  // crossing against, read from the same source, so an operator asking
+  // "why was that refused?" and the refusal itself never disagree.
+  // Edges exist only while somebody is actually parked: this is a
+  // snapshot of now, never a history. A `waits` answer therefore differs
+  // between two reads of an otherwise identical composition.
+  record wait {
+    // The fiber parked, and the entry it serves when one is named.
+    waiter: u64,
+    waiter-entry: option<string>,
+    // The fiber it is parked on, and that fiber's entry.
+    target: u64,
+    target-entry: option<string>,
+    // What is being waited on: "contract.operation" for a contract call,
+    // the topic for a dispatch.
+    on: string,
+  }
+
   // The daemon's readiness: the boot reconcile has landed, and the
   // profile/artifact watcher is armed (the machine-readable shape of the
   // readiness line, harness #12).
@@ -68,6 +88,12 @@ interface composition {
   // Effect class: read. Operation `readiness`, empty payload; answer = the
   // JSON `readiness` record.
   readiness: func() -> readiness;
+
+  // Effect class: read. Operation `waits`, empty payload; answer = the
+  // JSON list of `wait`, in the order the waits were taken. A crossing
+  // whose target already appears, transitively, as a waiter on the
+  // caller is the cycle the kernel refuses. (0.3.0)
+  waits: func() -> list<wait>;
 }
 
 world introspect-provider {

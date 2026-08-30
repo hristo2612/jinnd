@@ -2,8 +2,10 @@
 //! ABOUT: [`registry`] pins ordinary dispatch and tracing, [`refusal`]
 //! pins the M2-K9 rule that a reply-expecting walk into a replaced
 //! incarnation refuses whole, [`dispositions`] pins that each refusal is
-//! named for the future it actually implies, and [`race`] closes the
-//! hostile interleaving around the swap commit.
+//! named for the future it actually implies, [`race`] closes the hostile
+//! interleaving around the swap commit, and [`cycle_restart`] pins which
+//! refusal answers when a wait cycle forms around a peer that is at the
+//! same moment restarting (M2-K10).
 //!
 //! The fixtures every half builds a registry out of live here, so no two
 //! halves can drift about what a listener, a sink, or a doomed fiber is.
@@ -16,6 +18,7 @@ use jinnd_api::{EntryId, ErrorCode, FiberId, KernelError, KernelFuture, LedgerEv
 use super::{EventTarget, RestartOracle, Unserved};
 use crate::peer::LedgerSink;
 
+mod cycle_restart;
 mod dispositions;
 mod race;
 mod refusal;

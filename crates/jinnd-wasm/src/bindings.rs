@@ -55,6 +55,20 @@ pub fn wire_refusal(topic: &str, refused: &crate::topics::Unserved) -> types::Ke
     }
 }
 
+/// The wait-cycle refusal, typed onto the wire (M2-K10): both ends and
+/// the wait path between them, so a caller acts on identity rather than on
+/// prose (R3). Deliberately not routed through [`wire_error`], for the
+/// M2-K9 reason — a `kernel-error` whose payload is a record cannot be
+/// reconstructed from a message string.
+pub fn wire_cycle(cycle: &crate::waits::Cycle) -> types::KernelError {
+    types::KernelError::Cycle(types::WaitCycle {
+        on: cycle.on.clone(),
+        waiter: cycle.waiter_name(),
+        target: cycle.target_name(),
+        through: cycle.through.iter().map(|edge| edge.on.clone()).collect(),
+    })
+}
+
 /// Maps a facade error onto the `jinn:fs` bundle's own error (M2-K3, R12):
 /// typed absence, a grant or scope denial, or the contained `io` failure —
 /// the provider's own or the kernel boundary's.

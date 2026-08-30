@@ -9,6 +9,7 @@
 //! `net-*` modes drive the `jinn:process` / `jinn:net` long-lived editions
 //! (M2-K6; `mode:arg` carries a path, a port, or an address);
 //! the `notify-*` modes drive the M2-K9 restart-window shape (#31);
+//! the `cycle-*` modes drive the M2-K10 wait-cycle shape (#32);
 //! `grumpy-undo` registers an effect whose inverse fails
 //! loudly (it proves an undo replay RAN); `flaky-restore` refuses every
 //! handoff (it fails a swap's health gate on demand); `interleave` registers
@@ -50,6 +51,11 @@ const NOTICE_TOKEN: u64 = 21;
 /// The token `notify-consumer`'s effect answers to: its seat carries a
 /// real journal, so its restart is a real seat replacement.
 const CONSUMER_UNDO_TOKEN: u64 = 22;
+/// The M2-K10 notice topic: kept apart from the K9 one so the two shapes
+/// can never be mistaken for each other in a ledger or a log.
+const CYCLE_TOPIC: &str = "jinn:test/cycle-notice";
+/// The token the `cycle-*` listeners subscribe under.
+const CYCLE_TOKEN: u64 = 31;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static PICKY: AtomicBool = AtomicBool::new(false);
@@ -464,6 +470,113 @@ fn notify_mode(mode: &str) -> Result<(), GuestFault> {
     }
 }
 
+/// The M2-K10 modes (harness #32) — two HONEST plugins parking on each
+/// other, no restart anywhere in the shape. `cycle-provider` provides the
+/// settings contract and, from inside a call it is serving, dispatches its
+/// notice to its listeners. `cycle-owner` listens for that notice and,
+/// from the handler, calls BACK into the provider — the peer that cannot
+/// answer, because it is inside the very call that emitted. `cycle-caller`
+/// is the same pair with the edges taken in the OTHER order: it calls the
+/// provider first, and the provider's dispatch is the edge that would
+/// close. `cycle-trigger` starts the first ordering from a tick.
+fn cycle_mode(mode: &str) -> Result<(), GuestFault> {
+    match mode {
+        "cycle-provider" => services::provide(SETTINGS_CONTRACT).map(|_| ()).map_err(fault),
+        "cycle-owner" => jinn::plugin::events::listen(CYCLE_TOPIC, CYCLE_TOKEN)
+            .map(|_| ())
+            .map_err(fault),
+        "cycle-caller" => {
+            jinn::plugin::events::listen(CYCLE_TOPIC, CYCLE_TOKEN).map_err(fault)?;
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        "cycle-trigger" => {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            Ok(())
+        }
+        other => Err(GuestFault::Failed(format!("unknown cycle mode {other}"))),
+    }
+}
+
+/// Records a typed wait-cycle refusal for the test to read back: the tag
+/// byte, then the record's own fields as JSON. Nothing here parses the
+/// kernel's prose into meaning — there is none to parse (M2-K10, R3).
+fn cycle_record(cycle: &jinn::plugin::types::WaitCycle) -> Vec<u8> {
+    let through: Vec<String> = cycle
+        .through
+        .iter()
+        .map(|hop| format!("\"{hop}\""))
+        .collect();
+    let mut wire = vec![7];
+    wire.extend(
+        format!(
+            r#"{{"on":"{}","waiter":"{}","target":"{}","through":[{}]}}"#,
+            cycle.on,
+            cycle.waiter,
+            cycle.target,
+            through.join(",")
+        )
+        .into_bytes(),
+    );
+    wire
+}
+
+/// What the kernel answered one `cycle-*` crossing: 7 = the typed wait
+/// cycle (the record follows), 0 = it went through (the byte count
+/// follows), 2 = some other kernel error.
+fn cycle_answer(answer: Result<Vec<u8>, jinn::plugin::types::KernelError>) -> Vec<u8> {
+    match answer {
+        Ok(bytes) => vec![0, bytes.len() as u8],
+        Err(jinn::plugin::types::KernelError::Cycle(cycle)) => cycle_record(&cycle),
+        Err(other) => {
+            let mut wire = vec![2];
+            wire.extend(format!("{other:?}").into_bytes());
+            wire
+        }
+    }
+}
+
+/// The provider's half: dispatch the notice from inside the call it is
+/// currently serving. In the first ordering this walk is delivered and the
+/// listener's call back is what closes; in the second the caller is
+/// already parked on this very fiber, so THIS walk is the closing edge and
+/// is refused whole.
+fn cycle_notify() -> Result<Vec<u8>, GuestFault> {
+    Ok(match jinn::plugin::events::emit(
+        CYCLE_TOPIC,
+        jinn::plugin::types::DispatchMode::Serial,
+        &jinn::plugin::types::Selector::All,
+        b"notice",
+    ) {
+        Ok(outputs) => vec![0, outputs.len() as u8],
+        Err(jinn::plugin::types::KernelError::Cycle(cycle)) => cycle_record(&cycle),
+        Err(other) => {
+            let mut wire = vec![2];
+            wire.extend(format!("{other:?}").into_bytes());
+            wire
+        }
+    })
+}
+
+/// One tick of either ordering: ask the provider to run the shape once and
+/// record what the kernel answered, exactly once.
+fn cycle_tick(out: &str) -> Result<(), GuestFault> {
+    if fs::meta(out).is_ok() {
+        return Ok(());
+    }
+    let Ok(handle) = services::resolve(SETTINGS_CONTRACT) else {
+        return Ok(());
+    };
+    // The provider's own verdict travels back VERBATIM: in one ordering
+    // its walk was delivered, in the other its walk was the refused edge.
+    // A refusal of THIS call is recorded in the same vocabulary.
+    let answer = match services::call(handle, "cycle-notify", b"") {
+        Ok(bytes) => bytes,
+        Err(refused) => cycle_answer(Err(refused)),
+    };
+    fs::write(out, &answer, "").map_err(fs_fault)
+}
+
 /// Records a typed dispatch refusal for the test to read back: the tag
 /// byte, then the record's own fields as JSON. The guest never formats the
 /// kernel's prose into meaning — there is none to format (M2-K9, R3).
@@ -671,6 +784,9 @@ impl Guest for Fixture {
         }
         if mode.starts_with("notify-") {
             return notify_mode(mode);
+        }
+        if mode.starts_with("cycle-") {
+            return cycle_mode(mode);
         }
         match mode {
             "trap" => panic!("fixture trap mode"),
@@ -882,6 +998,24 @@ impl Guest for Fixture {
         // the defect: the delivery landed in an incarnation the loader is
         // already replacing, and the call below can never be served — the
         // provider is inside the very call that emitted the notice.
+        // The M2-K10 notice (harness #32): from this handler the owner
+        // calls BACK into the provider, which is parked on this very
+        // delivery. The kernel refuses that call rather than letting both
+        // ends run to the guest deadline; what it answered is recorded and
+        // the handler returns normally, so nothing here is a stall.
+        if topic == CYCLE_TOPIC {
+            if token != CYCLE_TOKEN {
+                return Err(GuestFault::Failed("a malformed notice arrived".into()));
+            }
+            // The live wait is ASKABLE from inside the window it opened,
+            // not only discoverable by stalling in it (M2-K10).
+            let waits = operator_call("jinn:introspect", "waits", &[])?;
+            fs::write("/cycle-waits.json", &waits, "").map_err(fs_fault)?;
+            let handle = services::resolve(SETTINGS_CONTRACT).map_err(fault)?;
+            let answer = cycle_answer(services::call(handle, "get", b""));
+            fs::write("/owner.out", &answer, "").map_err(fs_fault)?;
+            return Ok(b"answered".to_vec());
+        }
         if topic == CHANGED_TOPIC {
             if token != NOTICE_TOKEN {
                 return Err(GuestFault::Failed("a malformed notice arrived".into()));
@@ -923,6 +1057,14 @@ impl Guest for Fixture {
                 if patch_mode == "notify-trigger" {
                     notify_tick(id)?;
                 }
+            }
+            // The M2-K10 orderings (harness #32): the trigger opens with
+            // the provider's dispatch, the caller opens with its own call.
+            if mode == "cycle-trigger" {
+                cycle_tick("/cycle.out")?;
+            }
+            if mode == "cycle-caller" {
+                cycle_tick("/caller.out")?;
             }
             if mode == "introspect" {
                 introspect_tick()?;
@@ -976,6 +1118,9 @@ impl Guest for Fixture {
             // The M2-K9 shape (harness #31): patch the consumer, then
             // dispatch the notice into the window that just opened.
             "patch-notify" => notify(&String::from_utf8_lossy(&payload)),
+            // The M2-K10 shape (harness #32): dispatch the notice from
+            // inside the call this fiber is currently serving.
+            "cycle-notify" => cycle_notify(),
             "stash" => Ok(STASH.lock().unwrap().clone()),
             _ => Err(GuestFault::Failed(format!("unknown operation {operation}"))),
         }
