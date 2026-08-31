@@ -43,3 +43,20 @@ panic = "unwind"
 
 [profile.dev]
 panic = "unwind"
+
+# The keystore's KDF is deliberately expensive (scrypt N=2^15, ~32 MiB). At
+# `dev` codegen that one derivation costs seconds rather than milliseconds,
+# and it is charged to the guest-call deadline (R11 containment horizon)
+# because a plugin's first `jinn:keystore` mutation unlocks the store inside
+# its own `activate`. On a modest CI machine that alone exceeded the
+# deadline, killing the activation mid-put and leaving an EMPTY store — the
+# M2-K12 defect. Codegen only: no cryptography, parameter, or KDF choice
+# changes, and the release profile is untouched.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3

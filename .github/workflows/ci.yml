@@ -25,6 +25,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace --exclude jinnd-invariants
+      # M2-K12: the break that hid this packet's defect was a dependency
+      # captured under a macOS-only target table, so the workspace stopped
+      # resolving on Linux. A locked build on Linux is that class's gate.
+      - name: locked build
+        run: cargo build --workspace --locked
+      - name: no platform-gated or silenced integration test
+        run: bash .github/scripts/check-no-platform-gated-tests.sh
       - name: push two-key tripwire fixtures
         run: bash .github/scripts/test-push-two-key.sh
 

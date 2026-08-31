@@ -83,23 +83,19 @@ async fn the_data_root_alone_cannot_decrypt_the_store() {
             .exists(),
         "no key material beside the ciphertext"
     );
-    // TEMPORARY M2-K12 diagnostic — reverted before the packet lands.
-    println!("K12 home = {}", home.0.display());
-    println!("K12 keystore dir = {}", paths.keystore().display());
-    for entry in walkdir(&home.0) {
-        println!("K12   {entry}");
-    }
-    println!(
-        "K12 secrets.bin exists = {}",
-        paths.keystore().join("secrets.bin").exists()
+    // The refusals below only MEAN anything against a store that holds
+    // ciphertext: an empty store opens under any key at all. M2-K12 —
+    // an activation killed on the guest-call deadline left the store
+    // empty on CI, and this test then read as "the authority property
+    // does not hold on Linux". Pin the precondition so that defect can
+    // never again wear this test's face.
+    assert!(
+        paths.keystore().join("secrets.bin").exists(),
+        "the sealed document is on disk, so the refusals below are not vacuous"
     );
     let other = Daemon::open_with(
         paths.clone(),
         MasterKeySource::Passphrase(b"a-different-passphrase".to_vec()),
-    );
-    println!(
-        "K12 wrong-passphrase open err = {:?}",
-        other.as_ref().err()
     );
     assert!(
         other.is_err(),
@@ -113,20 +109,4 @@ async fn the_data_root_alone_cannot_decrypt_the_store() {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
-}
-
-/// TEMPORARY M2-K12 diagnostic — reverted before the packet lands.
-fn walkdir(root: &std::path::Path) -> Vec<String> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            out.push(format!("{}/", path.display()));
-            out.extend(walkdir(&path));
-        } else {
-            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            out.push(format!("{} ({len} bytes)", path.display()));
-        }
-    }
-    out
 }

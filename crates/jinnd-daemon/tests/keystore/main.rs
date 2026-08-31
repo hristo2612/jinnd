@@ -81,7 +81,6 @@ async fn booted(paths: DaemonPaths) -> Daemon {
         .boot()
         .await
         .unwrap_or_else(|error| panic!("boot: {error:?}"));
-    println!("K12 boot report: {report:?}");
     assert!(report.errors.is_empty(), "clean boot: {:?}", report.errors);
     daemon
 }
