@@ -260,6 +260,24 @@ within a major version.
 - **M3 — Profiles & parity.** The `company` profile takes over slices of production
   one at a time; web UI runs against the kernel API. *Acceptance: an instance runs a
   full day on jinnd alone.*
+  **Two structural blockers, discovered by the M2 port and recorded 2026-09-01 (see
+  Decision Log). Neither is a polish item; each makes the acceptance above unreachable
+  as written until it is closed.**
+  1. **No outbound anything.** `jinn:net` v0.1 has no `request`, no TLS and no
+     non-loopback listen, at every pin so far. Slack, Stripe, Linear, GitHub, the
+     vendor engine APIs and every webhook are therefore *structurally impossible* in
+     the harness today. An instance cannot run "a full day on jinnd alone" while it
+     cannot reach anything, so M3 either gets an outbound capability first or its
+     acceptance means a day of purely local work — and those are different milestones.
+  2. **No authentication or authorization, anywhere.** Loopback plus the port scope
+     the `jinn:net` grant carries is the entire boundary; anything on the machine that
+     reaches the port is an operator. Acceptable for a soak beside production,
+     unacceptable for a profile that holds production. What shape this takes is a real
+     design choice with real alternatives and it is Hristo's to make, so it is named
+     here and deliberately not carded.
+  The M2 port delivered the SHAPES faithfully. It did not deliver the two capabilities
+  that separate a faithful shape from a thing that can run a business, and M3 should be
+  planned knowing that rather than discovering it in flight.
 - **M4 — Cutover.** Old gateway retired per the cutover rule. jinnOS work (desktop
   session, mobile ROM) begins only after M4 — as bigger profiles, not new projects.
 
@@ -274,6 +292,16 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-09-01** — **M3's acceptance is not reachable as written; the two blockers are
+  named in §7 (Jimbo, roadmap amendment).** Found in a step-back review Hristo asked
+  for, not by any gate. The completed core port (2.1–2.7, all landed) ships no outbound
+  HTTP capability and no authentication boundary, so "an instance runs a full day on
+  jinnd alone" describes an instance that can neither reach a vendor API nor tell an
+  operator from anyone else with access to the port. §7 M3 now records both. This
+  amendment records a discovered FACT and chooses no direction: whether M3 proceeds,
+  and in what order those two are closed, is Hristo's decision and is explicitly open.
+  M2 is unchanged by this — §7(a) is met, §7(b) (the week of real duty) is still owed.
 
 - **2026-08-30** — **M2 widened to a core port; recorded LATE and flagged as such
   (Jimbo).** Hristo directed on 2026-08-28: "push reliability wait after we port most
