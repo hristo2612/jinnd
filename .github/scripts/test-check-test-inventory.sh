@@ -13,6 +13,12 @@
 # catching divergences that carry NO conditional-compilation syntax at all, and
 # that the shipped scanner therefore passes. That is the argument for inverting
 # the guard rather than teaching the scanner one more form.
+#
+# What no case here proves, because no case CAN: a test that runs on both
+# platforms and asserts nothing. It is present and green in both inventories,
+# identical in name and state, and the differential is right to accept it. That
+# is a vacuity defect, a separate class, and the acceptance cases below assert
+# only that a passing differential says so out loud.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -71,6 +77,14 @@ assert_accepts() { # <dir> <scenario>
     failures=$((failures + 1))
     return
   fi
+  # A pass must say what it did NOT decide. The limit is load-bearing here: a
+  # green differential is quoted as evidence, and a reader who takes it for
+  # more than test parity repeats this packet's founding mistake.
+  if [[ "$output" != *"vacuity, which no inventory can see"* ]]; then
+    printf 'FAIL: the differential passed without naming its vacuity limit: %s\n%s\n' "$scenario" "$output" >&2
+    failures=$((failures + 1))
+    return
+  fi
   printf '  accepts: %s\n' "$scenario"
 }
 
@@ -119,12 +133,18 @@ grep -v 'a_suspended_fiber_keeps_its_effects' "$dir/macos.tsv" >"$dir/tmp" && mv
 printf 'jinnd-daemon\ttest\tsuspend\ta_suspended_fiber_keeps_its_effects\n' >"$dir/allow.tsv"
 assert_refuses "$dir" 'a declared divergence carrying no reason' 'no reason'
 
-# 9. A divergence with NO conditional-compilation syntax behind it: the test
-#    body returns early on one platform and the maintainer deleted it there.
-#    The scanner sees nothing to report; the differential still refuses.
+# 9. A test NAME absent from one platform's inventory with NO conditional-
+#    compilation syntax behind it — deleted there, or never built there. Name
+#    DELETION is exactly what this proves, and only that: the scanner has
+#    nothing to report and the differential still refuses.
+#
+#    It does NOT demonstrate a body that returns early on one platform. Such a
+#    test is present, enabled and green in BOTH inventories, so no fixture in
+#    this file can catch it and none claims to — that is the vacuity limit
+#    stated in `test-inventory.sh`'s header.
 dir=$(new_case no-syntax-to-scan)
 grep -v 'hostprocess::tests::a_child_is_reaped' "$dir/linux.tsv" >"$dir/tmp" && mv "$dir/tmp" "$dir/linux.tsv"
-assert_refuses "$dir" 'a divergence with no cfg syntax for any scanner to find' 'present on macos, absent on linux'
+assert_refuses "$dir" 'a test name deleted on one platform, with no cfg syntax for any scanner to find' 'present on macos, absent on linux'
 
 echo "differential fixtures — shapes that must be ACCEPTED:"
 

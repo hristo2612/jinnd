@@ -17,6 +17,12 @@
 # with a reason, in the diff, where a reviewer sees it. That is the whole
 # difference between a property that is verified elsewhere and one that has
 # quietly become invisible.
+#
+# The guarantee is TEST PARITY and no more, and a green run here says so in its
+# own output line. A test that runs on BOTH platforms and asserts nothing has
+# the same name and the same state in both inventories; that is a VACUITY
+# defect, and nothing in a differential can see it. The class and its remedy
+# are stated in `test-inventory.sh`'s header.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -125,4 +131,5 @@ fi
 
 allowed=$(wc -l <"$work/allowed.txt" | tr -d ' ')
 echo "differential: ok; $label_a $a_count tests, $label_b $b_count tests," \
-     "no undeclared divergence ($allowed declared)"
+     "no undeclared divergence ($allowed declared) — this decides test PARITY only;" \
+     "a body that runs on both and asserts nothing is vacuity, which no inventory can see"

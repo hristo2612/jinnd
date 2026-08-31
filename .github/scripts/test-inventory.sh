@@ -18,13 +18,25 @@
 # would ever have modelled.
 #
 # What it decides: the presence and the silenced-state of every compiled-in
-# test, per package and target.
+# test, per package and target. That is TEST PARITY, and test parity is the
+# whole of the guarantee. A test that VANISHES or is SILENCED on a platform is
+# a platform-gating defect, and this catches it whatever produced it.
 #
-# What it does NOT decide: a test that is present, enabled and passing on both
-# platforms while its BODY returns early (`std::env::consts::OS`). Same name,
-# same state, so a name differential cannot see it. That residual is named here
-# rather than papered over; the heuristic scanner is the only cheap signal for
-# it and the heuristic is explicitly not the guarantee.
+# What it does NOT decide, written down here because a limit nobody wrote down
+# is the exact shape this packet is named after: a test that is present,
+# enabled and GREEN on both platforms while its body does nothing -- an early
+# return on `std::env::consts::OS`, a loop over an empty set, an assertion
+# checked against a store that was never populated. Such a test has the same
+# name and the same state in both inventories, so no inventory, no scanner and
+# no name comparison can distinguish it. That is a VACUITY defect: a different
+# class from platform gating, with a different remedy.
+#
+# The remedy for vacuity is the non-vacuous precondition discipline this packet
+# established in `crates/jinnd-daemon/tests/keystore/authority.rs` — a test
+# states and asserts the precondition that makes its main assertion mean
+# something. This packet's own founding finding was precisely a vacuity defect:
+# a keystore authority assertion that was correct, compiled, executing and
+# passing, over an empty store.
 #
 # Emits TSV, sorted, and free of absolute paths (they differ per runner, and
 # this repo is destined to be public): package, kind, target, test, state.
