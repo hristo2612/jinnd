@@ -76,6 +76,14 @@ pub enum LedgerEventKind {
         failures: u32,
         emitter: u64,
     },
+    /// Committed fiber transitions the kernel could NOT hand to its
+    /// lifecycle publish queue (M2-K13; Law 2, R9): a listener slow enough
+    /// to fill the bound loses transitions, and the loss is COUNTED here
+    /// rather than absorbed. `topic` is the reserved topic the publish was
+    /// for; `dropped` is how many transitions were lost. A listener sees
+    /// exactly the same loss as a gap in the delivered `ordinal`, so the
+    /// kernel's count and the listener's own reading never disagree.
+    PublishDropped { topic: String, dropped: u64 },
     /// One `jinn:process` child spawned by its calling plugin (M2-K6; Law
     /// 2): a kernel registration, attributed to the calling fiber/entry
     /// via the record's columns. `pid` is the host process id.

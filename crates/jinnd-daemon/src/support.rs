@@ -63,18 +63,38 @@ pub(crate) struct Tracked {
 
 /// Emits every committed fiber transition the ledger has not yet seen
 /// (R6: transitions are ledger events; ordered, unreceipted lane), each
-/// attributed to its entry.
-pub(crate) fn sync_transitions(fibers: &SharedFibers, ledger: &jinnd_ledger::Ledger) {
-    let mut fibers = lock(fibers);
-    for tracked in fibers.values_mut() {
-        let transitions = tracked.fiber.record().transitions;
-        for transition in transitions.iter().skip(tracked.recorded) {
-            ledger.record(
-                LedgerEventKind::FiberTransition(transition.clone()),
-                Some(tracked.entry.clone()),
-                Some(tracked.fiber.id()),
-            );
+/// attributed to its entry — and hands the same transition to the
+/// lifecycle publisher (M2-K13), IN THAT ORDER: the append is sent to the
+/// single writer before the publisher is offered anything, so the
+/// publisher's own barrier can never resolve ahead of the row.
+///
+/// Nothing is offered while the fiber map is locked: the publisher reads
+/// lane state of its own, and the kernel holds no lock across a call it
+/// does not own (R1).
+pub(crate) fn sync_transitions(
+    fibers: &SharedFibers,
+    ledger: &jinnd_ledger::Ledger,
+    publisher: Option<&Arc<crate::daemon::Lifecycle>>,
+) {
+    let mut committed: Vec<(EntryId, jinnd_api::Transition)> = Vec::new();
+    {
+        let mut fibers = lock(fibers);
+        for tracked in fibers.values_mut() {
+            let transitions = tracked.fiber.record().transitions;
+            for transition in transitions.iter().skip(tracked.recorded) {
+                ledger.record(
+                    LedgerEventKind::FiberTransition(transition.clone()),
+                    Some(tracked.entry.clone()),
+                    Some(tracked.fiber.id()),
+                );
+                committed.push((tracked.entry.clone(), transition.clone()));
+            }
+            tracked.recorded = transitions.len();
         }
-        tracked.recorded = transitions.len();
+    }
+    if let Some(publisher) = publisher {
+        for (entry, transition) in &committed {
+            publisher.offer(entry, transition);
+        }
     }
 }

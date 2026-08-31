@@ -18,9 +18,11 @@ use jinnd_wasm::{
 
 pub use crate::paths::DaemonPaths;
 use crate::support::{SharedFibers, Sink, error, lock};
+pub(crate) use lifecycle::Lifecycle;
 
 mod introspect;
 mod ledger_cap;
+mod lifecycle;
 mod observe;
 mod profile_cap;
 mod profile_read;
@@ -53,6 +55,10 @@ pub struct Daemon {
     /// `packages.rs`).
     pub(crate) applied_pins: Mutex<HashMap<String, String>>,
     pub(crate) readiness: Arc<Readiness>,
+    /// The kernel's lifecycle publish (M2-K13): every transition the
+    /// ledger sync commits is offered here and pushed to the listeners a
+    /// `jinn:introspect` grant admits.
+    pub(crate) lifecycle: Arc<Lifecycle>,
     /// Keeps the context tree (and every context derived under it) alive.
     _root: jinnd_context::Context<()>,
 }
@@ -91,6 +97,10 @@ impl Daemon {
             fibers: Arc::clone(&fibers),
         });
         let lane = Arc::new(LaneCore::new(Arc::clone(&sink))?);
+        // The kernel's lifecycle publish (M2-K13, harness #40/#41): the
+        // transitions the ledger sync commits are pushed from here to the
+        // listeners a `jinn:introspect` grant admits.
+        let lifecycle = Lifecycle::new(ledger.clone(), Arc::clone(&lane));
         // Inverses spill OUTSIDE the guests' containment root (M2-K3).
         let hostfs = Arc::new(HostFs::open(paths.data.clone(), paths.inverses(), sink)?);
         hostfs.register(&lane.broker)?;
@@ -150,6 +160,7 @@ impl Daemon {
             Arc::clone(&loader),
             ledger.clone(),
             Arc::clone(&fibers),
+            Arc::clone(&lifecycle),
         )?;
         Ok(Self {
             paths,
@@ -162,6 +173,7 @@ impl Daemon {
             fibers,
             applied_pins: Mutex::new(HashMap::new()),
             readiness,
+            lifecycle,
             _root: root,
         })
     }

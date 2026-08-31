@@ -37,6 +37,11 @@ pub(crate) struct HostProfile {
     pub(super) loader: Arc<Loader>,
     pub(super) ledger: Ledger,
     fibers: SharedFibers,
+    /// The lifecycle publisher (M2-K13): the deferred restart this
+    /// provider schedules commits its transitions through the same sync
+    /// every other path uses, so a patched fiber's restart is published
+    /// exactly like a reconciled one.
+    lifecycle: Arc<crate::daemon::Lifecycle>,
     pub(super) callers: Callers,
 }
 
@@ -96,6 +101,7 @@ impl HostProfile {
         loader: Arc<Loader>,
         ledger: Ledger,
         fibers: SharedFibers,
+        lifecycle: Arc<crate::daemon::Lifecycle>,
     ) -> Result<(), KernelError> {
         let peer = broker.register_peer(None);
         broker.grant(peer, PROFILE_CONTRACT);
@@ -103,6 +109,7 @@ impl HostProfile {
             loader,
             ledger,
             fibers,
+            lifecycle,
             callers: Callers::new(broker, PROFILE_CONTRACT),
         });
         broker.provide(peer, PROFILE_CONTRACT, Arc::new(ProfilePeer(provider)))
@@ -191,14 +198,15 @@ impl HostProfile {
             .map_err(storage)?;
         // The restart's outcome lands on the ledger when it settles — from
         // a task of its own, never from inside this host call (R1).
-        let (loader, fibers, ledger) = (
+        let (loader, fibers, ledger, publisher) = (
             Arc::clone(&self.loader),
             Arc::clone(&self.fibers),
             self.ledger.clone(),
+            Arc::clone(&self.lifecycle),
         );
         tokio::spawn(async move {
             loader.quiesce_entry(&entry).await;
-            sync_transitions(&fibers, &ledger);
+            sync_transitions(&fibers, &ledger, Some(&publisher));
         });
         let mut wire = vec![TAG_ACCEPTED];
         wire.extend(receipt.sequence.to_le_bytes());
