@@ -1,23 +1,40 @@
 #!/usr/bin/env perl
-# Reports every conditional-compilation construct in an integration test file
-# that could stop it running on a platform we ship.
+# A HEURISTIC. It is explicitly NOT the guarantee that a platform-only property
+# cannot silently return — `check-test-inventory.sh` is. Read that sentence
+# before trusting this file's exit code for anything.
 #
-# Why this is not a grep. The round-1 guard matched one line-shaped form and
-# claimed the class; a legal crate-level `#![cfg(target_os = "macos")]` walked
-# straight through it. Deciding this needs the two things a line regex cannot
-# do: an attribute is a BALANCED bracket group that may span lines and nest
-# predicates arbitrarily deep, and the same bytes inside a comment or a string
-# literal mean nothing at all. So the file is lexed — comments and literal
-# bodies blanked, newlines preserved — and then every attribute and `cfg!`
-# group is extracted whole and read as one normalized token stream.
+# Why it was demoted. Three rounds of this packet tried to decide from source
+# text which tests can vanish on a platform. Round 1 matched one line-shaped
+# form and a crate-level `#![cfg(target_os = "macos")]` walked through it.
+# Round 2 replaced that with the lexer below, covering `#[...]`, `#![...]` and
+# `cfg!()` as balanced groups — and legal token whitespace (`#! [cfg(...)]`,
+# `cfg ! (...)`) walked through THAT. Each incompleteness was found only by an
+# adversary who thought of a form its author had not, which is the signature of
+# a claim with no enforcer: "a scanner can enumerate every way a test is
+# silently gated" is not provable, and it is retired as an acceptance.
 #
-# What it decides, stated exactly: the compiler's conditional-compilation
-# surface — `#[...]`, `#![...]` at crate, module or item level, and `cfg!()`.
-# That surface is closed and enumerable, so completeness over it is a claim
-# this can actually keep. What it does NOT decide is arbitrary control flow: a
-# test that reads `std::env::consts::OS` and returns early is ordinary program
-# logic, and no source scanner settles that. That residual is named here rather
-# than papered over, because an unnamed gap is exactly the round-1 defect.
+# What survives, and why it is still worth running: it is fast, it needs no
+# second platform, and it names the offending line, so it catches the common
+# case in seconds during review. Treat a green here as "nothing obvious",
+# never as "nothing".
+#
+# What it cannot decide, stated so nobody has to rediscover it:
+#   - arbitrary control flow — a test reading `std::env::consts::OS` and
+#     returning early is ordinary program logic, and no source scanner settles
+#     it;
+#   - any cause outside the source file — a feature flag, a build script, an
+#     absent target, or a dependency captured under a platform-only table,
+#     which is the defect that opened this packet;
+#   - any spelling nobody has yet thought of.
+# The differential decides all three, by measuring what each platform actually
+# compiled in instead of predicting it.
+#
+# The lexing below is still the right shape for what it does attempt: an
+# attribute is a BALANCED bracket group that may span lines and nest predicates
+# arbitrarily deep, and the same bytes inside a comment or a string literal
+# mean nothing. So the file is lexed — comments and literal bodies blanked,
+# newlines preserved — and every attribute and `cfg!` group is extracted whole
+# and read as one normalized token stream.
 use strict;
 use warnings;
 
@@ -101,7 +118,9 @@ sub conditional_groups {
     my %closes = ('[' => ']', '(' => ')', '{' => '}');
     my @groups;
 
-    while ($code =~ /(\#!?\[|\bcfg!\s*[\(\[\{])/g) {
+    # Rust accepts whitespace between these tokens (`# [cfg(...)]`,
+    # `#! [cfg(...)]`, `cfg ! (...)`), and round 2 shipped without it.
+    while ($code =~ /(\#\s*!?\s*\[|\bcfg\s*!\s*[\(\[\{])/g) {
         my $start    = $-[0];
         my $open_at  = $+[0] - 1;
         my $open     = substr($code, $open_at, 1);

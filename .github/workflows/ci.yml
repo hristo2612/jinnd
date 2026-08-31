@@ -30,15 +30,62 @@ jobs:
       # resolving on Linux. A locked build on Linux is that class's gate.
       - name: locked build
         run: cargo build --workspace --locked
-      - name: no platform-gated or silenced integration test
+      # HEURISTIC, not the guarantee. Reads test sources for conditional
+      # compilation. It is fast and it is incomplete by construction — two
+      # rounds of this packet were defeated by a form its author had not
+      # imagined. The guarantee is the `test-inventory-differential` job.
+      - name: platform-gate heuristic (fast, NOT the guarantee)
         run: bash .github/scripts/check-no-platform-gated-tests.sh
-      # An untested guard rots the day someone edits it. This runs that guard
-      # against a fixture per form it claims to catch, each proven to make it
-      # exit non-zero, plus legitimate forms proven to leave it green.
-      - name: platform-gate guard fixtures
+      # An untested guard rots the day someone edits it. These run each guard
+      # against a fixture per divergence it claims to catch, proven to make it
+      # exit non-zero, plus legitimate shapes proven to leave it green.
+      - name: platform-gate heuristic fixtures
         run: bash .github/scripts/test-no-platform-gated-tests.sh
+      - name: test-inventory differential fixtures
+        run: bash .github/scripts/test-check-test-inventory.sh
       - name: push two-key tripwire fixtures
         run: bash .github/scripts/test-push-two-key.sh
+
+  # M2-K12 — the GUARANTEE that a platform-only property cannot silently
+  # return. Not a source scanner: each platform reports the tests it actually
+  # compiled in, and the differential below refuses any test that exists on one
+  # and not the other. It cannot be walked past by a spelling, and it catches
+  # causes no scanner models — a feature flag, a build script, an absent
+  # target, or a dependency captured under a platform-only table, which is the
+  # defect that opened this packet.
+  test-inventory:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: the tests this platform actually compiled in
+        run: bash .github/scripts/test-inventory.sh "test-inventory-${{ matrix.os }}.tsv"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-inventory-${{ matrix.os }}
+          path: test-inventory-${{ matrix.os }}.tsv
+
+  test-inventory-differential:
+    needs: test-inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: test-inventory-*
+          merge-multiple: true
+      - name: no test exists on one platform and not the other
+        run: |
+          bash .github/scripts/check-test-inventory.sh \
+            linux test-inventory-ubuntu-latest.tsv \
+            macos test-inventory-macos-latest.tsv
 
   invariants:
     runs-on: ubuntu-latest

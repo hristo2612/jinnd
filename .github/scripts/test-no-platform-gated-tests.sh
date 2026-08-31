@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# Red-first proof for check-no-platform-gated-tests.sh (M2-K12 round 2).
+# Red-first proof for check-no-platform-gated-tests.sh, which is a HEURISTIC.
 #
 # A guard nobody has watched FAIL is not a guard, it is a script that exits 0.
-# Round 1 shipped a guard against "a platform-only property returns silently"
-# that was itself an instance of that class: it recognised one syntactic form
-# and claimed the whole class. So every form the guard claims to catch gets a
-# fixture here that is demonstrated to make it exit non-zero, and every form it
-# must NOT catch gets one demonstrated to leave it green — otherwise a bare
-# `exit 1` would pass this file just as well as a real guard does.
+# So every form the heuristic claims to catch gets a fixture here demonstrated
+# to make it exit non-zero, and every form it must NOT catch gets one
+# demonstrated to leave it green — otherwise a bare `exit 1` would pass this
+# file just as well as a real guard does.
+#
+# Read what this file is NOT. Green here means the heuristic behaves as
+# specified over the forms listed here; it has never meant, and after round 3
+# no longer pretends to mean, that no test can silently vanish on a platform.
+# Round 2 shipped this suite green while `#! [cfg(target_os = "macos")]` walked
+# past the scanner, because no fixture had token whitespace in it — a fixture
+# suite can only be as complete as the same imagination that wrote the scanner.
+# The guarantee is `test-check-test-inventory.sh` and the differential it
+# proves, which measures what each platform actually compiled in.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -183,6 +190,34 @@ fn the_property_holds() {
 RS
 assert_refuses "$repo" 'cfg!() runtime skip — the same move without an attribute'
 
+repo=$(new_fixture whitespace-inner)
+cat >"$(case_file "$repo")" <<'RS'
+#! [cfg(target_os = "macos")]
+
+#[test]
+fn the_property_holds() {}
+RS
+assert_refuses "$repo" 'token whitespace in `#! [cfg(...)]` — the round-2 blocker'
+
+repo=$(new_fixture whitespace-outer)
+cat >"$(case_file "$repo")" <<'RS'
+#[test]
+# [cfg(target_os = "linux")]
+fn the_property_holds() {}
+RS
+assert_refuses "$repo" 'token whitespace in `# [cfg(...)]`'
+
+repo=$(new_fixture whitespace-macro)
+cat >"$(case_file "$repo")" <<'RS'
+#[test]
+fn the_property_holds() {
+    if cfg ! (target_os = "macos") {
+        return;
+    }
+}
+RS
+assert_refuses "$repo" 'token whitespace in `cfg ! (...)`'
+
 printf 'forms the guard must accept:\n'
 
 repo=$(new_fixture feature-gate)
@@ -231,8 +266,8 @@ else
 fi
 
 if [[ $failures -ne 0 ]]; then
-  printf 'guard fixtures: %d FAILED\n' "$failures" >&2
+  printf 'heuristic fixtures: %d FAILED\n' "$failures" >&2
   exit 1
 fi
 
-printf 'guard fixtures: ok\n'
+printf 'heuristic fixtures: ok            (16 refusals, 4 acceptances, 1 vacuity)\n'
