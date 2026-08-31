@@ -9,9 +9,10 @@ const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
-    // 0.7.0 (M2-K10): `kernel-error` gains the typed `cycle` refusal;
-    // 0.6.0 (M2-K9) gave it the typed `restarting` refusal.
-    assert!(WORLD.contains("package jinn:plugin@0.7.0;"));
+    // 0.8.0 (M2-K13): the kernel becomes a publisher on this world's bus;
+    // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
+    // 0.6.0 (M2-K9) the typed `restarting` one.
+    assert!(WORLD.contains("package jinn:plugin@0.8.0;"));
     assert!(WORLD.contains("Suspend ≠ dispose"));
 }
 
@@ -34,7 +35,7 @@ fn the_world_carries_the_typed_dispatch_refusals() {
     assert!(WORLD.contains("REPLY-EXPECTING modes"));
     // The ask that replaces discovering a pending transition by stalling,
     // in the SAME vocabulary the refusal uses.
-    assert!(INTROSPECT.contains("package jinn:introspect@0.3.0;"));
+    assert!(INTROSPECT.contains("package jinn:introspect@0.4.0;"));
     assert!(INTROSPECT.contains("enum unserved {"));
     assert!(INTROSPECT.contains("unserved: option<unserved>,"));
 }
@@ -178,4 +179,38 @@ fn process_and_net_imports_return_their_bundles_errors() {
         assert!(WORLD.contains(&format!("result<list<u8>, {error}>")));
     }
     assert!(WORLD.contains("output-truncated }"));
+}
+
+/// M2-K13 (R3/R12/Law 2): the kernel's lifecycle PUBLISH is declared where
+/// a plugin author reads it — the reserved topic and its two guest-visible
+/// rules in the world, the delivered record and its three settled
+/// semantics (ordering, loss, replay) in the bundle.
+#[test]
+fn the_world_and_the_bundle_declare_the_lifecycle_publish() {
+    const INTROSPECT: &str = include_str!("../../../../contracts/jinn-introspect/contract.wit");
+    assert!(WORLD.contains("package jinn:plugin@0.8.0;"));
+    assert!(WORLD.contains("KERNEL-RESERVED topic is REFUSED here in every mode"));
+    assert!(WORLD.contains("subscribed under `jinn:introspect`"));
+    assert!(INTROSPECT.contains("record transition {"));
+    for field in [
+        "incarnation: option<u64>,",
+        "ordinal: u64,",
+        "committed-by: u64,",
+    ] {
+        assert!(INTROSPECT.contains(field), "{field}");
+    }
+    // The three questions the packet had to settle, settled IN the
+    // contract rather than in an implementation note.
+    for stated in [
+        "ORDERING AGAINST THE LEDGER",
+        "BACK-PRESSURE",
+        "LATE JOIN AND REPLAY",
+        "AUTHORITY",
+    ] {
+        assert!(INTROSPECT.contains(stated), "{stated}");
+    }
+    // The authority demonstration's one failure, stated on the wire: the
+    // cause is not delivered, so the grant is not widened.
+    assert!(INTROSPECT.contains("`cause` for a transition is DELIBERATELY ABSENT"));
+    assert!(!INTROSPECT.contains("cause: string,"));
 }

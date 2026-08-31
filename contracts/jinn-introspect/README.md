@@ -1,4 +1,4 @@
-# jinn:introspect 0.3.0
+# jinn:introspect 0.4.0
 
 The read-only composition contract (M2-K7; harness finding 19). A status
 or health plugin answers `fiber`, `state`, `incarnation`, `unserved`,
@@ -43,6 +43,83 @@ Waits are a moment, not a composition: edges exist only while somebody is
 parked, so two reads of an unchanged composition legitimately differ.
 Nothing is reverted or gated on this answer.
 
+## 0.4.0 (M2-K13, harness findings 40 and 41)
+
+Additive: the contract gains a PUSH side. The kernel publishes every fiber
+transition it commits on the reserved topic `jinn:introspect/transitions`,
+as the UTF-8 JSON of the new `transition` record. No existing operation
+changes shape.
+
+Until now this contract was a pair of PULL operations answered from a
+snapshot, so a consumer could only ever see a fiber at REST. Three of the
+states `entry.state` itself names — `unloading`, `pending`, `loading` — sit
+between two rests, and measured through the real daemon a catalog reading in
+a tight loop across a whole restart reached none of them: 189 reads, every
+one `active`, while the kernel committed
+`active → unloading → pending → loading → active`. A catalog built on the
+pull therefore announces transitions it did not witness and cannot time.
+This delivery is what it witnesses instead.
+
+### Subscribing
+
+`events.listen("jinn:introspect/transitions", token)` from the plugin
+world; deliveries arrive as `lifecycle.handle-event(token, topic, payload)`.
+The grant checked is this contract's — the topic is kernel-reserved and
+belongs to the contract whose authority bounds its payload. A guest
+`events.emit` on that topic is REFUSED on the record: only the kernel
+publishes there, so a witnessed transition can never be confused with a
+forged one.
+
+### Ordering against the ledger
+
+A delivery never precedes its ledger row. The committing path appends the
+transition to the ledger's ordered lane and only then hands it to the
+publisher, which reads the ledger's high-water mark THROUGH the single
+writer before it delivers anything — a read that answers only once every
+append sent before it has committed. `committed-by` carries that mark, so
+the guarantee is checkable by the listener rather than merely asserted:
+the transition's own row sits at or before it. Law 2 holds at the moment it
+matters most — model-visible means logged, in that order.
+
+### Back-pressure
+
+The kernel never waits on a listener; the hand-off is a bounded push that
+cannot block. A listener slow enough to fill the bound loses transitions,
+and the loss is counted TWICE: as a `PublishDropped` ledger event carrying
+the count, and as a gap in the `ordinal` that listener receives. Nothing is
+ever reordered — deliveries follow the order the kernel committed. The
+alternatives were an unbounded queue (the kernel's memory hostage to a
+plugin) or a blocking hand-off (a new deadlock surface on top of the
+unretired one); losing loudly is the only honest third answer.
+
+### Late join and replay
+
+There is no replay, and a late joiner is told so rather than left to assume
+otherwise. `ordinal` counts every transition this kernel process has
+published, so a first delivery above 1 states exactly how many preceded the
+subscription, and every later gap states exactly how many were lost. A
+listener holding `jinn:ledger` recovers them from the stream itself.
+
+### Authority: the demonstration, and where it failed
+
+Required by the card, stated either way. Every delivered field is one this
+contract's own pull already admits: `entry`, `fiber` and `incarnation` are
+`entry`'s own fields, and `from`/`to` are values of `entry.state`'s
+vocabulary — no new subject and no new field enters a holder's reach, and
+the grant is already whole-composition and unattenuable, so no fiber
+becomes visible that `entries` did not already list.
+
+What the push DOES add is timing fidelity: a listener reaches the transient
+readings a poller cannot. That is the card's purpose, and it is a widening
+of resolution, not of scope.
+
+The demonstration FAILED for one field. The kernel's `cause` for a
+transition — why it happened — has no counterpart anywhere in this
+contract, so delivering it would widen the grant. Rather than widen it,
+`cause` is not delivered. A consumer that needs it holds `jinn:ledger`,
+which already admits the whole `FiberTransition` row verbatim, and reads it
+there.
+
 ## Grant
 
 A bare `"jinn:introspect"` grant; no scope type is declared, so a scoped
@@ -57,6 +134,11 @@ then `services.call(handle, "entries", [])` or `services.call(handle,
 field names.
 
 ## Ledger
+
+A publish that reaches at least one listener lands one `DispatchTrace` for
+the reserved topic, attributed to no fiber and to emitter `0` — the kernel
+itself (0.4.0). With no listener nothing is delivered and nothing is
+logged: no model-visible thing happened. Losses land as `PublishDropped`.
 
 Every read is one `ContractCall { contract: "jinn:introspect", operation }`
 with the caller's entry and fiber attribution. Riding with this bundle
