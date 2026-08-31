@@ -97,7 +97,10 @@ async fn the_data_root_alone_cannot_decrypt_the_store() {
         paths.clone(),
         MasterKeySource::Passphrase(b"a-different-passphrase".to_vec()),
     );
-    println!("K12 wrong-passphrase open = {other:?}");
+    println!(
+        "K12 wrong-passphrase open err = {:?}",
+        other.as_ref().err()
+    );
     assert!(
         other.is_err(),
         "a different passphrase does not open the store"
