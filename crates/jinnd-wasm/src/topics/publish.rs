@@ -92,11 +92,7 @@ impl LocalTopics {
             // A listener that FAILED and one that TRAPPED are the same
             // contained failure here (R9, R11): both count, and neither
             // reaches a sibling or the kernel.
-            let failed = match joined {
-                Ok(failed) => failed,
-                Err(_) => true,
-            };
-            if failed {
+            if joined.unwrap_or(true) {
                 failures += 1;
             }
         }

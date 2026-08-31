@@ -54,7 +54,6 @@ fn a_full_queue_drops_and_counts_instead_of_growing() {
     );
 }
 
-
 /// A listener that writes down every ordinal it is handed, and whose
 /// FIRST delivery parks until the test releases it.
 struct Recorder {
