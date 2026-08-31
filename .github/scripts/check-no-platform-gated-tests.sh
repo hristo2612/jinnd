@@ -7,6 +7,11 @@
 # legal in `src/` — the platform default IS platform-dependent by design; the
 # integration suites, where the acceptance and invariant properties live, must
 # run everywhere.
+#
+# The forms this recognises, and the one it cannot, are stated in
+# `scan-conditional-tests.pl`. Every form named there has a fixture in
+# `test-no-platform-gated-tests.sh` that is demonstrated to make this script
+# exit non-zero — a guard nobody has watched fail is not a guard.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -23,8 +28,33 @@ if [[ ${#directories[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if hits=$(grep -rnE '#\[(cfg\(\s*(not\(\s*)?target_os|cfg_attr\(\s*target_os|ignore)' \
-  "${directories[@]}" --include='*.rs'); then
+sources=()
+while IFS= read -r file; do
+  sources+=("$file")
+done < <(find "${directories[@]}" -name '*.rs' -type f | sort)
+
+if [[ ${#sources[@]} -eq 0 ]]; then
+  echo "guard: integration test directories hold no Rust sources — refusing to pass vacuously"
+  exit 1
+fi
+
+if ! command -v perl >/dev/null 2>&1; then
+  echo "guard: perl is required to decide this and is missing — refusing to pass unchecked"
+  exit 1
+fi
+
+set +e
+hits=$(perl "$script_dir/scan-conditional-tests.pl" "${sources[@]}")
+status=$?
+set -e
+
+if [[ $status -gt 1 ]]; then
+  echo "guard: the scanner failed to run — refusing to pass unchecked"
+  echo "$hits"
+  exit 1
+fi
+
+if [[ $status -eq 1 ]]; then
   echo "guard: an integration test is gated to a platform or silenced:"
   echo "$hits"
   echo
@@ -34,4 +64,5 @@ if hits=$(grep -rnE '#\[(cfg\(\s*(not\(\s*)?target_os|cfg_attr\(\s*target_os|ign
   exit 1
 fi
 
-echo "guard: ok; no platform-gated or silenced integration test in ${directories[*]}"
+echo "guard: ok; ${#sources[@]} integration test sources in ${directories[*]}," \
+     "no platform gate and nothing silenced"

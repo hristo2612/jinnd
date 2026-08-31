@@ -32,6 +32,11 @@ jobs:
         run: cargo build --workspace --locked
       - name: no platform-gated or silenced integration test
         run: bash .github/scripts/check-no-platform-gated-tests.sh
+      # An untested guard rots the day someone edits it. This runs that guard
+      # against a fixture per form it claims to catch, each proven to make it
+      # exit non-zero, plus legitimate forms proven to leave it green.
+      - name: platform-gate guard fixtures
+        run: bash .github/scripts/test-no-platform-gated-tests.sh
       - name: push two-key tripwire fixtures
         run: bash .github/scripts/test-push-two-key.sh
 
