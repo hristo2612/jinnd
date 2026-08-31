@@ -1,0 +1,28 @@
+name: k12diag
+on:
+  push:
+    branches: [packet/m2-k12-linux-ci-keystore]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: environment
+        run: |
+          nproc; free -m | head -2; df -h /tmp /home | tail -3
+          echo "TMPDIR=${TMPDIR:-<unset>}"; ulimit -n
+      - name: keystore transcript
+        run: cargo test -p jinnd-daemon --test k12diag -- --nocapture
+      - name: the two red keystore cases, alone
+        if: always()
+        run: cargo test -p jinnd-daemon --test keystore -- --nocapture --test-threads=1
