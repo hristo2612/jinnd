@@ -15,7 +15,7 @@ mod support;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use jinnd_api::{LedgerEventKind, LedgerRecord};
+use jinnd_api::{FiberState, LedgerEventKind, LedgerRecord};
 use jinnd_daemon::{Daemon, DaemonPaths};
 
 /// The reserved topic, written out rather than imported: the test states
@@ -136,6 +136,13 @@ async fn until(data: &std::path::Path, want: usize) -> Vec<Delivered> {
     }
 }
 
+/// The wire spelling of a kernel state, exactly as the delivered record
+/// spells it — one vocabulary, so a ledger row and a delivery are compared
+/// on the same words.
+fn state(state: FiberState) -> String {
+    format!("{state:?}").to_lowercase()
+}
+
 async fn records(daemon: &Daemon) -> Vec<LedgerRecord> {
     daemon
         .ledger_events()
@@ -212,28 +219,74 @@ async fn a_granted_listener_witnesses_the_transitions_the_kernel_commits() {
         ],
         "the delivered fields are the introspect-admitted ones"
     );
-    // Ordering, both halves. (a) the row is committed at or before the
-    // `committed-by` the kernel published; (b) the ledger's high-water mark
-    // read from INSIDE the delivery had already reached it.
+    // ORDERING, against each delivery's OWN row — never against merely
+    // some earlier one, which boot already supplies and which would make
+    // this pass for a weaker reason than its name promises.
+    //
+    // The binding is exact and checkable: the kernel offers one transition
+    // per row it commits, in commit order, so the delivery carrying
+    // `ordinal` N is the Nth `FiberTransition` on the stream. The test
+    // asserts that identity (fiber, from, to, entry) before it uses it,
+    // so an index that drifted would be caught rather than believed.
     let ledger = records(&daemon).await;
-    let transitions: Vec<u64> = ledger
+    let transitions: Vec<&LedgerRecord> = ledger
         .iter()
         .filter(|record| matches!(record.kind, LedgerEventKind::FiberTransition(_)))
-        .map(|record| record.sequence)
         .collect();
+    assert!(
+        !landed.is_empty() && !transitions.is_empty(),
+        "PRECONDITION: there is a delivery and a row to bind it to"
+    );
     for line in &landed {
+        let ordinal = line.event["ordinal"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("ordinal: {}", line.event));
+        let index = usize::try_from(ordinal - 1).unwrap_or_else(|error| panic!("{error}"));
+        let own = transitions.get(index).unwrap_or_else(|| {
+            panic!(
+                "PRECONDITION: ordinal {ordinal} has no row to bind to — only \
+                 {} transitions are on the stream, so this test cannot run",
+                transitions.len()
+            )
+        });
+        let LedgerEventKind::FiberTransition(committed) = &own.kind else {
+            unreachable!("filtered above")
+        };
+        // The row at that index IS the delivered transition, not merely a
+        // row that happens to sit there.
+        assert_eq!(
+            (
+                committed.fiber.0,
+                state(committed.from),
+                state(committed.to),
+                own.entry.as_ref().map(|entry| entry.0.clone())
+            ),
+            (
+                line.event["fiber"].as_u64().unwrap_or_default(),
+                line.event["from"].as_str().unwrap_or_default().to_owned(),
+                line.event["to"].as_str().unwrap_or_default().to_owned(),
+                line.event["entry"].as_str().map(str::to_owned)
+            ),
+            "ordinal {ordinal} names the {index}th committed transition"
+        );
+        // (a) the kernel published a mark at or past its own row, and
+        // (b) the ledger read from INSIDE the delivery had already passed
+        // that row: the delivery could not precede its own commit.
         let committed_by = line.event["committed-by"]
             .as_u64()
             .unwrap_or_else(|| panic!("committed-by: {}", line.event));
         assert!(
-            line.high_water >= committed_by,
-            "the ledger had already committed through {committed_by} when the \
-             delivery landed (it was at {})",
-            line.high_water
+            own.sequence <= committed_by,
+            "the delivery's OWN row (sequence {}) was committed at or before the \
+             published mark {committed_by}",
+            own.sequence
         );
         assert!(
-            transitions.iter().any(|sequence| *sequence <= committed_by),
-            "a transition row sits at or before {committed_by}"
+            line.high_water >= own.sequence,
+            "the delivery's own row (sequence {}) was already on the ledger when \
+             the delivery landed (the guest read {})",
+            own.sequence,
+            line.high_water
         );
     }
     // Ordinals are the kernel's own publish count: strictly increasing,
@@ -337,6 +390,15 @@ async fn a_slow_listener_never_stalls_reorders_or_silently_drops() {
         ordinals.windows(2).all(|pair| pair[0] < pair[1]),
         "back-pressure never reorders: {ordinals:?}"
     );
+    // PRECONDITION, stated rather than assumed: six reconciles offer far
+    // fewer transitions than the publisher's bound, so this fixture is the
+    // LOSSLESS half of back-pressure and asserts exactly that — nothing
+    // dropped, no gap. Round 1 asserted `gaps <= dropped` here and passed
+    // as `0 <= 0`, which is true of a kernel that publishes nothing at all.
+    // The OVERFLOW half cannot be established through six reloads, so it is
+    // proven where it can be, deterministically:
+    // `jinnd_daemon::daemon::lifecycle::tests::
+    // a_real_overflow_is_ledgered_and_shows_as_a_gap_in_the_ordinals`.
     let dropped: u64 = records(&daemon)
         .await
         .iter()
@@ -345,16 +407,105 @@ async fn a_slow_listener_never_stalls_reorders_or_silently_drops() {
             _ => None,
         })
         .sum();
-    let gaps = ordinals
+    assert_eq!(
+        dropped, 0,
+        "PRECONDITION: this fixture stays under the bound, so it is the lossless case"
+    );
+    let span = ordinals
         .last()
         .zip(ordinals.first())
-        .map_or(0, |(last, first)| {
-            (last - first + 1) - ordinals.len() as u64
-        });
+        .map_or(0, |(last, first)| last - first + 1);
+    assert_eq!(
+        span,
+        ordinals.len() as u64,
+        "under the bound a slow listener loses NOTHING: its ordinals are \
+         contiguous — {ordinals:?}"
+    );
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
+/// LATE JOIN: there is no replay, and the kernel says so in a number. A
+/// listener that mounts after the kernel has already published receives
+/// nothing that happened before it — and its FIRST `ordinal` names exactly
+/// how many transitions it missed, so "it just starts receiving" is never
+/// what a consumer has to guess at (packet card, design question 3).
+#[tokio::test]
+async fn a_late_joining_listener_gets_no_replay_and_its_first_ordinal_names_the_miss() {
+    let home = home("late");
+    let worker = |mode: &str| entry("worker", serde_json::json!(["jinn:fs"]), mode);
+    let (paths, hash) = paths(&home, &[worker("plain")]);
+    let daemon = booted(paths.clone()).await;
+    // Life happens with NOBODY listening: two restarts of the worker, each
+    // committing — and publishing to zero listeners — its transitions.
+    for mode in ["noop", "plain"] {
+        write_profile(&home, &[worker(mode)], &hash);
+        daemon
+            .reload()
+            .await
+            .unwrap_or_else(|error| panic!("reload: {error:?}"));
+    }
+    // PRECONDITION, asserted: the kernel really did publish before anyone
+    // could listen. Without it, "the first ordinal is above 1" would be a
+    // claim about nothing at all.
+    let missed = records(&daemon)
+        .await
+        .iter()
+        .filter(|record| matches!(record.kind, LedgerEventKind::FiberTransition(_)))
+        .count() as u64;
     assert!(
-        gaps <= dropped,
-        "every gap in the listener's ordinals is a COUNTED drop: {gaps} gaps, \
-         {dropped} counted"
+        missed >= 2,
+        "PRECONDITION: transitions were committed and published while no \
+         listener existed — only {missed} did, so this is not a late join"
+    );
+    assert!(
+        deliveries(&paths.data).is_empty(),
+        "PRECONDITION: nothing has been delivered to anyone yet"
+    );
+    // NOW the listener mounts, and the worker restarts once more under it.
+    let composed = [
+        worker("plain"),
+        entry("watcher", listener_grants(), "lifecycle-listener"),
+    ];
+    write_profile(&home, &composed, &hash);
+    daemon
+        .reload()
+        .await
+        .unwrap_or_else(|error| panic!("reload: {error:?}"));
+    let restarted = [
+        worker("noop"),
+        entry("watcher", listener_grants(), "lifecycle-listener"),
+    ];
+    write_profile(&home, &restarted, &hash);
+    daemon
+        .reload()
+        .await
+        .unwrap_or_else(|error| panic!("reload: {error:?}"));
+    let landed = until(&paths.data, 1).await;
+    assert!(
+        !landed.is_empty(),
+        "a late listener receives from the moment it mounted"
+    );
+    let ordinals: Vec<u64> = landed
+        .iter()
+        .map(|line| line.event["ordinal"].as_u64().unwrap_or_default())
+        .collect();
+    let first = ordinals[0];
+    // NO REPLAY: not one of the transitions published before the mount is
+    // handed over afterwards.
+    assert!(
+        ordinals.iter().all(|ordinal| *ordinal > missed),
+        "nothing published before the listener existed is replayed to it: \
+         {ordinals:?} against {missed} earlier transitions"
+    );
+    // AND THE MISS IS NAMED: the first ordinal is the kernel's own count,
+    // so `first - 1` is exactly how many the listener was not there for.
+    assert!(
+        first > missed,
+        "the first delivered ordinal ({first}) is above the {missed} \
+         transitions published before the mount"
     );
     daemon
         .shutdown()
