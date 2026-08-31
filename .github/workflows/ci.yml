@@ -33,6 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The handle cases build the demo kit from source (demo/builder),
+          # exactly as the wasm host tests do — same target requirement.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: invariant suite + expected-green ratchet
         run: tests/invariants/check-ratchet.sh

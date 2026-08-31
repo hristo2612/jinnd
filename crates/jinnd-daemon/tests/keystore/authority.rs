@@ -83,10 +83,21 @@ async fn the_data_root_alone_cannot_decrypt_the_store() {
             .exists(),
         "no key material beside the ciphertext"
     );
+    // TEMPORARY M2-K12 diagnostic — reverted before the packet lands.
+    println!("K12 home = {}", home.0.display());
+    println!("K12 keystore dir = {}", paths.keystore().display());
+    for entry in walkdir(&home.0) {
+        println!("K12   {entry}");
+    }
+    println!(
+        "K12 secrets.bin exists = {}",
+        paths.keystore().join("secrets.bin").exists()
+    );
     let other = Daemon::open_with(
         paths.clone(),
         MasterKeySource::Passphrase(b"a-different-passphrase".to_vec()),
     );
+    println!("K12 wrong-passphrase open = {other:?}");
     assert!(
         other.is_err(),
         "a different passphrase does not open the store"
@@ -99,4 +110,20 @@ async fn the_data_root_alone_cannot_decrypt_the_store() {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
+/// TEMPORARY M2-K12 diagnostic — reverted before the packet lands.
+fn walkdir(root: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.push(format!("{}/", path.display()));
+            out.extend(walkdir(&path));
+        } else {
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            out.push(format!("{} ({len} bytes)", path.display()));
+        }
+    }
+    out
 }

@@ -17,12 +17,19 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - name: environment
-        run: |
-          nproc; free -m | head -2; df -h /tmp /home | tail -3
-          echo "TMPDIR=${TMPDIR:-<unset>}"; ulimit -n
-      - name: keystore transcript
-        run: cargo test -p jinnd-daemon --test k12diag -- --nocapture
-      - name: the two red keystore cases, alone
-        if: always()
+      - name: keystore suite, serial, instrumented
         run: cargo test -p jinnd-daemon --test keystore -- --nocapture --test-threads=1
+      - name: keystore suite, parallel, instrumented
+        if: always()
+        run: cargo test -p jinnd-daemon --test keystore -- --nocapture
+
+  invariants-target-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: the one red invariant case, with the wasm target installed
+        run: cargo test -p jinnd-invariants --test cordis_handles -- --nocapture
