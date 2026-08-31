@@ -83,6 +83,16 @@ async fn the_data_root_alone_cannot_decrypt_the_store() {
             .exists(),
         "no key material beside the ciphertext"
     );
+    // The refusals below only MEAN anything against a store that holds
+    // ciphertext: an empty store opens under any key at all. M2-K12 —
+    // an activation killed on the guest-call deadline left the store
+    // empty on CI, and this test then read as "the authority property
+    // does not hold on Linux". Pin the precondition so that defect can
+    // never again wear this test's face.
+    assert!(
+        paths.keystore().join("secrets.bin").exists(),
+        "the sealed document is on disk, so the refusals below are not vacuous"
+    );
     let other = Daemon::open_with(
         paths.clone(),
         MasterKeySource::Passphrase(b"a-different-passphrase".to_vec()),

@@ -1,0 +1,12 @@
+# Declared, intended differences between the platforms' test inventories.
+#
+# M2-K12. `check-test-inventory.sh` refuses any test that exists on one
+# platform and not the other, or is silenced on one and not the other. A
+# divergence that is genuinely intended belongs HERE, in the diff, with a
+# reason a reviewer can weigh — never as a `#[cfg]` on the test, which makes
+# the same decision invisibly.
+#
+# Format, tab-separated: package<TAB>kind<TAB>target<TAB>test<TAB># reason
+# The reason is mandatory; an entry without one is refused.
+#
+# Empty on purpose. Every test in the workspace compiles in on both platforms.
