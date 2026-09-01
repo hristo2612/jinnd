@@ -96,11 +96,7 @@ fn render(resolve: &wit_parser::Resolve, ty: wit_parser::Type) -> String {
 /// A function as `name: func(param: type, ...) -> result`, from the PARSED
 /// signature — so a renamed parameter, a reordered one, or a changed type
 /// all fail here, none of which a substring on the source line can see.
-fn signature(
-    resolve: &wit_parser::Resolve,
-    iface: &wit_parser::Interface,
-    name: &str,
-) -> String {
+fn signature(resolve: &wit_parser::Resolve, iface: &wit_parser::Interface, name: &str) -> String {
     let func = iface
         .functions
         .get(name)
