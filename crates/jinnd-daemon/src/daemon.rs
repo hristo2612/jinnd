@@ -22,6 +22,7 @@ pub(crate) use lifecycle::Lifecycle;
 pub use observe::UnitMember;
 
 mod assemble;
+mod auth_cap;
 mod introspect;
 mod ledger_cap;
 mod lifecycle;

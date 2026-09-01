@@ -157,6 +157,21 @@ pub enum LedgerEventKind {
         key: String,
         digest: Option<String>,
     },
+    /// One `jinn:auth` decision (M2-K21; Law 2, constitution 02
+    /// §Redaction): whether a presented credential proved the operator.
+    /// `name` is the credential's NAME on a grant and `None` on a
+    /// refusal; `presented` is the SHA-256 digest of what was presented,
+    /// either way — never the presented bytes, never the credential (the
+    /// M2-K8 keystore precedent). Attributed to the calling entry/fiber
+    /// via the record's columns. Its own kind: a reader tells an
+    /// authentication decision from a grant refusal by the kind alone.
+    /// (Additive facade delta REQUESTED on PLA-342; pending COO
+    /// authorization at the time of writing.)
+    AuthDecided {
+        name: Option<String>,
+        presented: String,
+        granted: bool,
+    },
     /// One consumption receipt for a `jinn:ledger` read (constitution 02,
     /// family 2; M2-K7 #20): the delivered sequence span and count,
     /// attributed to the reading entry/fiber — and excluded from that

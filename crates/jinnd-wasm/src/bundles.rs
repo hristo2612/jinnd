@@ -24,7 +24,11 @@
 use toml::de::{DeTable, DeValue};
 
 /// Every bundle the kernel ships, by the directory that holds it.
-const SHIPPED: [(&str, &str); 8] = [
+const SHIPPED: [(&str, &str); 9] = [
+    (
+        "jinn-auth",
+        include_str!("../../../contracts/jinn-auth/metadata.toml"),
+    ),
     (
         "jinn-clock",
         include_str!("../../../contracts/jinn-clock/metadata.toml"),

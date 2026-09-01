@@ -458,3 +458,22 @@ fn outbound_allowlists_compose_as_their_union() {
     assert!(scope.admits_authority("b.example:80"));
     assert!(!scope.admits_authority("c.example:80"));
 }
+
+/// M2-K21: `jinn:auth` declares NO scope — there is nothing to attenuate
+/// on one credential — so a scoped grant of it refuses fail-closed at
+/// admission, exactly as `jinn:ledger`'s does. A profile field can never
+/// reach the provider through the grant.
+#[test]
+fn a_scoped_auth_grant_refuses_at_admission() {
+    let verdict = only(scoped(super::AUTH_CONTRACT, text("anything")));
+    assert!(
+        verdict.is_err(),
+        "jinn:auth declares no scope; a scoped grant cannot validate"
+    );
+    let bare = Grant {
+        contract: super::AUTH_CONTRACT.to_owned(),
+        scope: None,
+        ops: None,
+    };
+    assert!(only(bare).is_ok(), "a bare grant admits");
+}

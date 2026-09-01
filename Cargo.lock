@@ -784,9 +784,11 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "wit-component",
+ "wit-parser",
 ]
 
 [[package]]
