@@ -5,12 +5,13 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use jinnd_api::{ErrorCode, FiberId, LedgerEventKind, RefusalReason};
+use tokio::io::unix::AsyncFd;
 
-use super::HostNet;
+use super::{HostNet, Socket};
 use crate::broker::Broker;
 use crate::grants::{GrantScope, NetScope};
 use crate::hostcaps::NET_CONTRACT;
@@ -50,15 +51,15 @@ impl Recording {
     }
 }
 
-struct Rig {
-    ledger: Arc<Recording>,
-    broker: Arc<Broker>,
-    provider: Arc<HostNet>,
+pub(super) struct Rig {
+    pub(super) ledger: Arc<Recording>,
+    pub(super) broker: Arc<Broker>,
+    pub(super) provider: Arc<HostNet>,
     /// Fiber 7, granted the bind range around `port`.
-    guest: u64,
+    pub(super) guest: u64,
     /// Fiber 8, a bare grant: the empty policy.
     bare: u64,
-    port: u16,
+    pub(super) port: u16,
 }
 
 fn free_port() -> u16 {
@@ -68,7 +69,7 @@ fn free_port() -> u16 {
         .unwrap_or_else(|error| panic!("free port: {error}"))
 }
 
-fn rig() -> Rig {
+pub(super) fn rig() -> Rig {
     let ledger = Arc::new(Recording(Mutex::new(Vec::new())));
     let broker = Arc::new(Broker::new(Arc::clone(&ledger) as Arc<dyn LedgerSink>));
     let provider = HostNet::new(Arc::clone(&ledger) as Arc<dyn LedgerSink>);
@@ -97,7 +98,7 @@ fn rig() -> Rig {
     }
 }
 
-fn with_handle(handle: u64, tail: &[u8]) -> Vec<u8> {
+pub(super) fn with_handle(handle: u64, tail: &[u8]) -> Vec<u8> {
     let mut wire = handle.to_le_bytes().to_vec();
     wire.extend(tail);
     wire
@@ -109,15 +110,31 @@ fn handle_of(answer: &[u8]) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+/// A weak handle on `listener`'s descriptor holder (M2-K20): dead once
+/// every clone of the row is gone — the row's own, the wake task's — which
+/// is the moment the descriptor closes. The property a release owns, as
+/// distinct from what the box does with the port afterwards.
+pub(super) fn descriptor_of(rig: &Rig, listener: u64) -> Weak<AsyncFd<std::net::TcpListener>> {
+    match rig.provider.core.row(rig.guest, listener) {
+        Ok(Socket::Listener { listener, .. }) => Arc::downgrade(&listener),
+        _ => panic!("a live listener row"),
+    }
+}
+
 impl Rig {
-    async fn call(&self, peer: u64, op: &str, payload: Vec<u8>) -> Result<Vec<u8>, ErrorCode> {
+    pub(super) async fn call(
+        &self,
+        peer: u64,
+        op: &str,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, ErrorCode> {
         self.broker
             .dispatch(peer, NET_CONTRACT, op, payload)
             .await
             .map_err(|error| error.code)
     }
 
-    async fn listen(&self) -> u64 {
+    pub(super) async fn listen(&self) -> u64 {
         let answer = self
             .call(
                 self.guest,
@@ -129,7 +146,7 @@ impl Rig {
         handle_of(&answer)
     }
 
-    async fn accept(&self, listener: u64) -> Option<u64> {
+    pub(super) async fn accept(&self, listener: u64) -> Option<u64> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let answer = self
@@ -276,8 +293,9 @@ async fn a_loopback_listener_accepts_reads_writes_and_sees_eof() {
 }
 
 /// A handle is the caller's alone (R4); the guest's `close` and the
-/// kernel's release both drop the socket on the record — a fresh connect
-/// to the released port is refused, and a second release is a no-op.
+/// kernel's release both drop the socket on the record — the descriptor
+/// is gone before the release returns (M2-K20), and a second release is a
+/// no-op.
 #[tokio::test]
 async fn handles_are_caller_scoped_and_the_release_closes_on_the_record() {
     let rig = rig();
@@ -289,14 +307,15 @@ async fn handles_are_caller_scoped_and_the_release_closes_on_the_record() {
     );
     assert_eq!(rig.ledger.refusals(), 1);
     assert!(TcpStream::connect(("127.0.0.1", rig.port)).is_ok());
+    let descriptor = descriptor_of(&rig, listener);
     rig.provider
         .withdraw(listener)
         .await
         .unwrap_or_else(|error| panic!("release: {error:?}"));
     assert_eq!(rig.provider.live(), 0);
     assert!(
-        TcpStream::connect(("127.0.0.1", rig.port)).is_err(),
-        "the port is released"
+        descriptor.upgrade().is_none(),
+        "the descriptor is dropped — closed — before the release returns"
     );
     assert!(rig.ledger.kinds().iter().any(|(kind, fiber)| matches!(
         kind,
@@ -311,11 +330,15 @@ async fn handles_are_caller_scoped_and_the_release_closes_on_the_record() {
             .await,
         Err(ErrorCode::NotFound)
     );
-    let again = rig.listen().await;
-    rig.call(rig.guest, "close", with_handle(again, &[]))
+    // A fresh port for the guest's own close: a just-released port is the
+    // OS's to hand back when it likes (M2-K20; `release_tests`).
+    let fresh = self::rig();
+    let again = fresh.listen().await;
+    fresh
+        .call(fresh.guest, "close", with_handle(again, &[]))
         .await
         .unwrap_or_else(|code| panic!("close: {code:?}"));
-    assert_eq!(rig.provider.live(), 0, "the guest's close releases too");
+    assert_eq!(fresh.provider.live(), 0, "the guest's close releases too");
 }
 
 /// A malformed `request` payload is the typed malformed answer, never a
@@ -331,7 +354,7 @@ async fn a_malformed_request_payload_is_typed() {
 }
 
 /// A recording delivery face: what the wake task hands the holder.
-struct Face(Mutex<Vec<(u64, String, Vec<u8>)>>);
+pub(super) struct Face(pub(super) Mutex<Vec<(u64, String, Vec<u8>)>>);
 
 impl crate::topics::EventTarget for Face {
     fn deliver(
@@ -349,7 +372,7 @@ impl crate::topics::EventTarget for Face {
 }
 
 impl Face {
-    fn wakes(&self, handle: u64) -> usize {
+    pub(super) fn wakes(&self, handle: u64) -> usize {
         self.0
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -364,7 +387,7 @@ impl Face {
 }
 
 impl Recording {
-    fn readable_wakes(&self, handle: u64) -> usize {
+    pub(super) fn readable_wakes(&self, handle: u64) -> usize {
         self.kinds()
             .iter()
             .filter(|(kind, fiber)| {
@@ -375,7 +398,7 @@ impl Recording {
     }
 }
 
-async fn settle(condition: impl Fn() -> bool) {
+pub(super) async fn settle(condition: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !condition() {
         assert!(Instant::now() < deadline, "the wake lands");
@@ -572,7 +595,9 @@ async fn a_second_pending_connection_wakes_again_exactly_once() {
 /// Under a chatty peer the wake count is bounded by what the guest does,
 /// never by the byte count (R9): a flood of writes lands ONE wake until
 /// the guest reads; and once the socket is released no wake is ever
-/// delivered or ledgered again.
+/// delivered or ledgered again, and its descriptor is gone before the
+/// release returns (M2-K20: the descriptor, not the port — a foreign
+/// wildcard listener may answer the released port; `release_tests`).
 #[tokio::test]
 async fn a_flood_wakes_once_and_a_released_socket_never_wakes_again() {
     let rig = rig();
@@ -619,13 +644,14 @@ async fn a_flood_wakes_once_and_a_released_socket_never_wakes_again() {
         "a released socket never wakes"
     );
     let before = rig.ledger.readable_wakes(listener);
+    let descriptor = descriptor_of(&rig, listener);
     rig.provider
         .withdraw(listener)
         .await
         .unwrap_or_else(|error| panic!("release: {error:?}"));
     assert!(
-        TcpStream::connect(("127.0.0.1", rig.port)).is_err(),
-        "closed at release"
+        descriptor.upgrade().is_none(),
+        "the descriptor is dropped — closed — before the release returns"
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(

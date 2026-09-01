@@ -40,6 +40,8 @@ mod ops;
 #[cfg(all(test, not(feature = "loom")))]
 mod outbound_rig_tests;
 mod readiness;
+#[cfg(all(test, not(feature = "loom")))]
+mod release_tests;
 mod request;
 #[cfg(all(test, not(feature = "loom")))]
 mod request_bounds_tests;
