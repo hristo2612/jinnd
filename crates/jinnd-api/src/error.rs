@@ -38,6 +38,15 @@ pub enum ErrorCode {
     /// answers a revert, never a guest call. (Authorized M2-K14 additive
     /// facade delta; "revert failed" is not an answer — R3.)
     Irreversible,
+    /// The peer on the other end of an outbound TLS call did not prove it
+    /// is the authority the allowlist named: an unanchored issuer, a name
+    /// the certificate does not cover, a certificate out of its dates. A
+    /// THIRD answer beside the grant refusal and the transport failure,
+    /// because it is a third next move — the allowlist refusal is the
+    /// caller's profile to fix, the transport failure is worth retrying,
+    /// and this one is neither. (Authorized M2-K15 additive facade delta;
+    /// R3, and the M2-K9 precedent that four next moves are four cases.)
+    Untrusted,
 }
 
 /// Structured error value. Plugin panics are converted before crossing this boundary.

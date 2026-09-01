@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jinnd_api::{ErrorCode, FiberId, LedgerEventKind, RefusalReason};
+use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind, RefusalReason};
 
 use super::HostNet;
 use super::tests::Recording;
@@ -36,6 +36,18 @@ pub(super) enum Answer {
     Body(usize),
     /// Accept, read, and never answer (the bound's probe).
     Silent,
+}
+
+impl Target {
+    /// A target at `port` with nothing recorded yet: the TLS rig (M2-K15)
+    /// runs its own accept loop and fills these counters itself.
+    pub(super) fn empty(port: u16) -> Self {
+        Self {
+            port,
+            hits: Arc::new(AtomicUsize::new(0)),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 }
 
 pub(super) fn target(answer: Answer) -> Target {
@@ -211,6 +223,33 @@ impl Rig {
         self.through(door, "GET", url, &[]).await
     }
 
+    /// A GET through `door`, keeping the WHOLE error — what the caller is
+    /// told, not just how it is classified. The M2-K15 redaction pins read
+    /// the prose, so they need it (`door_get` throws it away).
+    pub(super) async fn door_get_told(&self, door: Door, url: &str) -> Result<Vec<u8>, KernelError> {
+        let payload = match door {
+            Door::Declared => {
+                let mut wire = Vec::new();
+                put_segment(&mut wire, b"GET");
+                put_segment(&mut wire, url.as_bytes());
+                wire
+            }
+            Door::Whole => encode_request("GET", url, &[], &[]),
+        };
+        let operation = match door {
+            Door::Declared => "request",
+            Door::Whole => "send-request",
+        };
+        let answer = self
+            .broker
+            .dispatch(self.guest, NET_CONTRACT, operation, payload)
+            .await?;
+        match door {
+            Door::Declared => Ok(answer),
+            Door::Whole => decode_response(&answer).map(|(_, _, body)| body),
+        }
+    }
+
     /// The effect ids this rig recorded, in order.
     pub(super) fn effects(&self) -> Vec<u64> {
         self.requested()
@@ -230,6 +269,18 @@ impl Rig {
             .map(|(kind, _)| kind)
             .filter(|kind| matches!(kind, LedgerEventKind::NetRequested { .. }))
             .collect()
+    }
+
+    /// The ledgered refusals of one typed class — the record, read by the
+    /// class the kernel wrote, never by its prose (M2-K15).
+    pub(super) fn refusals(&self, reason: RefusalReason) -> usize {
+        self.ledger
+            .kinds()
+            .iter()
+            .filter(|(kind, _)| {
+                matches!(kind, LedgerEventKind::GrantRefused { reason: wrote, .. } if *wrote == reason)
+            })
+            .count()
     }
 
     pub(super) fn scope_refusals(&self) -> usize {

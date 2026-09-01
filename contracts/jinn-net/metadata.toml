@@ -1,8 +1,8 @@
-# Contract-bundle metadata for jinn:net@0.2.0 (M2-K6; outbound M2-K14)
+# Contract-bundle metadata for jinn:net@0.3.0 (M2-K6; outbound M2-K14; TLS M2-K15)
 
 [contract]
 name    = "jinn:net"
-version = "0.2.0"
+version = "0.3.0"
 
 [scope]
 type   = "net-policy"
@@ -21,9 +21,10 @@ type   = "net-policy"
 # Profile syntax (04 §Format): `{ contract = "jinn:net", scope = { bind =
 # [7800, 7899] } }`.
 subset = "bind-range-containment-and-outbound-host-subset"
-# OUTBOUND MATCHING (M2-K14). An `outbound` entry and a request URL are
-# both normalized to `host:port` — lowercased host, the scheme's default
-# port (80 for http) supplied when the entry or the URL omits it — and the
+# OUTBOUND MATCHING (M2-K14; https M2-K15). An `outbound` entry and a
+# request URL are both normalized to `host:port` — lowercased host, the
+# scheme's default port (80 for http, 443 for https) supplied when the URL
+# omits it, and 80 when the ENTRY omits it — and the
 # entry admits the URL iff the two normal forms are EQUAL. No wildcards, no
 # suffix match, no "host alone means every port": granting `example.com`
 # confers `example.com:80` and nothing else, exactly as a bind grant of
@@ -90,6 +91,42 @@ sensitivity = "public"
 # under the granted scope. Bytes are data plane (never ledgered, decision
 # log 2026-08-25); listen / accept / close are ledger history (02).
 relation = "live-socket-set-under-scope"
+
+[tls]
+# THE TLS DECISION (M2-K15), recorded in the bundle so it is contract and
+# not folklore. Stack: rustls with the `ring` provider, over tokio-rustls,
+# verifying against the VENDORED `webpki-roots` public root bundle.
+#
+# WHY VENDORED ANCHORS AND NOT THE PLATFORM STORE. Law 4 says a device is a
+# profile: the same kernel, a different plugin tree. Trust anchors are
+# kernel behaviour, so they must not silently differ between a laptop, a
+# server, and CI — a vendored bundle is one named, version-pinned set an
+# audit can read out of the lock file, and it adds no platform-specific
+# code path. The cost is stated rather than hidden: an enterprise root
+# installed in the OS store is NOT trusted, and rotating anchors is a
+# dependency bump. Under this contract's threat model — an ordinary
+# hostile or misconfigured peer, not a compromised public root — that
+# trade is the right way round.
+#
+# NOT CONFIGURABLE. Verification is on and has no off switch: no profile
+# key, no environment variable, no plugin operation, and no verifier of
+# our own. A test that needs a certificate the kernel accepts adds a test
+# ANCHOR through a `#[cfg(test)]` seam and faces the SAME verification a
+# public host faces.
+#
+# CLASSIFICATION. A peer that fails verification answers `untrusted`, a
+# distinct case from `denied` (the allowlist) and `failed` (the network),
+# because the caller's next move differs for each. A handshake that fails
+# for any OTHER reason — no route, a reset, a protocol mismatch — is
+# `failed`: only an identity failure is `untrusted`.
+#
+# PROTOCOL FLOOR. Only TLS 1.2 and 1.3 are compiled in, so a downgrade has
+# no target to reach; the handshake is inside the call's 3s bound, so a
+# stalling peer answers the guest a typed `failed` rather than killing its
+# activation (the M2-K12 lesson).
+stack     = "rustls-ring-over-tokio-rustls"
+anchors   = "vendored-public-roots-never-the-platform-store"
+verify    = "always-on-no-off-switch"
 
 [notes]
 # Lifecycle class (jinn:plugin@0.4.0, M2-K6): listeners and connections are

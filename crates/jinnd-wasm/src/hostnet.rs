@@ -49,6 +49,10 @@ mod request_tests;
 mod socket;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod tls_rig_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod tls_tests;
 mod wake;
 #[cfg(all(test, feature = "loom"))]
 mod wake_model;

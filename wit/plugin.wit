@@ -1,4 +1,4 @@
-/// jinn:plugin@0.9.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.10.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
@@ -35,6 +35,10 @@
 /// included: the kernel awaits every listener delivery end to end, so
 /// fire-and-forget discards the answer, never the wait.
 /// Additive: no existing case, signature, or meaning changes.
+/// 0.10.0 (M2-K15): outbound reaches the real network. `https://` is
+/// provided over a verified TLS connection, and `net-error` gains
+/// `untrusted` — the typed refusal of a peer that did not authenticate.
+/// Additive: no existing case, signature, or meaning changes.
 /// 0.9.0 (M2-K14): outbound is PROVIDED — plain HTTP to a loopback target,
 /// authorized against the grant's `outbound` allowlist. `net.request`
 /// keeps its 0.1.0 declaration BYTE FOR BYTE and simply starts working;
@@ -58,7 +62,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.9.0;
+package jinn:plugin@0.10.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -452,8 +456,13 @@ interface net {
   /// The bundle's own error, verbatim (R3, R12; round 4): `not-found` is
   /// an unknown or foreign handle, `denied` a ledgered grant refusal,
   /// `invalid` a malformed request or address, `failed` every contained
-  /// failure — the provider's own or the kernel boundary's.
-  variant net-error { not-found, denied(string), failed(string), invalid(string) }
+  /// failure — the provider's own or the kernel boundary's — and
+  /// `untrusted` (0.10.0) a peer that did not PROVE it is the authority
+  /// the allowlist named. The last three are three different NEXT MOVES:
+  /// `denied` is the caller's own profile to widen, `untrusted` is a
+  /// certificate the caller cannot fix and must not work around, `failed`
+  /// is worth retrying. One blurred answer would make them one.
+  variant net-error { not-found, denied(string), failed(string), invalid(string), untrusted(string) }
 
   /// A caller-scoped listener or connection identity (R4).
   type net-handle = u64;

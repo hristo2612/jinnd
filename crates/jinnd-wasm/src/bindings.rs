@@ -30,6 +30,13 @@ pub fn wire_error(error: jinnd_api::KernelError) -> types::KernelError {
         }
         ErrorCode::EffectFailed => types::KernelError::GrantRefused(error.message),
         ErrorCode::NotFound => types::KernelError::ProviderFailed(error.message),
+        // `Untrusted` is a `jinn:net` answer and crosses as
+        // `net-error.untrusted` (see the `NetError` mapping below); it does
+        // not arise on this generic wire. If it ever did, the honest
+        // generic reading is a contained provider failure — the call was
+        // authorized and did not happen — never `grant-refused`, which
+        // would report the caller's own profile as the problem.
+        ErrorCode::Untrusted => types::KernelError::ProviderFailed(error.message),
         ErrorCode::DependencyCycle
         | ErrorCode::InvalidProfile
         | ErrorCode::DuplicateProvision
@@ -102,10 +109,13 @@ impl From<jinnd_api::KernelError> for process::ProcessError {
 
 /// Maps a facade error onto the `jinn:net` bundle's own error (the same
 /// classes as the process mapping; a malformed address is `invalid`).
+/// 0.3.0 (M2-K15): `untrusted` crosses as its own case — a peer that did
+/// not authenticate is not a grant refusal and not a transport failure.
 impl From<jinnd_api::KernelError> for net::NetError {
     fn from(error: jinnd_api::KernelError) -> Self {
         match error.code {
             ErrorCode::NotFound => Self::NotFound,
+            ErrorCode::Untrusted => Self::Untrusted(error.message),
             ErrorCode::EffectFailed => Self::Denied(error.message),
             ErrorCode::DependencyCycle
             | ErrorCode::InvalidProfile
