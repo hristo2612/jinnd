@@ -92,6 +92,57 @@ fn staged_beside(target: &Path) -> PathBuf {
     target.with_file_name(name)
 }
 
+/// Removes every staged file left under `dir` by a crash inside the commit
+/// window (M2-K19; I4, Law 3).
+///
+/// The rename IS the commit point, so a staged file whose rename never came
+/// has no claim on any state: the target still holds its prior content, and
+/// the effect either never registered or has a durable inverse restoring
+/// exactly that prior. It is never ADOPTED — `create` opens the window and
+/// `sync_all` closes it, so the bytes may be a torn prefix that was never
+/// durable — only deleted, so a crash leaves no trace a clean shutdown does
+/// not. `<name>.jinnd-stage` is the staging name of `<name>` by contract
+/// (`contracts/jinn-fs` bundle, `commit = "stage-fsync-rename"`), which is
+/// what makes deleting it the kernel's business and not a guest's loss.
+///
+/// ABSOLUTE, not best-effort (M2-K19 round 2; the bundle's `[recovery]
+/// on-failure = "refuse-open"`). Every error is propagated and every
+/// caller refuses its open on one: if the kernel cannot PROVE the scope
+/// holds no staged file, saying nothing would leave exactly the trace this
+/// exists to remove — and leave it unobserved, which is the failure nobody
+/// would ever notice. Fail-closed, the same shape `[retention]` already
+/// takes when an inverse cannot be made durable. This is not an R11
+/// concern: a refused open is a typed error on the construction path, not
+/// a panic and not a plugin's failure escaping its own boundary.
+///
+/// Blocking, and an iterative walk (no recursion into a guest-shaped
+/// tree): callers run it at open, never on an async path. Symlinks are not
+/// followed — `read_dir`'s file type does not stat through them — so the
+/// walk stays inside `dir`.
+///
+/// # Errors
+///
+/// A directory under `dir` cannot be read, an entry's type cannot be
+/// resolved, or a staged file cannot be removed.
+pub(crate) fn sweep_staged(dir: &Path) -> std::io::Result<()> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                stack.push(entry.path());
+            } else if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(STAGE_SUFFIX))
+            {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Writes `bytes` durably at `target`: staged beside it, fsynced, renamed,
 /// and the parent directory fsynced so the rename is on disk too.
 fn commit_sync(dir: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -134,11 +185,16 @@ impl Retention {
     ///
     /// # Errors
     ///
-    /// The store cannot be created, the epoch cannot be made durable, or a
-    /// spilled record is unreadable (fail-closed: an unreadable inverse is
-    /// a lost revertibility guarantee, reported, never skipped).
+    /// The store cannot be created, a staged file left by a crash cannot be
+    /// swept, the epoch cannot be made durable, or a spilled record is
+    /// unreadable (fail-closed: an unreadable inverse is a lost
+    /// revertibility guarantee, reported, never skipped).
     pub(crate) fn open(dir: PathBuf) -> Result<Opened, KernelError> {
         std::fs::create_dir_all(&dir).map_err(|refused| io("create", &refused))?;
+        // A crash inside the spill's own commit window left staged files
+        // here too (M2-K19): they are swept before anything is indexed,
+        // and an unsweepable one refuses the store.
+        sweep_staged(&dir).map_err(|refused| io("sweep", &refused))?;
         let epoch_path = dir.join(EPOCH_FILE);
         let epoch = std::fs::read_to_string(&epoch_path)
             .ok()

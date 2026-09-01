@@ -104,9 +104,10 @@ impl HostFs {
     ///
     /// # Errors
     ///
-    /// The root cannot be created or resolved, the retention store cannot
-    /// be opened, or its spilled records are unreadable (fail-closed:
-    /// revertibility is never silently weakened).
+    /// The root cannot be created or resolved, a staged file left in it by
+    /// a crash cannot be swept, the retention store cannot be opened, or
+    /// its spilled records are unreadable (fail-closed: revertibility is
+    /// never silently weakened, and neither is I4).
     pub fn open(
         root: PathBuf,
         inverses: PathBuf,
@@ -115,6 +116,15 @@ impl HostFs {
         let root = std::fs::create_dir_all(&root)
             .and_then(|()| std::fs::canonicalize(&root))
             .map_err(|refused| refusal(ErrorCode::InvalidProfile, format!("fs root: {refused}")))?;
+        // I4 (M2-K19): a crash between `create` and `rename` left a staged
+        // file in the GUEST's own directory. It is swept here — at open,
+        // before this provider is a broker peer — so no caller of this
+        // incarnation ever sees litter the last crash left. Absolute: a
+        // scope that cannot be proven clean refuses the open rather than
+        // serving a guest the trace of the last crash.
+        retention::sweep_staged(&root).map_err(|refused| {
+            refusal(ErrorCode::InvalidProfile, format!("fs sweep: {refused}"))
+        })?;
         let (store, epoch, spilled) = Retention::open(inverses)?;
         let base = (epoch + 1) << 32;
         let next = spilled

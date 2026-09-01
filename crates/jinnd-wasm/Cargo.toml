@@ -67,4 +67,14 @@ security-framework = { version = "3", default-features = false }
 # test-util: paused-clock tests drive the alarm timers deterministically
 # (M2-K2); dev-only, never a runtime dependency.
 tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+# The shipped contract bundles (`contracts/*/metadata.toml`) are CONTRACTS
+# OF RECORD, and the pin that they parse belongs to the crate that defines
+# the grammar (M2-K19 round-3 ruling; src/bundles.rs). R10: dev-only, so
+# ZERO runtime surface — the bundles ship as `include_str!` constants and
+# nothing in the kernel's hot path parses TOML — and R10's own metric note
+# excludes `cfg(test)` code from the kernel-core count. "Small and boring"
+# argues FOR it: a hand-written TOML reader is neither, and the two the
+# workspace already tried both shipped a hole. `parse` only: the
+# serde-free `DeTable` document API, no serializer, no derive, no serde.
+toml = { version = "1.1.4", default-features = false, features = ["parse", "std"] }
 wit-component = "0.233.0"

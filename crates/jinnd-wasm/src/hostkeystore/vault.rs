@@ -12,7 +12,7 @@ use jinnd_api::{ErrorCode, KernelError};
 
 use super::master::{MasterKeySource, entropy};
 use crate::broker_state::refusal;
-use crate::hostfs::retention::commit_atomic;
+use crate::hostfs::retention::{commit_atomic, sweep_staged};
 use crate::hostwire::{Reader, put_segment};
 
 const STORE_FILE: &str = "secrets.bin";
@@ -77,12 +77,16 @@ impl Vault {
     ///
     /// # Errors
     ///
-    /// The directory cannot be created or read; or a sealed document
-    /// exists and the key cannot be resolved or does not authenticate it
-    /// (fail-closed: a store that cannot be trusted is refused, never
-    /// served empty).
+    /// The directory cannot be created or read; a staged file left by a
+    /// crash cannot be swept; or a sealed document exists and the key
+    /// cannot be resolved or does not authenticate it (fail-closed: a
+    /// store that cannot be trusted is refused, never served empty).
     pub(crate) fn open(dir: &Path, source: MasterKeySource) -> Result<Self, KernelError> {
         std::fs::create_dir_all(dir).map_err(|error| failed("create", &error))?;
+        // The sealed document commits through the same protocol, so the
+        // same crash leaves the same orphan here (M2-K19; I4) — and an
+        // orphan that cannot go refuses the store, as an untrusted one does.
+        sweep_staged(dir).map_err(|error| failed("sweep", &error))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

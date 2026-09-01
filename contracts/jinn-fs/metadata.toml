@@ -1,6 +1,13 @@
 # Contract-bundle metadata for jinn:fs@0.2.0 (M2-K3: finalized; additive
 # edition over 0.1.0 per R12 — `meta` and `append` added, `remove`
 # reclassified revertible, every 0.1.0 operation unchanged in shape).
+#
+# [recovery] is ADDITIVE within 0.2.0 (M2-K19; same standing as the M2-K8
+# `[scope] ops` clause below): it states what becomes of the staging file
+# the 0.2.0 `stage-fsync-rename` commit shape already names, after a crash
+# inside that shape's own window. No operation changes shape, effect class
+# or inverse, and no guest-visible interface moves — so nothing here is
+# breaking within the major version (R12).
 
 [contract]
 name    = "jinn:fs"
@@ -69,6 +76,31 @@ inverse     = "restore-prior-content"
 # structure under the granted scope. Timestamps and inode identity are NOT
 # observable state.
 relation = "content-tree-under-scope"
+
+[recovery]
+# Crash recovery of an interrupted commit (M2-K19; I4). `<name>.jinnd-stage`
+# is the staging name of `<name>`, RESERVED to the kernel by the
+# `stage-fsync-rename` commit shape every mutating operation above
+# declares. A crash between the `create` that opens the window and the
+# `rename` that closes it leaves that staged file behind, in the guest's
+# own directory.
+#
+# The rename IS the commit point, so such a file has no claim on any
+# state: the target still holds its prior content, and the effect either
+# never registered or has a durable inverse restoring exactly that prior.
+# It is therefore DELETED when the provider next opens, never ADOPTED —
+# `create` opens the window and `sync_all` closes it, so the bytes may be
+# a prefix that was never durable. I4: a crash leaves no trace a clean
+# shutdown does not.
+staged = "<name>.jinnd-stage"
+policy = "sweep-staged-on-open-never-adopt"
+# ABSOLUTE, not best-effort (M2-K19 round 2). If the sweep cannot PROVE
+# the scope holds no staged file — a directory it cannot read, an entry
+# whose type it cannot resolve, a staged file it cannot remove — the open
+# is REFUSED with a typed error. Same fail-closed shape as [retention]
+# below: a sweep that silently did nothing would leave exactly the trace
+# this clause exists to remove, and leave it unobserved.
+on-failure = "refuse-open"
 
 [retention]
 # Effect-retention policy (M2-K3; harness finding 8): every revertible

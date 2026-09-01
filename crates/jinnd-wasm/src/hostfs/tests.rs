@@ -17,6 +17,8 @@ use super::{FS_CONTRACT, HostFs};
 use crate::broker::Broker;
 use crate::peer::LedgerSink;
 
+mod orphans;
+
 struct Recording(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
 
 impl LedgerSink for Recording {
