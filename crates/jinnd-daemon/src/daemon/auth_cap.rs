@@ -21,8 +21,8 @@
 //!
 //! NO BYPASS. This module reads no environment variable, no profile field
 //! (the bundle declares no scope), no build flag, and has no test seam; a
-//! test that needs a credential writes the file. `tests.rs` scans this
-//! source for each of those rather than trusting this paragraph.
+//! test that needs a credential writes the file. `source_tests.rs` scans
+//! this source for each of those rather than trusting this paragraph.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
