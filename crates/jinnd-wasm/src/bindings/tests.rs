@@ -50,8 +50,18 @@ fn the_world_carries_the_typed_wait_cycle() {
     const INTROSPECT: &str = include_str!("../../../../contracts/jinn-introspect/contract.wit");
     assert!(WORLD.contains("cycle(wait-cycle),"));
     assert!(WORLD.contains("record wait-cycle {"));
+    // Scoped to the record BODY, not the whole world (M2-K14 round-2
+    // sweep). `WORLD.contains("on: string,")` was satisfied by the
+    // unrelated `operation: string,` in two other signatures, so it would
+    // have passed with this field renamed or deleted — the same unfirable
+    // shape as the outbound-declaration assertion below.
+    let record = WORLD
+        .split("record wait-cycle {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .unwrap_or_else(|| panic!("the world declares record wait-cycle"));
     for field in ["on: string,", "waiter: string,", "target: string,"] {
-        assert!(WORLD.contains(field), "{field}");
+        assert!(record.contains(field), "wait-cycle declares {field}");
     }
     // Every mode is decided, `emit` included: the kernel awaits every
     // delivery end to end, so fire-and-forget is not an escape.
