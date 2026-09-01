@@ -124,12 +124,12 @@ mod tests {
     use super::{LocalTopics, TRANSITIONS_TOPIC};
     use crate::topics::EventTarget;
 
-    /// A listener that dawdles for `delay` and writes down how far into the
-    /// publish its own delivery finished.
+    /// A listener that dawdles for `delay` on every delivery and writes
+    /// down how far into the test each of its deliveries finished.
     struct Timed {
         delay: Duration,
         start: Instant,
-        finished: Arc<Mutex<Option<Duration>>>,
+        finished: Arc<Mutex<Vec<Duration>>>,
     }
 
     impl EventTarget for Timed {
@@ -144,15 +144,18 @@ mod tests {
             let finished = Arc::clone(&self.finished);
             Box::pin(async move {
                 tokio::time::sleep(delay).await;
-                *finished.lock().unwrap_or_else(|poison| poison.into_inner()) =
-                    Some(start.elapsed());
+                lock(&finished).push(start.elapsed());
                 Ok(Vec::new())
             })
         }
     }
 
     /// A listener that traps rather than answering.
-    struct Trapping;
+    struct Trapping {
+        landed: Arc<Mutex<Vec<Duration>>>,
+        start: Instant,
+        traps: usize,
+    }
 
     impl EventTarget for Trapping {
         fn deliver(
@@ -161,32 +164,112 @@ mod tests {
             _topic: &str,
             _payload: Vec<u8>,
         ) -> KernelFuture<'static, Vec<u8>> {
-            Box::pin(async { panic!("a listener trapped inside its delivery") })
+            let landed = Arc::clone(&self.landed);
+            let start = self.start;
+            let trap = lock(&landed).len() < self.traps;
+            Box::pin(async move {
+                assert!(!trap, "a listener trapped inside its delivery");
+                lock(&landed).push(start.elapsed());
+                Ok(Vec::new())
+            })
         }
     }
 
-    fn at(cell: &Arc<Mutex<Option<Duration>>>) -> Duration {
-        cell.lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .unwrap_or_else(|| panic!("this listener never finished its delivery"))
+    fn lock<T>(cell: &Arc<Mutex<T>>) -> std::sync::MutexGuard<'_, T> {
+        cell.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// R11 SIBLING ISOLATION, red-first against the sequential walk this
-    /// replaced: with the slow listener registered FIRST — the shape the
-    /// M2-K13 round-1 verifier measured at 301 ms — a quick sibling must
-    /// still finish immediately, not behind the dawdler.
+    /// Waits for `want` deliveries by YIELDING, never by sleeping: on a
+    /// paused clock virtual time advances only when every task is idle, so
+    /// a lane that is genuinely independent settles here with the clock
+    /// still reading zero, and one that is blocked behind a sibling never
+    /// settles at all.
+    async fn settled(cell: &Arc<Mutex<Vec<Duration>>>, want: usize) -> Vec<Duration> {
+        for _ in 0..10_000 {
+            let landed = lock(cell).clone();
+            if landed.len() >= want {
+                return landed;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "only {} of {want} deliveries ever landed — the lane never ran",
+            lock(cell).len()
+        )
+    }
+
+    /// R11 SIBLING ISOLATION **ACROSS SUCCESSIVE PUBLISHES** — the defect
+    /// the M2-K13 round-2 verifier measured at 305 ms after round 2 made
+    /// deliveries concurrent *within* one publish. Two transitions, back to
+    /// back, with the slow listener registered FIRST: the quick sibling's
+    /// SECOND delivery must land without one instant of time passing.
     ///
-    /// On a PAUSED clock, so the claim is about the shape of the walk and
-    /// not about how loaded the machine was: virtual time advances only
-    /// when every task is idle, so a quick listener that is genuinely
-    /// concurrent finishes at 0 no matter what else is running.
+    /// The clock is PAUSED and this waits by yielding, never by sleeping,
+    /// so virtual time cannot advance while the assertion is pending: a
+    /// publish that joins its listeners — or a second publish that waits on
+    /// the first — leaves the quick lane un-run and this fails by
+    /// exhaustion rather than by a timing guess.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_listener_does_not_delay_a_quick_siblings_next_transition() {
+        const SLOW: Duration = Duration::from_millis(300);
+        let topics = LocalTopics::default();
+        let start = Instant::now();
+        let slow = Arc::new(Mutex::new(Vec::new()));
+        let quick = Arc::new(Mutex::new(Vec::new()));
+        topics.listen(
+            TRANSITIONS_TOPIC,
+            0,
+            1,
+            None,
+            Arc::new(Timed {
+                delay: SLOW,
+                start,
+                finished: Arc::clone(&slow),
+            }),
+        );
+        topics.listen(
+            TRANSITIONS_TOPIC,
+            0,
+            2,
+            None,
+            Arc::new(Timed {
+                delay: Duration::ZERO,
+                start,
+                finished: Arc::clone(&quick),
+            }),
+        );
+        assert_eq!(topics.publish(TRANSITIONS_TOPIC, b"one").await, 2);
+        assert_eq!(topics.publish(TRANSITIONS_TOPIC, b"two").await, 2);
+        let landed = settled(&quick, 2).await;
+        assert_eq!(
+            landed,
+            vec![Duration::ZERO, Duration::ZERO],
+            "the quick listener's NEXT transition waited behind a {SLOW:?} \
+             sibling — the publish path still joins (R11)"
+        );
+        // PRECONDITION, asserted after the claim so the wait above stays
+        // time-free: the slow sibling really was slow, and it is serial to
+        // ITSELF — isolation across listeners is never reordering within
+        // one.
+        tokio::time::sleep(SLOW * 4).await;
+        let dawdled = settled(&slow, 2).await;
+        assert!(
+            dawdled[0] >= SLOW && dawdled[1] >= SLOW * 2,
+            "the slow sibling has to be slow, and serial to itself, for this \
+             test to mean anything: {dawdled:?}"
+        );
+    }
+
+    /// The same isolation WITHIN one publish (M2-K13 round 1 measured this
+    /// at 301 ms): the slow listener is registered first, and the quick one
+    /// must still finish at virtual zero.
     #[tokio::test(start_paused = true)]
     async fn a_slow_listener_does_not_delay_a_quick_sibling() {
         const SLOW: Duration = Duration::from_millis(300);
         let topics = LocalTopics::default();
         let start = Instant::now();
-        let slow = Arc::new(Mutex::new(None));
-        let quick = Arc::new(Mutex::new(None));
+        let slow = Arc::new(Mutex::new(Vec::new()));
+        let quick = Arc::new(Mutex::new(Vec::new()));
         topics.listen(
             TRANSITIONS_TOPIC,
             0,
@@ -210,32 +293,41 @@ mod tests {
             }),
         );
         assert_eq!(topics.publish(TRANSITIONS_TOPIC, b"{}").await, 2);
-        // PRECONDITION, asserted: the slow sibling really was slow. Without
-        // it "the quick one was not delayed" would be a claim about
-        // nothing — the vacuity class this packet's round 2 exists to end.
-        let slow = at(&slow);
-        assert!(
-            slow >= SLOW,
-            "the slow sibling has to be slow for this test to mean anything: {slow:?}"
-        );
-        let quick = at(&quick);
         assert_eq!(
-            quick,
-            Duration::ZERO,
-            "a quick listener waited {quick:?} behind a {slow:?} sibling — \
-             the publish serialised its listeners (R11)"
+            settled(&quick, 1).await,
+            vec![Duration::ZERO],
+            "a quick listener waited behind its slow sibling (R11)"
+        );
+        // PRECONDITION, asserted: the slow sibling really was slow.
+        tokio::time::sleep(SLOW * 2).await;
+        let dawdled = settled(&slow, 1).await;
+        assert!(
+            dawdled[0] >= SLOW,
+            "the slow sibling has to be slow for this test to mean anything: {dawdled:?}"
         );
     }
 
-    /// A listener that TRAPS is contained, counted as a failure, and never
-    /// reaches a sibling: the trapping listener is registered first, so a
-    /// walk that let the panic escape would take the quick one with it.
+    /// A listener that TRAPS is contained twice over (R9, R11): the trap
+    /// reaches neither a sibling — registered second, so a walk that let
+    /// the panic escape would take it too — NOR the trapping listener's own
+    /// lane, which must still carry the transitions that follow.
     #[tokio::test(start_paused = true)]
-    async fn a_trapping_listener_is_contained_and_its_sibling_still_lands() {
+    async fn a_trap_reaches_neither_a_sibling_nor_the_lanes_next_transition() {
         let topics = LocalTopics::default();
         let start = Instant::now();
-        let quick = Arc::new(Mutex::new(None));
-        topics.listen(TRANSITIONS_TOPIC, 0, 1, None, Arc::new(Trapping));
+        let trapped = Arc::new(Mutex::new(Vec::new()));
+        let quick = Arc::new(Mutex::new(Vec::new()));
+        topics.listen(
+            TRANSITIONS_TOPIC,
+            0,
+            1,
+            None,
+            Arc::new(Trapping {
+                landed: Arc::clone(&trapped),
+                start,
+                traps: 1,
+            }),
+        );
         topics.listen(
             TRANSITIONS_TOPIC,
             0,
@@ -247,11 +339,20 @@ mod tests {
                 finished: Arc::clone(&quick),
             }),
         );
+        // The first transition TRAPS the first listener; the second must
+        // still be delivered to it.
+        assert_eq!(topics.publish(TRANSITIONS_TOPIC, b"one").await, 2);
+        assert_eq!(topics.publish(TRANSITIONS_TOPIC, b"two").await, 2);
         assert_eq!(
-            topics.publish(TRANSITIONS_TOPIC, b"{}").await,
+            settled(&quick, 2).await.len(),
             2,
-            "the publish reached both listeners and survived the trap"
+            "the sibling of a trapping listener still receives everything"
         );
-        let _ = at(&quick);
+        assert_eq!(
+            settled(&trapped, 1).await.len(),
+            1,
+            "the trapping listener's OWN lane survived its trap and took the \
+             next transition (R11)"
+        );
     }
 }
