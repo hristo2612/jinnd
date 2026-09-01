@@ -267,9 +267,10 @@ async fn a_grant_refusal_and_an_unauthenticated_answer_are_different_classes() {
         records.iter().any(|record| matches!(&record.kind, LedgerEventKind::GrantRefused { contract, .. } if contract == AUTH_CONTRACT)),
         "the broker's refusal is on the record: {records:?}"
     );
-    assert!(
-        decisions(&records).is_empty(),
-        "a stranger's RIGHT credential never reaches the decision point"
+    assert_eq!(
+        decisions(&records).len(),
+        1,
+        "only the precondition's grant: a stranger's RIGHT credential never reaches the decision point"
     );
     assert!(refused_for(&verify(&daemon, peer, "nope-not-the-operator-token").await).is_some());
 }

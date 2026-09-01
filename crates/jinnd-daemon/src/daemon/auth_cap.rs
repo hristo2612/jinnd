@@ -24,12 +24,13 @@
 //! test that needs a credential writes the file. `tests.rs` scans this
 //! source for each of those rather than trusting this paragraph.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use jinnd_api::{KernelError, KernelFuture};
+use jinnd_api::{KernelError, KernelFuture, LedgerEventKind};
 use jinnd_ledger::Ledger;
-use jinnd_wasm::{AUTH_CONTRACT, Broker, Peer, PeerId};
+use jinnd_wasm::{AUTH_CONTRACT, Broker, Peer, PeerId, hex_digest};
 
 use super::wire::{Callers, unknown};
 
@@ -82,12 +83,80 @@ impl HostAuth {
         broker.provide(peer, AUTH_CONTRACT, Arc::new(AuthPeer(provider)))
     }
 
-    /// One decision. RED-FIRST SKELETON: refuses everything and records
-    /// nothing — the suite in `tests.rs` is red against this body.
-    async fn verify(&self, _caller: PeerId, _payload: Vec<u8>) -> Result<Vec<u8>, KernelError> {
-        let _ = (&self.ledger, &self.callers, &self.credential);
-        Ok(answer(TAG_UNAUTHENTICATED, "not implemented"))
+    /// The credential of record, read NOW — never cached, so a rotation or
+    /// a revocation takes effect on the next call with no restart. Each
+    /// way the file fails to be a credential is its own named
+    /// precondition (metadata §credential), and every one of them refuses.
+    async fn credential(&self) -> Result<Vec<u8>, &'static str> {
+        let meta = tokio::fs::metadata(&self.credential)
+            .await
+            .map_err(|_| "credential file absent or unreadable")?;
+        // Another uid that can read the file holds the credential: a
+        // group- or world-accessible file is not one.
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err("credential file is group- or world-accessible");
+        }
+        if meta.len() > MAX_FILE {
+            return Err("credential file exceeds the size bound");
+        }
+        let bytes = tokio::fs::read(&self.credential)
+            .await
+            .map_err(|_| "credential file absent or unreadable")?;
+        let trimmed = bytes.trim_ascii();
+        if trimmed.len() < MIN_LEN {
+            return Err("credential is too short");
+        }
+        Ok(trimmed.to_vec())
     }
+
+    /// One decision: deny unless the presented value proves the
+    /// credential of record; ONE `AuthDecided` row either way, under the
+    /// caller's attribution, carrying the name (on a grant) and the
+    /// presented value's DIGEST — never its bytes. Nothing is mutated and
+    /// nothing is registered on this path, so a refusal has reached no
+    /// effect by construction; the answer is the bundle's wire.
+    async fn verify(&self, caller: PeerId, payload: Vec<u8>) -> Result<Vec<u8>, KernelError> {
+        let (fiber, entry) = self.callers.attribution(caller);
+        let presented = hex_digest(&payload);
+        let decision = match self.credential().await {
+            Ok(secret)
+                if constant_time_eq(hex_digest(&secret).as_bytes(), presented.as_bytes()) =>
+            {
+                Ok(())
+            }
+            Ok(_) => Err("presented credential does not match"),
+            Err(why) => {
+                // The operator's log line: a file that is not a credential
+                // is a misconfiguration, and silence would hide it.
+                tracing::warn!(path = %self.credential.display(), why, "jinn:auth has no usable credential");
+                Err(why)
+            }
+        };
+        let granted = decision.is_ok();
+        self.ledger.record(
+            LedgerEventKind::AuthDecided {
+                name: granted.then(|| OPERATOR.to_owned()),
+                presented,
+                granted,
+            },
+            entry,
+            fiber,
+        );
+        Ok(match decision {
+            Ok(()) => answer(TAG_GRANTED, OPERATOR),
+            Err(why) => answer(TAG_UNAUTHENTICATED, why),
+        })
+    }
+}
+
+/// Equal length and equal bytes, examined in full whatever the input: no
+/// early exit for a timing side channel to read.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut differ = u8::from(left.len() != right.len());
+    for (a, b) in left.iter().zip(right.iter()) {
+        differ |= a ^ b;
+    }
+    differ == 0
 }
 
 /// The bundle's wire: one tag byte, then UTF-8.
