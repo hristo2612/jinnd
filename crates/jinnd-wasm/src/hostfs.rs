@@ -122,8 +122,9 @@ impl HostFs {
         // incarnation ever sees litter the last crash left. Absolute: a
         // scope that cannot be proven clean refuses the open rather than
         // serving a guest the trace of the last crash.
-        retention::sweep_staged(&root)
-            .map_err(|refused| refusal(ErrorCode::InvalidProfile, format!("fs sweep: {refused}")))?;
+        retention::sweep_staged(&root).map_err(|refused| {
+            refusal(ErrorCode::InvalidProfile, format!("fs sweep: {refused}"))
+        })?;
         let (store, epoch, spilled) = Retention::open(inverses)?;
         let base = (epoch + 1) << 32;
         let next = spilled

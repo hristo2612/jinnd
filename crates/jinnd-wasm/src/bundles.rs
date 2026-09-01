@@ -151,11 +151,14 @@ fn the_reader_refuses_the_shapes_that_shipped_past_a_substring_assertion() {
         ("[a]\nkey = \"v\"\nkey = \"w\"\n", "is set twice"),
         ("[a]\n[a]\n", "declared twice"),
     ] {
-        let refused = tables(bundle).expect_err(&format!("refuses {bundle:?}"));
+        let Err(refused) = tables(bundle) else {
+            panic!("refuses {bundle:?}");
+        };
         assert!(refused.contains(expected), "{refused:?} names {expected:?}");
     }
     // …and accepts what the bundles actually contain, comments included.
-    let read = tables("# note\n[a.b]\nk = \"v\"   # why\nn = 12\n").expect("the accepted subset");
+    let read = tables("# note\n[a.b]\nk = \"v\"   # why\nn = 12\n")
+        .unwrap_or_else(|refused| panic!("the accepted subset: {refused}"));
     assert_eq!(read["a.b"]["k"], "v");
     assert_eq!(read["a.b"]["n"], "12");
 }
@@ -168,8 +171,8 @@ fn the_reader_refuses_the_shapes_that_shipped_past_a_substring_assertion() {
 #[test]
 fn the_bundle_states_what_becomes_of_a_stage_file_whose_rename_never_came() {
     let bundle = include_str!("../../../contracts/jinn-fs/metadata.toml");
-    let tables = tables(bundle)
-        .unwrap_or_else(|refused| panic!("the fs bundle is well formed: {refused}"));
+    let tables =
+        tables(bundle).unwrap_or_else(|refused| panic!("the fs bundle is well formed: {refused}"));
     let recovery = tables
         .get("recovery")
         .unwrap_or_else(|| panic!("a [recovery] TABLE, not prose mentioning one"));
