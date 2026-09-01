@@ -12,10 +12,14 @@
 //! wildcard beside a listening specific (`EADDRINUSE`), so that supply and
 //! this flake do not exist there.
 
+#[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
-use super::tests::{Face, descriptor_of, rig, settle, with_handle};
+#[cfg(target_os = "macos")]
+use super::tests::{Face, settle, with_handle};
+use super::tests::{descriptor_of, rig};
 
 /// The foreign listener the box can supply: a wildcard bind by number on
 /// the kernel's port, beside the kernel's live specific listener.
