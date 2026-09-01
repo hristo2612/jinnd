@@ -20,6 +20,8 @@ mod broker;
 mod broker_state;
 #[cfg(all(test, not(feature = "loom")))]
 mod broker_tests;
+#[cfg(test)]
+mod bundles;
 mod entry;
 mod grants;
 mod handle;

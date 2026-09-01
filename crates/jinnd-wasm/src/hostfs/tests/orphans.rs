@@ -18,6 +18,8 @@ use super::super::retention::{Header, Prior, Record, commit_atomic};
 use super::{FS_CONTRACT, Home, HostFs, Recording, home};
 use crate::peer::LedgerSink;
 
+mod absolute;
+
 /// Names the target the child process must commit to; its presence is what
 /// puts the re-executed test binary in the child role.
 const CHILD_ENV: &str = "JINND_K19_STAGE_CRASH_TARGET";
@@ -250,23 +252,5 @@ fn the_retention_spill_sweeps_its_own_orphans_without_losing_an_inverse() {
             effect_label("write", "log/a.txt", 42)
         )],
         "the rehydrated journal is exactly the surviving inverse"
-    );
-}
-
-/// A sweep is only sound if the suffix is the kernel's alone. The bundle
-/// declares `<name>.jinnd-stage` as the staging name of `<name>`
-/// (`contracts/jinn-fs/metadata.toml`, `commit = "stage-fsync-rename"`),
-/// so the name is reserved by contract, not by this code's convenience —
-/// and the survivors above pin how narrow that reservation is.
-#[test]
-fn the_bundle_states_what_becomes_of_a_stage_file_whose_rename_never_came() {
-    let bundle = include_str!("../../../../../contracts/jinn-fs/metadata.toml");
-    assert!(
-        bundle.contains("<name>.jinnd-stage"),
-        "the bundle declares the reserved staging name"
-    );
-    assert!(
-        bundle.contains("[recovery]"),
-        "the bundle states the boot sweep of a staged file whose rename never came"
     );
 }
