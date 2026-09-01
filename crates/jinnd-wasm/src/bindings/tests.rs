@@ -7,13 +7,18 @@ const WORLD: &str = include_str!("../../../../wit/plugin.wit");
 const FS_META: &str = include_str!("../../../../contracts/jinn-fs/metadata.toml");
 const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata.toml");
 
+mod wit;
+use wit::{interface, package_id, parse_wit, record_fields, signature, variant_cases};
+
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
+    // 0.10.0 (M2-K15): `net-error` gains `untrusted`;
     // 0.9.0 (M2-K14): `net.request` is provided and reshaped;
     // 0.8.0 (M2-K13): the kernel becomes a publisher on this world's bus;
     // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
     // 0.6.0 (M2-K9) the typed `restarting` one.
-    assert!(WORLD.contains("package jinn:plugin@0.9.0;"));
+    let (resolve, package) = parse_wit("plugin.wit", WORLD);
+    assert_eq!(package_id(&resolve, package), "jinn:plugin@0.10.0");
     assert!(WORLD.contains("Suspend ≠ dispose"));
 }
 
@@ -196,28 +201,76 @@ fn process_and_net_imports_return_their_bundles_errors() {
 /// one-shots with their version, their shapes, and their irreversibility —
 /// a guest author learns from the contract, never from the implementation.
 ///
-/// Every function assertion is anchored on the line start (`\n  `), because
-/// an unanchored `contains("request: func(...)")` is satisfied by
-/// `send-request: func(...)` as a plain substring — it would pass whichever
-/// name the operation carried, and would not have noticed round 1
-/// REPLACING the 0.1.0 declaration instead of adding beside it. That is the
-/// vacuity class this packet exists to prevent; it is not allowed in the
-/// test that guards the packet.
+/// Every function is asserted by its PARSED signature, because a
+/// `contains("request: func(...)")` is satisfied by `send-request:
+/// func(...)` as a plain substring — it would pass whichever name the
+/// operation carried, and would not have noticed round 1 REPLACING the
+/// 0.1.0 declaration instead of adding beside it. That is the vacuity class
+/// this packet exists to prevent; it is not allowed in the test that guards
+/// the packet.
 #[test]
 fn the_world_and_the_bundle_declare_both_outbound_one_shots() {
     const NET: &str = include_str!("../../../../contracts/jinn-net/contract.wit");
     const META: &str = include_str!("../../../../contracts/jinn-net/metadata.toml");
-    assert!(NET.contains("package jinn:net@0.2.0;"));
-    for declared in [
-        "\n  record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }",
-        "\n  record outbound-response { status: u16, headers: list<header>, body: list<u8> }",
-        // R12: the 0.1.0 declaration, PRESERVED byte for byte.
-        "\n  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;",
-        // 0.2.0: the whole-response edition, added BESIDE it.
-        "\n  send-request: func(req: outbound-request) -> result<outbound-response, net-error>;",
+    // BOTH documents PARSED, and every declaration below asserted in each:
+    // the bundle is the contract of record, the world carries it verbatim
+    // (R12), and a drift between the two is exactly what has to fail.
+    let (net_resolve, net_package) = parse_wit("jinn-net.wit", NET);
+    let (world_resolve, world_package) = parse_wit("plugin.wit", WORLD);
+    assert_eq!(package_id(&net_resolve, net_package), "jinn:net@0.3.0");
+    for (document, resolve, package) in [
+        ("the bundle", &net_resolve, net_package),
+        ("the world", &world_resolve, world_package),
     ] {
-        assert!(NET.contains(declared), "the bundle declares {declared:?}");
-        assert!(WORLD.contains(declared), "the world carries {declared:?}");
+        let net = interface(resolve, package, "net");
+        assert_eq!(
+            record_fields(resolve, net, "outbound-request"),
+            [
+                "method: string",
+                "url: string",
+                "headers: list<header>",
+                "body: list<u8>"
+            ],
+            "{document}"
+        );
+        assert_eq!(
+            record_fields(resolve, net, "outbound-response"),
+            ["status: u16", "headers: list<header>", "body: list<u8>"],
+            "{document}"
+        );
+        // R12: the 0.1.0 declaration, PRESERVED — same name, same
+        // parameters in the same order, same result. Round 1 of M2-K14
+        // REPLACED it instead of adding beside it, and the substring that
+        // was supposed to notice could not: `contains("request: func(")`
+        // is satisfied by `send-request` alone.
+        assert_eq!(
+            signature(resolve, net, "request"),
+            "request: func(method: string, url: string, body: list<u8>) \
+             -> result<list<u8>, net-error>",
+            "{document}"
+        );
+        // 0.2.0: the whole-response edition, added BESIDE it.
+        assert_eq!(
+            signature(resolve, net, "send-request"),
+            "send-request: func(req: outbound-request) -> result<outbound-response, net-error>",
+            "{document}"
+        );
+        // 0.3.0 (M2-K15): ONE case ADDED to `net-error`. The whole case
+        // list in declaration order, each with its payload — so a case
+        // gone missing, renamed, reordered, or re-typed fails here. No
+        // substring observes a payload at all, and `contains("untrusted")`
+        // is satisfied by the prose above the declaration.
+        assert_eq!(
+            variant_cases(resolve, net, "net-error"),
+            [
+                "not-found",
+                "denied(string)",
+                "failed(string)",
+                "invalid(string)",
+                "untrusted(string)"
+            ],
+            "{document}"
+        );
     }
     // Law 3 admits exactly two categories, and BOTH doors are DECLARED —
     // with no inverse and no compensator to mistake for one. A legacy door

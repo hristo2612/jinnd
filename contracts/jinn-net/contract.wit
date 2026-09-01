@@ -1,4 +1,4 @@
-// jinn:net@0.2.0 (M2-K14) — the base host-provider network contract.
+// jinn:net@0.3.0 (M2-K15) — the base host-provider network contract.
 // Host capability contract supplied by the kernel (01 §Mechanical closure):
 // `request` and `send-request` are the outbound one-shots (PROVIDED from
 // 0.2.0, plain HTTP to a LOOPBACK target only); the server edition listens
@@ -10,18 +10,36 @@
 // verbatim with the broker wire beside each operation; this bundle is the
 // contract of record (R12).
 //
+// 0.2.0 -> 0.3.0 (R12): STRICTLY ADDITIVE. Outbound reaches the real
+// network: `https://` is provided over a TLS connection whose server
+// certificate is VERIFIED, and `net-error` gains one case, `untrusted`.
+// No existing operation, case, or meaning changes; `http://` keeps its
+// loopback-only reading exactly. The trust anchors are a VENDORED public
+// root bundle, not the platform store, so every profile on every device
+// verifies against the same named set (Law 4) and an audit can say which.
+// A grant is matched on the normal form as before, with 443 as the https
+// default port: an entry naming `example.com` still confers
+// `example.com:80` and NOTHING else, so a grant meant for https says
+// `example.com:443` (Law 1 — a default is not a widening).
+//
 // 0.1.0 -> 0.2.0 (R12): STRICTLY ADDITIVE. `request` keeps its 0.1.0
 // declaration byte for byte and starts working; the shape a real call
 // needs — headers in, status and headers out — arrives as a NEW operation
 // beside it, `send-request`, with the records `outbound-request` and
 // `outbound-response` and the type `header`. No existing operation, case,
 // or meaning changes.
-package jinn:net@0.2.0;
+package jinn:net@0.3.0;
 
 interface net {
   // `not-found`: an unknown or foreign handle. Callers classify by case:
   // the plugin world's `net` import answers this variant verbatim.
-  variant net-error { not-found, denied(string), failed(string), invalid(string) }
+  // `untrusted` (0.3.0): the peer did not PROVE it is the authority the
+  // allowlist named — an unanchored issuer, a name the certificate does
+  // not cover, a certificate outside its dates. Its own case because it
+  // is its own NEXT MOVE: `denied` is the caller's profile to widen,
+  // `failed` is worth retrying, and `untrusted` is neither and must
+  // never be worked around.
+  variant net-error { not-found, denied(string), failed(string), invalid(string), untrusted(string) }
 
   type net-handle = u64;
   variant accept-result { connection(net-handle), would-block }
@@ -60,11 +78,23 @@ interface net {
   // make sense of, `failed` = the call was authorized and the network or
   // the response failed.
   //
-  // v0.2 limits, stated: `http://` only (TLS is M2-K15); the target must
-  // resolve to LOOPBACK literally (`127.0.0.0/8`, `::1`, `localhost`) — no
-  // resolver is consulted; `transfer-encoding: chunked` is not decoded;
-  // the response body is capped and the whole call is bounded (metadata
-  // §notes).
+  // TWO TRANSPORTS, TWO REACHES (0.3.0). `https://` reaches any authority
+  // the allowlist admits: the target's name IS resolved, because the
+  // certificate — not the resolver — decides who answered, and a peer that
+  // fails verification is `untrusted`, never quietly accepted. `http://`
+  // is UNCHANGED and stays LOOPBACK-only (`127.0.0.0/8`, `::1`,
+  // `localhost`, literal, no resolver): a kernel that would carry a
+  // credential in the clear to an arbitrary host is not one TLS made
+  // safer, so plaintext keeps the narrower reach it was given.
+  //
+  // Verification is not configurable. There is no profile key, no
+  // environment variable, and no plugin operation that weakens or skips
+  // it; the provider holds ONE client configuration, built once, with the
+  // vendored anchors and nothing else.
+  //
+  // v0.3 limits, stated: `transfer-encoding: chunked` is not decoded; the
+  // response body is capped and the whole call is bounded, TLS handshake
+  // included (metadata §notes); client certificates are not offered.
   //
   // REDIRECTS. A `30x` is never followed. One whose `location` names an
   // authority the allowlist does not admit — or one the provider cannot

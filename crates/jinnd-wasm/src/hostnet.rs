@@ -8,8 +8,11 @@
 //! dispose alike (closed, ledgered). Every call is non-blocking (R1):
 //! `accept` and `read` answer `would-block`, `write` answers what the
 //! socket took. Bytes are data plane and are not ledgered. Readiness
-//! Outbound (M2-K14) is `request` and `send-request`: one authorized,
-//! bounded, IRREVERSIBLE call to a loopback target — see `request`.
+//! Outbound (M2-K14, TLS M2-K15) is `request` and `send-request`: one
+//! authorized, bounded, IRREVERSIBLE call — plaintext to a loopback
+//! target, or `https` to any authority the allowlist admits, over a
+//! connection whose certificate is verified and cannot be un-verified
+//! (see `request` and `tls`).
 //! Readiness
 //! (M2-K7, harness #23): every held socket has a wake task that delivers
 //! `jinn:net/readable` to the holder when a listener has a pending
@@ -49,6 +52,15 @@ mod request_tests;
 mod socket;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
+mod tls;
+#[cfg(all(test, not(feature = "loom")))]
+mod tls_absence_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod tls_refusal_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod tls_rig_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod tls_tests;
 mod wake;
 #[cfg(all(test, feature = "loom"))]
 mod wake_model;

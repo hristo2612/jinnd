@@ -11,7 +11,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use jinnd_api::{KernelError, RefusalReason};
 
 use super::HostNet;
-use super::http::{self, Target};
+use super::http::{self, Target, Transport};
 use crate::grants::{GrantScope, NetScope};
 use crate::peer::PeerId;
 
@@ -31,16 +31,25 @@ impl HostNet {
 
     /// The single admission point for an outbound authority: the caller's
     /// own allowlist first (a refusal here teaches the caller nothing
-    /// about the target), then v0.2's loopback limit. Both land on the
+    /// about the target), then the transport's own reach. Both land on the
     /// record with their typed class (Law 2, R3). `hop` names the redirect
     /// that produced this target, when one did.
+    ///
+    /// TWO TRANSPORTS, TWO REACHES (M2-K15). Over TLS the admitted
+    /// authority is dialled by NAME: resolution is no longer a way around
+    /// the allowlist, because the certificate — not the resolver — decides
+    /// who answered, and a peer that fails verification is refused as
+    /// `untrusted` rather than quietly accepted. Plaintext keeps M2-K14's
+    /// literal-loopback limit unchanged: no resolver is consulted, and a
+    /// name that would resolve off-loopback is exactly the hole that limit
+    /// exists to close (R9).
     pub(super) fn admit(
         &self,
         caller: PeerId,
         scope: &NetScope,
         target: &Target,
         hop: Option<u16>,
-    ) -> Result<SocketAddr, KernelError> {
+    ) -> Result<Dial, KernelError> {
         let via = hop.map_or(String::new(), |status| {
             format!("the target answered {status} redirecting to ")
         });
@@ -54,9 +63,13 @@ impl HostNet {
                 ),
             ));
         }
-        // No resolver is consulted (R9: name resolution is ambient
-        // authority, and a name that resolves off-loopback is exactly the
-        // hole the allowlist exists to close). Literal loopback only.
+        if target.transport == Transport::Tls {
+            return Ok(Dial::Tls(target.host.clone(), target.port));
+        }
+        // Plaintext: no resolver is consulted (R9: name resolution is
+        // ambient authority, and a name that resolves off-loopback is
+        // exactly the hole the allowlist exists to close). Literal
+        // loopback only, unchanged from M2-K14.
         let ip = match target.host.parse::<IpAddr>() {
             Ok(ip) if ip.is_loopback() => ip,
             Err(_) if target.host == "localhost" => IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -65,13 +78,13 @@ impl HostNet {
                     caller,
                     RefusalReason::NotLoopback,
                     format!(
-                        "net request refused: {via}{} is not a loopback target (v0.2 reaches loopback only; TLS and real hosts are M2-K15)",
+                        "net request refused: {via}{} is not a loopback target (plaintext http reaches loopback only; a real host is reached over https, where its certificate proves it)",
                         target.authority
                     ),
                 ));
             }
         };
-        Ok(SocketAddr::new(ip, target.port))
+        Ok(Dial::Plain(SocketAddr::new(ip, target.port)))
     }
 
     /// A `30x` is never followed — and never handed back unless the hop it
@@ -121,4 +134,16 @@ impl HostNet {
             )),
         }
     }
+}
+
+/// One ADMITTED target, in the form its transport is dialled in (M2-K15).
+///
+/// It exists only on the far side of [`HostNet::admit`], so a dial the
+/// allowlist never saw cannot be constructed by accident.
+pub(super) enum Dial {
+    /// Plaintext to a literal loopback socket address.
+    Plain(SocketAddr),
+    /// TLS to an admitted host and port, resolved at dial time — the
+    /// certificate, not the resolver, decides who answered.
+    Tls(String, u16),
 }

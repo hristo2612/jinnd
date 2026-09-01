@@ -188,3 +188,45 @@ fn the_bundle_states_what_becomes_of_a_stage_file_whose_rename_never_came() {
         "the commit shape that reserves the name is intact"
     );
 }
+
+/// M2-K15 (R12): the TLS decision and the version that carries it are read
+/// out of the net bundle BY PARSING — `[contract].version`, and the
+/// `[tls]` table's three recorded choices as real keys in a real table.
+///
+/// Not `contains`. Five instances of the unanchored-substring vacuity have
+/// shipped in this program: a `contains("0.3.0")` passes on a comment, on
+/// a changelog line, on another contract's version, and would pass on a
+/// bundle whose `[tls]` header was broken in half. `string_at` walks the
+/// document, so an absent table and a malformed one both fail.
+#[test]
+fn the_net_bundle_records_the_tls_decision_at_its_new_version() {
+    let bundle = SHIPPED
+        .iter()
+        .find(|(name, _)| *name == "jinn-net")
+        .map(|(_, text)| *text)
+        .unwrap_or_else(|| panic!("the net bundle ships"));
+    let parsed =
+        DeTable::parse(bundle).unwrap_or_else(|refused| panic!("the net bundle parses: {refused}"));
+    let net = parsed.get_ref();
+    for (path, value) in [
+        ("contract.name", "jinn:net"),
+        ("contract.version", "0.3.0"),
+        // The one design decision this packet was allowed, of record.
+        ("tls.stack", "rustls-ring-over-tokio-rustls"),
+        (
+            "tls.anchors",
+            "vendored-public-roots-never-the-platform-store",
+        ),
+        ("tls.verify", "always-on-no-off-switch"),
+        // Law 3 is UNCHANGED by the new transport: both doors, still
+        // irreversible, re-read at 0.3.0 rather than assumed to carry.
+        ("operations.request.effect", "irreversible"),
+        ("operations.send-request.effect", "irreversible"),
+    ] {
+        assert_eq!(
+            string_at(net, path),
+            Some(value),
+            "contracts/jinn-net/metadata.toml {path}"
+        );
+    }
+}

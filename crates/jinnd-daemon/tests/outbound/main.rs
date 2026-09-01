@@ -13,6 +13,7 @@ mod support;
 
 mod authority;
 mod revert;
+mod tls;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -134,4 +135,58 @@ fn requests(records: &[LedgerRecord]) -> Vec<&LedgerEventKind> {
         .map(|record| &record.kind)
         .filter(|kind| matches!(kind, LedgerEventKind::NetRequested { .. }))
         .collect()
+}
+
+/// A loopback TLS target behind a certificate NOTHING anchors: it is
+/// self-signed by a key generated here, so the kernel refuses it for the
+/// real reason rather than a rigged one. Every accepted connection counts,
+/// so a test proves the peer was reached and still not believed.
+fn tls_target() -> Target {
+    let key = rcgen::KeyPair::generate().unwrap_or_else(|error| panic!("key: {error}"));
+    let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()])
+        .unwrap_or_else(|error| panic!("params: {error}"));
+    let certificate = params
+        .self_signed(&key)
+        .unwrap_or_else(|error| panic!("cert: {error}"));
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap_or_else(|error| panic!("versions: {error}"))
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certificate.der().clone()],
+        rustls::pki_types::PrivateKeyDer::try_from(key.serialize_der())
+            .unwrap_or_else(|error| panic!("key der: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("server cert: {error}"));
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("bind: {error}"));
+    let port = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("addr: {error}"))
+        .port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&hits);
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("runtime: {error}"));
+        runtime.block_on(async move {
+            listener
+                .set_nonblocking(true)
+                .unwrap_or_else(|error| panic!("nonblocking: {error}"));
+            let listener = tokio::net::TcpListener::from_std(listener)
+                .unwrap_or_else(|error| panic!("adopt: {error}"));
+            while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                // The handshake is offered in full and refused by the
+                // client: this target does nothing to help it fail.
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+    });
+    Target { port, hits }
 }
