@@ -115,7 +115,9 @@ impl LocalTopics {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+
+    use tokio::time::Instant;
 
     use jinnd_api::KernelFuture;
 
@@ -173,7 +175,12 @@ mod tests {
     /// replaced: with the slow listener registered FIRST — the shape the
     /// M2-K13 round-1 verifier measured at 301 ms — a quick sibling must
     /// still finish immediately, not behind the dawdler.
-    #[tokio::test]
+    ///
+    /// On a PAUSED clock, so the claim is about the shape of the walk and
+    /// not about how loaded the machine was: virtual time advances only
+    /// when every task is idle, so a quick listener that is genuinely
+    /// concurrent finishes at 0 no matter what else is running.
+    #[tokio::test(start_paused = true)]
     async fn a_slow_listener_does_not_delay_a_quick_sibling() {
         const SLOW: Duration = Duration::from_millis(300);
         let topics = LocalTopics::default();
@@ -212,8 +219,9 @@ mod tests {
             "the slow sibling has to be slow for this test to mean anything: {slow:?}"
         );
         let quick = at(&quick);
-        assert!(
-            quick < SLOW / 2,
+        assert_eq!(
+            quick,
+            Duration::ZERO,
             "a quick listener waited {quick:?} behind a {slow:?} sibling — \
              the publish serialised its listeners (R11)"
         );
@@ -222,7 +230,7 @@ mod tests {
     /// A listener that TRAPS is contained, counted as a failure, and never
     /// reaches a sibling: the trapping listener is registered first, so a
     /// walk that let the panic escape would take the quick one with it.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_trapping_listener_is_contained_and_its_sibling_still_lands() {
         let topics = LocalTopics::default();
         let start = Instant::now();
