@@ -1,34 +1,41 @@
-//! The `jinn:net` outbound one-shot (M2-K14): the kernel's FIRST genuinely
+//! The `jinn:net` outbound one-shots (M2-K14): the kernel's FIRST genuinely
 //! irreversible effect (Law 3, constitution 03 §Irreversible).
+//!
+//! Two operations, ONE door. `request` is the 0.1.0 declaration finally
+//! provided — body in, body out; `send-request` is the whole-response
+//! shape added beside it in 0.2.0 (R12: additive within a major, never a
+//! re-shaping). They differ only in how much of the call and the answer
+//! the caller may see: same authority, same record, same effect class.
 //!
 //! Authority first, then reachability, then the wire. The order is the
 //! point: an off-allowlist authority is refused before the kernel learns
-//! anything about it — no connect, no resolution, no probe. Three readings
+//! anything about it — no connect, no resolution, no probe. Who may be
+//! reached, initially and after a redirect, is `admit`; three readings
 //! stay three answers (`denied` / `invalid` / `failed`, R3), because a
 //! caller's next move differs for each.
 //!
-//! A `30x` is ANSWERED, never followed. That closes the redirect hole by
-//! construction rather than by re-checking: the provider makes exactly one
-//! call, so it can never make a second the allowlist did not admit.
+//! The effect is IRREVERSIBLE and that fact is DURABLE: the ledger row
+//! carries the effect id, so a revert unit naming a sent request is
+//! refused after a reopen exactly as in the process that sent it. There is
+//! no second, in-memory register of outbound calls — one mutation
+//! primitive, one record (R5).
 //!
 //! Nothing here blocks (R1): one tokio connect, write and read, the whole
 //! call bounded UNDER the guest deadline so a slow target answers the
 //! guest instead of killing its activation (the M2-K12 lesson). No lock is
 //! held across an await.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::time::Instant;
 
-use jinnd_api::{EffectId, KernelError, LedgerEventKind, RefusalReason};
+use jinnd_api::{EffectId, KernelError, LedgerEventKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{Duration, timeout};
 
 use super::HostNet;
-use super::http::{self, Target};
-use crate::grants::GrantScope;
-use crate::hostwire::{decode_request, encode_response};
-use crate::lane::lock;
+use super::http;
+use crate::hostwire::{decode_body_request, decode_request, encode_response};
 use crate::peer::PeerId;
 
 /// The whole call's bound. Deliberately under `lane::DEADLINE` (5s): a
@@ -41,7 +48,42 @@ pub(crate) const BODY_CAP: usize = 1024 * 1024;
 /// The largest response head v0.2 will read.
 const HEAD_CAP: usize = 64 * 1024;
 
+/// One answered response: status, headers, body.
+type Answered = (u16, Vec<(String, String)>, Vec<u8>);
+
 impl HostNet {
+    /// `request` (the 0.1.0 declaration, provided): one call carrying no
+    /// caller header, answering the response BODY alone.
+    ///
+    /// # Errors
+    ///
+    /// As [`HostNet::outbound`].
+    pub(super) async fn request(
+        &self,
+        caller: PeerId,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, KernelError> {
+        let (method, url, body) = decode_body_request(&payload)?;
+        let (_, _, body) = self.outbound(caller, method, url, Vec::new(), body).await?;
+        Ok(body)
+    }
+
+    /// `send-request` (0.2.0, additive): one call carrying the caller's
+    /// headers, answering the WHOLE response.
+    ///
+    /// # Errors
+    ///
+    /// As [`HostNet::outbound`].
+    pub(super) async fn send_request(
+        &self,
+        caller: PeerId,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, KernelError> {
+        let (method, url, headers, body) = decode_request(&payload)?;
+        let (status, headers, body) = self.outbound(caller, method, url, headers, body).await?;
+        Ok(encode_response(status, &headers, &body))
+    }
+
     /// One outbound request: authorize, dial, send, read, record.
     ///
     /// # Errors
@@ -49,21 +91,24 @@ impl HostNet {
     /// `denied` off the allowlist or off loopback (ledgered), `invalid`
     /// for a URL or header this provider cannot make sense of, `failed`
     /// for an authorized call the network or the response failed.
-    pub(super) async fn request(
+    async fn outbound(
         &self,
         caller: PeerId,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, KernelError> {
-        let (method, url, headers, body) = decode_request(&payload)?;
+        method: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    ) -> Result<Answered, KernelError> {
         let target = http::parse(&url)?;
-        let addr = self.authorize_outbound(caller, &target)?;
+        let scope = self.outbound_scope(caller)?;
+        let addr = self.admit(caller, &scope, &target, None)?;
         let head = http::head(&method, &target, &headers, &body)?;
         let fiber = self.core.attribution(caller);
         // The attempt is an irreversible effect the moment it is
         // authorized: the kernel cannot know how much of a call reached
         // its target, and over-claiming revertibility is the one failure
         // Law 3 exists to prevent.
-        let effect = self.record_request(&method, &target, fiber);
+        let effect = EffectId(self.core.mint());
         let started = Instant::now();
         let sent = (head.len() + body.len()) as u64;
         let outcome = timeout(BOUND, exchange(addr, head, &body)).await;
@@ -76,8 +121,11 @@ impl HostNet {
         let (status, response_bytes) = answered
             .as_ref()
             .map_or((0, 0), |(status, _, body)| (*status, body.len() as u64));
+        // The row lands BEFORE any refusal of the answer: the call was
+        // really sent, and a refusal is never a licence to forget it.
         self.core.sink.append(
             LedgerEventKind::NetRequested {
+                effect,
                 method,
                 host: target.authority,
                 path: target.path,
@@ -90,81 +138,16 @@ impl HostNet {
         );
         tracing::info!(effect = effect.0, status, "net request");
         let (status, headers, body) = answered?;
-        Ok(encode_response(status, &headers, &body))
+        self.admit_hop(caller, &scope, status, &headers)?;
+        Ok((status, headers, body))
     }
 
-    /// The single admission point for an outbound call: the caller's own
-    /// allowlist first (a refusal here teaches the caller nothing about
-    /// the target), then v0.2's loopback limit. Both land on the record
-    /// with their typed class (Law 2, R3).
-    fn authorize_outbound(
-        &self,
-        caller: PeerId,
-        target: &Target,
-    ) -> Result<SocketAddr, KernelError> {
-        let Some(GrantScope::Net(scope)) = self.core.policy(caller) else {
-            return Err(self.core.refuse(
-                caller,
-                RefusalReason::NotGranted,
-                "net caller holds no policy".to_owned(),
-            ));
-        };
-        if !scope.admits_authority(&target.authority) {
-            return Err(self.core.refuse(
-                caller,
-                RefusalReason::ScopeMismatch,
-                format!(
-                    "net request refused: {} is not on the granted outbound allowlist",
-                    target.authority
-                ),
-            ));
-        }
-        // No resolver is consulted (R9: name resolution is ambient
-        // authority, and a name that resolves off-loopback is exactly the
-        // hole the allowlist exists to close). Literal loopback only.
-        let ip = match target.host.parse::<IpAddr>() {
-            Ok(ip) if ip.is_loopback() => ip,
-            Err(_) if target.host == "localhost" => IpAddr::V4(Ipv4Addr::LOCALHOST),
-            _ => {
-                return Err(self.core.refuse(
-                    caller,
-                    RefusalReason::NotLoopback,
-                    format!(
-                        "net request refused: {} is not a loopback target (v0.2 reaches loopback only; TLS and real hosts are M2-K15)",
-                        target.authority
-                    ),
-                ));
-            }
-        };
-        Ok(SocketAddr::new(ip, target.port))
-    }
-
-    /// Registers one irreversible effect under the provider's own handle
-    /// counter, so a request effect can never collide with a socket.
-    fn record_request(
-        &self,
-        method: &str,
-        target: &Target,
-        fiber: Option<jinnd_api::FiberId>,
-    ) -> EffectId {
-        let effect = self.core.mint();
-        let label = format!(
-            "jinn:net request {method} {}{} [effect {effect}]",
-            target.authority, target.path
-        );
-        lock(&self.requests).insert(effect, (label, fiber));
-        EffectId(effect)
-    }
-
-    /// Every outbound call this provider has made, in id order: the
-    /// irreversible effects a revert unit may name and must be refused
-    /// for (Law 3).
-    #[must_use]
-    pub fn requests(&self) -> Vec<(EffectId, String)> {
-        lock(&self.requests)
-            .iter()
-            .map(|(effect, (label, _))| (EffectId(*effect), label.clone()))
-            .collect()
+    /// Seeds the provider's effect counter to `floor` so a fresh process
+    /// never re-mints an id the durable record already spent (M2-K14): an
+    /// outbound effect is irreversible forever, so its id must name one
+    /// call forever. Called at boot from the ledger's own high-water mark.
+    pub fn seed_effects(&self, floor: u64) {
+        self.core.seed(floor);
     }
 }
 

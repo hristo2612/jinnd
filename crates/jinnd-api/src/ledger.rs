@@ -120,10 +120,14 @@ pub enum LedgerEventKind {
     /// carries exactly the credential the keystore exists to protect — and
     /// `path` stops at `?`, because a query string carries one just as
     /// readily. `status` is 0 when no response was read. The effect is
-    /// declared IRREVERSIBLE: this row is the only trace a sent request
-    /// can ever leave, so it is written whether the call succeeded or the
-    /// response failed. (Authorized M2-K14 additive facade delta.)
+    /// declared IRREVERSIBLE, and `effect` is what makes that DURABLE:
+    /// this row is the only trace a sent request can ever leave, so it is
+    /// written whether the call succeeded or the response failed, and it
+    /// carries the effect id a revert unit names — an irreversibility
+    /// that lived only in a live map would expire with the process.
+    /// (Authorized M2-K14 additive facade delta.)
     NetRequested {
+        effect: EffectId,
         method: String,
         host: String,
         path: String,

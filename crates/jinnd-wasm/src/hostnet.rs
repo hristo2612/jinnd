@@ -8,17 +8,17 @@
 //! dispose alike (closed, ledgered). Every call is non-blocking (R1):
 //! `accept` and `read` answer `would-block`, `write` answers what the
 //! socket took. Bytes are data plane and are not ledgered. Readiness
-//! Outbound (M2-K14) is `request`: one authorized, bounded, IRREVERSIBLE
-//! call to a loopback target — see `request`. Readiness
+//! Outbound (M2-K14) is `request` and `send-request`: one authorized,
+//! bounded, IRREVERSIBLE call to a loopback target — see `request`.
+//! Readiness
 //! (M2-K7, harness #23): every held socket has a wake task that delivers
 //! `jinn:net/readable` to the holder when a listener has a pending
 //! connection or a connection has bytes/EOF — one wake per readiness
 //! transition the guest has not acted on, so a server holds NO alarm;
 //! the guest that ignores wakes and polls still works.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use jinnd_api::{ErrorCode, KernelError, KernelFuture, LedgerEventKind, RefusalReason};
 use tokio::io::unix::AsyncFd;
@@ -31,10 +31,17 @@ use crate::hostcaps::NET_CONTRACT;
 use crate::hostwire::encode_handle;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
+mod admit;
 mod http;
 mod ops;
+#[cfg(all(test, not(feature = "loom")))]
+mod outbound_rig_tests;
 mod readiness;
 mod request;
+#[cfg(all(test, not(feature = "loom")))]
+mod request_bounds_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod request_record_tests;
 #[cfg(all(test, not(feature = "loom")))]
 mod request_tests;
 mod socket;
@@ -49,15 +56,12 @@ use socket::{Socket, Wake};
 use wake::WakeTable;
 
 /// The `jinn:net` provider: the table of live sockets and their wake
-/// state, plus the outbound calls it has made — which nothing can take
-/// back (M2-K14; Law 3).
+/// state. The outbound calls it has made are NOT held here — they are
+/// irreversible, so the durable ledger row is their only register (R5:
+/// one mutation primitive; M2-K14 round 2).
 pub struct HostNet {
     core: ProviderCore<Socket>,
     wakes: WakeTable,
-    /// Every authorized outbound call, by effect id: its label and the
-    /// fiber it is charged to. Irreversible, so it is never consumed and
-    /// never withdrawn — it is the record a revert unit is refused for.
-    requests: Mutex<BTreeMap<u64, (String, Option<jinnd_api::FiberId>)>>,
 }
 
 fn failed(what: &str, error: &std::io::Error) -> KernelError {
@@ -71,7 +75,6 @@ impl HostNet {
         Arc::new(Self {
             core: ProviderCore::new(NET_CONTRACT, sink),
             wakes: WakeTable::default(),
-            requests: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -251,6 +254,7 @@ impl Peer for NetPeer {
             match operation.as_str() {
                 "listen" => provider.listen(caller, payload).await,
                 "request" => provider.request(caller, payload).await,
+                "send-request" => provider.send_request(caller, payload).await,
                 other => provider.handle_op(caller, other, &payload).await,
             }
         })

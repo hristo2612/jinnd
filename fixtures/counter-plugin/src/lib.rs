@@ -309,7 +309,7 @@ fn net_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
 }
 
 fn get(url: &str, headers: &[(String, String)]) -> Result<net::OutboundResponse, net::NetError> {
-    net::request(&net::OutboundRequest {
+    net::send_request(&net::OutboundRequest {
         method: "GET".to_owned(),
         url: url.to_owned(),
         headers: headers.to_vec(),
@@ -356,25 +356,34 @@ fn outbound_mode(arg: &str) -> Result<(), GuestFault> {
             )));
         }
     }
-    // 4. A redirect off the allowlist is ANSWERED, never followed — and
-    //    the guest's own follow-up is authorized like any other call.
-    let hop = get(&format!("http://127.0.0.1:{allowed}/redirect"), &[]).map_err(net_fault)?;
-    if hop.status != 302 {
+    // 4. A redirect off the allowlist is DENIED inside the call: the
+    //    kernel never follows one, and never hands back one it cannot
+    //    prove the allowlist admits.
+    match get(&format!("http://127.0.0.1:{allowed}/redirect"), &[]) {
+        Err(net::NetError::Denied(_)) => {}
+        other => {
+            return Err(GuestFault::Failed(format!(
+                "the off-allowlist redirect was not denied: {other:?}"
+            )));
+        }
+    }
+    // 5. The 0.1.0 declaration is provided at the same door: same
+    //    authority, body in and body out (R12).
+    let body = net::request(
+        "GET",
+        &format!("http://127.0.0.1:{allowed}/probe"),
+        &[],
+    )
+    .map_err(net_fault)?;
+    if body != b"pong" {
         return Err(GuestFault::Failed(format!(
-            "the redirect was not answered: {}",
-            hop.status
+            "the declared shape did not answer: {body:?}"
         )));
     }
-    let location = hop
-        .headers
-        .iter()
-        .find(|(name, _)| name == "location")
-        .map(|(_, value)| value.clone())
-        .ok_or_else(|| GuestFault::Failed("the redirect carried no location".into()))?;
-    match get(&location, &[]) {
+    match net::request("GET", &format!("http://127.0.0.1:{denied}/probe"), &[]) {
         Err(net::NetError::Denied(_)) => Ok(()),
         other => Err(GuestFault::Failed(format!(
-            "following the redirect was not denied: {other:?}"
+            "the declared shape bypassed the allowlist: {other:?}"
         ))),
     }
 }

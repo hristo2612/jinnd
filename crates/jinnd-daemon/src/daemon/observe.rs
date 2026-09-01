@@ -3,8 +3,8 @@
 //! `daemon.rs` by responsibility (R10 file hygiene).
 
 use jinnd_api::{
-    EffectId, EntryId, ErrorCode, FiberId, FiberState, KernelError, LedgerQuery, LedgerRecord,
-    RevertKey, RevertResolution,
+    EffectId, EntryId, ErrorCode, FiberId, FiberState, KernelError, LedgerEventKind, LedgerQuery,
+    LedgerRecord, RevertKey, RevertResolution,
 };
 
 use crate::support::error;
@@ -94,16 +94,11 @@ impl Daemon {
     ) -> Result<Vec<RevertResolution>, KernelError> {
         for member in unit {
             if let UnitMember::Net(effect) = member {
-                let named = self
-                    .hostnet
-                    .requests()
-                    .into_iter()
-                    .find(|(id, _)| id == effect);
-                return Err(match named {
-                    Some((_, label)) => error(
+                return Err(match self.net_effect(*effect).await? {
+                    Some(label) => error(
                         ErrorCode::Irreversible,
                         format!(
-                            "revert refused: the unit contains {label}, and a sent request cannot be un-sent — `jinn:net.request` is declared irreversible with no inverse and no compensator (constitution 03 §51). Nothing in the unit was reverted."
+                            "revert refused: the unit contains {label}, and a sent request cannot be un-sent — `jinn:net` outbound is declared irreversible with no inverse and no compensator (constitution 03 §51). Nothing in the unit was reverted."
                         ),
                     ),
                     None => error(
@@ -124,12 +119,40 @@ impl Daemon {
         Ok(resolved)
     }
 
-    /// Every outbound `jinn:net` call this kernel has made: (id, label).
-    /// They are irreversible, so they are never consumed — the list is the
-    /// record a revert unit is refused against (M2-K14).
-    #[must_use]
-    pub fn net_effects(&self) -> Vec<(EffectId, String)> {
-        self.hostnet.requests()
+    /// Every outbound `jinn:net` call this kernel has made, in id order:
+    /// (id, label), read from the DURABLE record. They are irreversible,
+    /// so they are never consumed and never withdrawn — and the register
+    /// is the ledger itself, not a live map, so the list is the same after
+    /// a reopen as before it (M2-K14 round 2; R5).
+    ///
+    /// # Errors
+    ///
+    /// A storage refusal reading the ledger.
+    pub async fn net_effects(&self) -> Result<Vec<(EffectId, String)>, KernelError> {
+        Ok(net_calls(&self.ledger_events().await?).collect())
+    }
+
+    /// The label of one outbound call, if the durable record carries it.
+    async fn net_effect(&self, effect: EffectId) -> Result<Option<String>, KernelError> {
+        Ok(net_calls(&self.ledger_events().await?)
+            .find(|(id, _)| *id == effect)
+            .map(|(_, label)| label))
+    }
+
+    /// Seeds the net provider's effect counter past the highest id the
+    /// durable record has already spent, so a reopened daemon never
+    /// re-mints an id that names a call it can never take back (M2-K14).
+    ///
+    /// # Errors
+    ///
+    /// A storage refusal reading the ledger.
+    pub(super) async fn seed_net_effects(&self) -> Result<(), KernelError> {
+        let highest = net_calls(&self.ledger_events().await?)
+            .map(|(effect, _)| effect.0)
+            .max()
+            .unwrap_or(0);
+        self.hostnet.seed_effects(highest);
+        Ok(())
     }
 
     /// Keyed exactly-once revert of one recorded keystore effect (M2-K8;
@@ -234,4 +257,28 @@ impl Daemon {
             .watcher_armed
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// Every outbound call in `records`, as (effect, label). The label names
+/// WHAT the kernel could not take back — method, authority and path, the
+/// same redacted shape the row itself carries (02 §Redaction): a refusal
+/// that named a body or a header would leak the credential the row was
+/// careful not to hold.
+fn net_calls(records: &[LedgerRecord]) -> impl Iterator<Item = (EffectId, String)> + '_ {
+    records.iter().filter_map(|record| match &record.kind {
+        LedgerEventKind::NetRequested {
+            effect,
+            method,
+            host,
+            path,
+            ..
+        } => Some((
+            *effect,
+            format!(
+                "jinn:net request {method} {host}{path} [effect {}]",
+                effect.0
+            ),
+        )),
+        _ => None,
+    })
 }

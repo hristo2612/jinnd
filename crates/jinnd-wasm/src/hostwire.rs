@@ -186,7 +186,20 @@ pub fn decode_handle(answer: &[u8]) -> Result<u64, KernelError> {
     Reader::new(answer, "handle answer").u64()
 }
 
-/// Encodes a `request` (M2-K14): u32-LE header count, then the method, the
+/// Decodes the 0.1.0 `request` wire: prefixed method, prefixed url, then
+/// the body — no header count, because that shape carries no header.
+///
+/// # Errors
+///
+/// A malformed payload.
+pub fn decode_body_request(payload: &[u8]) -> Result<(String, String, Vec<u8>), KernelError> {
+    let mut reader = Reader::new(payload, "net request");
+    let method = reader.text()?;
+    let url = reader.text()?;
+    Ok((method, url, reader.rest().to_vec()))
+}
+
+/// Encodes a `send-request` (M2-K14): u32-LE header count, then the method, the
 /// url, and each header name and value as prefixed segments, then the body.
 #[must_use]
 pub fn encode_request(

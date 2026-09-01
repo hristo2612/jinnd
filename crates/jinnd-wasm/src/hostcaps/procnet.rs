@@ -209,17 +209,35 @@ impl process::Host for HostState {
 }
 
 impl net::Host for HostState {
-    /// The outbound one-shot (M2-K14): admitted into the journal like any
-    /// effect (a sealed seat refuses on the record), then ONE crossing.
-    /// The call registers NO undo — it is declared irreversible, and a
-    /// journal entry claiming otherwise would be the Law-3 falsehood.
+    /// The outbound one-shot at its 0.1.0 declaration (M2-K14): admitted
+    /// into the journal like any effect (a sealed seat refuses on the
+    /// record), then ONE crossing. The call registers NO undo — it is
+    /// declared irreversible, and a journal entry claiming otherwise would
+    /// be the Law-3 falsehood.
     async fn request(
+        &mut self,
+        method: String,
+        url: String,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, net::NetError> {
+        self.admit("jinn:net request")?;
+        let mut wire = Vec::new();
+        put_segment(&mut wire, method.as_bytes());
+        put_segment(&mut wire, url.as_bytes());
+        wire.extend(body);
+        Ok(crossing(self, NET_CONTRACT, "request", wire).await?)
+    }
+
+    /// The whole-response edition (0.2.0, additive): the same door, the
+    /// same journal admission, the same irreversible class — the caller
+    /// simply sees the headers and the status too.
+    async fn send_request(
         &mut self,
         req: net::OutboundRequest,
     ) -> Result<net::OutboundResponse, net::NetError> {
-        self.admit("jinn:net request")?;
+        self.admit("jinn:net send-request")?;
         let wire = encode_request(&req.method, &req.url, &req.headers, &req.body);
-        let answer = crossing(self, NET_CONTRACT, "request", wire).await?;
+        let answer = crossing(self, NET_CONTRACT, "send-request", wire).await?;
         let (status, headers, body) = decode_response(&answer)?;
         Ok(net::OutboundResponse {
             status,

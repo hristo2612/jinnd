@@ -39,10 +39,27 @@ subset = "bind-range-containment-and-outbound-host-subset"
 # LAW 3, THE FIRST GENUINELY IRREVERSIBLE EFFECT (03 §Irreversible): a sent
 # request cannot be un-sent. There is no inverse and no declared
 # compensator — the kernel cannot know what would correct an arbitrary
-# call. A revert unit containing a `request` event is REJECTED WHOLE, with
-# a typed refusal naming the effect it could not revert and why; nothing in
+# call. A revert unit containing a request event is REJECTED WHOLE, with a
+# typed refusal naming the effect it could not revert and why; nothing in
 # the unit is applied, so a partial revert can never be mistaken for a
 # clean one (03 §51).
+#
+# The refusal is DURABLE, not merely live (M2-K14 round 2). The `effect`
+# id is carried in the `NetRequested` ledger row, so the kernel names a
+# sent request as irreversible after a reopen exactly as it does in the
+# process that sent it. A guarantee that expires with a process is not a
+# guarantee; it is the vacuity class this packet exists to prevent. The
+# provider's effect counter is seeded past the highest durable id at boot,
+# so an id is never reused across a reopen either.
+effect      = "irreversible"
+sensitivity = "personal"
+
+[operations.send-request]
+# The whole-response edition of `request`, added BESIDE it in 0.2.0 (R12:
+# additive within a major). Identical in every respect that matters here —
+# same `outbound` authority, same ledger row, same irreversible class, same
+# bounds — differing only in how much of the call and the answer the caller
+# may see. Two handles, one door.
 effect      = "irreversible"
 sensitivity = "personal"
 
@@ -95,6 +112,12 @@ lifecycle = "kernel-registration-closed-on-suspend-relistened-on-activate"
 # URL carrying userinfo (`http://user:pw@host/`) is refused as `invalid`
 # rather than recorded with its credential stripped: the kernel does not
 # quietly accept a call whose authority it had to edit.
+#
+# REDIRECTS: stated in full beside `send-request` in contract.wit. In
+# short — never followed, `denied` inside the call when the hop names an
+# authority the allowlist does not admit, and the `NetRequested` row is
+# written FIRST either way, because the hop that produced it was really
+# sent and cannot be un-sent.
 #
 # BOUNDS (R9: nothing unbounded). The whole call is bounded at 3s —
 # deliberately UNDER the 5s guest-call deadline, so a slow target answers

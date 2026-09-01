@@ -35,14 +35,17 @@
 /// included: the kernel awaits every listener delivery end to end, so
 /// fire-and-forget discards the answer, never the wait.
 /// Additive: no existing case, signature, or meaning changes.
-/// 0.9.0 (M2-K14): `net.request` is PROVIDED — plain HTTP to a loopback
-/// target, authorized against the grant's `outbound` allowlist — and takes
-/// the shape a real call needs: `outbound-request` in (headers included),
-/// `outbound-response` out (status and headers included). This is the one
-/// signature change of the 0.x line, and it is one a 0.1.0 guest cannot
-/// have depended on: `request` answered a typed failure at EVERY call
-/// until now (contracts/jinn-net 0.2.0 states the same). `request` is
-/// declared IRREVERSIBLE: a revert unit containing one is rejected.
+/// 0.9.0 (M2-K14): outbound is PROVIDED — plain HTTP to a loopback target,
+/// authorized against the grant's `outbound` allowlist. `net.request`
+/// keeps its 0.1.0 declaration BYTE FOR BYTE and simply starts working;
+/// the shape a real call needs — headers in, status and headers out —
+/// arrives as a NEW operation beside it, `net.send-request`, with the
+/// records `outbound-request`/`outbound-response` and the type `header`.
+/// Strictly additive: no existing signature, case, or meaning changes.
+/// (Round 1 replaced `request`'s signature and was rejected under R12 —
+/// a provision is not a licence to re-shape a declared operation, however
+/// reliably it used to fail.) Outbound is declared IRREVERSIBLE: a revert
+/// unit containing one is rejected, typed, naming what it could not undo.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -461,30 +464,49 @@ interface net {
   /// One non-blocking read: bytes now, nothing yet, or the peer's close.
   variant read-result { data(list<u8>), would-block, eof }
 
-  /// One request or response header line.
+  /// Performs one request, answering the response body. PROVIDED from
+  /// 0.9.0 (M2-K14) — plain HTTP to a loopback target, authorized against
+  /// the grant's `outbound` allowlist. The DECLARATION is unchanged from
+  /// 0.1.0, byte for byte: a provision is not a signature change, and R12
+  /// admits no breaking edit inside a major however dead the operation
+  /// was. A caller needing headers, or the response's status and headers,
+  /// calls `send-request` instead; this shape answers the body alone and
+  /// sends no header of its own. Same authority, same record, same effect
+  /// class: the two are one door with two handles.
+  /// Broker wire: operation `request`, payload = u32-LE length + method
+  /// bytes, u32-LE length + url bytes, then the body.
+  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;
+
+  /// One request or response header line (0.9.0, M2-K14).
   type header = tuple<string, string>;
 
   /// One outbound call and its answer (0.9.0, M2-K14).
   record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }
   record outbound-response { status: u16, headers: list<header>, body: list<u8> }
 
-  /// Performs ONE outbound request and answers the response. Authorized
-  /// against the grant's `outbound` allowlist, matched on the URL's
-  /// normalized `host:port` (bundle metadata §scope). Effect class:
+  /// Performs ONE outbound request and answers the WHOLE response (0.9.0,
+  /// M2-K14) — the shape a real call needs, added BESIDE `request` rather
+  /// than replacing it (R12: strictly additive within the major).
+  /// Authorized against the grant's `outbound` allowlist, matched on the
+  /// URL's normalized `host:port` (bundle metadata §scope). Effect class:
   /// IRREVERSIBLE — a sent request cannot be un-sent, so no inverse and no
   /// compensator exist and a revert unit containing one is rejected.
   /// Three distinct refusals: `denied` off the allowlist or not loopback,
   /// `invalid` for a URL this provider cannot make sense of, `failed` for
   /// an authorized call the network or the response failed. v0.2 limits:
   /// `http://` only (TLS is M2-K15), loopback literal targets only (no
-  /// resolver is consulted), a `30x` is ANSWERED and never followed, no
-  /// chunked decoding, a 1 MiB body cap and a 3s bound — under the guest
-  /// deadline, so a slow target answers rather than kills the activation.
-  /// Broker wire: operation `request`, payload = u32-LE header count, then
-  /// u32-LE-prefixed method, url, and each header name and value, then the
-  /// body; answer = u32-LE status, u32-LE header count, each header name
-  /// and value prefixed, then the body.
-  request: func(req: outbound-request) -> result<outbound-response, net-error>;
+  /// resolver is consulted), no chunked decoding, a 1 MiB body cap and a
+  /// 3s bound — under the guest deadline, so a slow target answers rather
+  /// than kills the activation. A `30x` is NEVER followed, and one naming
+  /// an authority the allowlist does not admit is `denied` INSIDE this
+  /// call: the kernel refuses it rather than handing the caller a hop it
+  /// is trusted not to take (an authority the guarded party enforces is
+  /// not an authority).
+  /// Broker wire: operation `send-request`, payload = u32-LE header count,
+  /// then u32-LE-prefixed method, url, and each header name and value,
+  /// then the body; answer = u32-LE status, u32-LE header count, each
+  /// header name and value prefixed, then the body.
+  send-request: func(req: outbound-request) -> result<outbound-response, net-error>;
 
   /// Binds one loopback listener at `addr` (`ip:port`); a non-loopback
   /// address or a port outside the granted range is refused on the

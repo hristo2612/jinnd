@@ -83,6 +83,9 @@ impl Daemon {
         let document = store.load().await?.unwrap_or_default();
         self.loader
             .attach_store::<serde_json::Value>(self.paths.profile.clone(), document.clone());
+        // Before any entry may call: an outbound effect id is irreversible
+        // forever, so it must name ONE call forever (M2-K14).
+        self.seed_net_effects().await?;
         let report = self.apply(document).await?;
         self.withdraw_orphaned_journals().await;
         self.readiness.boot_reconciled.store(true, Ordering::SeqCst);
