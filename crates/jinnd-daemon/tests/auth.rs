@@ -88,8 +88,24 @@ async fn wait_for_file(path: &std::path::Path) -> Vec<u8> {
     }
 }
 
+/// What this test PROVES about the wrong credential, stated so the
+/// demonstration is not read as an oversight (COO ruling, M2-K21 round 1):
+/// 1. NO PRINCIPAL. The answer is the typed `unauthenticated` (tag 1),
+///    never a name; the row says `granted: false`, `name: None`.
+/// 2. ITS OWN GRANTS ARE UNTOUCHED, BY DESIGN. The entry stays Active
+///    and still writes through `jinn:fs` (that is how its answer reaches
+///    this test). `jinn:auth` issues a principal or refuses one; it does
+///    not attenuate the caller's other grants — that would be delegation
+///    between plugins, out of this contract's scope by ruling.
+/// 3. THE DOOR IS THE TRANSPORT'S. Refusing a dispatch on an inbound
+///    connection's behalf is the transport plugin's obligation and is
+///    proven in harness packet 2.8 (PLA-343), not here. The kernel's
+///    guarantee is the authority alone: deny by default, on the record.
+/// Alongside: the right credential is granted `operator`, and an entry
+/// without the grant cannot resolve the contract at all.
 #[tokio::test]
-async fn a_guest_is_granted_or_unauthenticated_on_the_record_under_its_own_entry() {
+async fn a_wrong_credential_gets_no_principal_keeps_its_own_grants_by_design_and_the_door_is_the_transports()
+ {
     let (_home, paths) = rig(serde_json::json!([
         entry(
             "right",
@@ -125,6 +141,8 @@ async fn a_guest_is_granted_or_unauthenticated_on_the_record_under_its_own_entry
         !String::from_utf8_lossy(&wrong).contains(TOKEN),
         "the reason carries no credential"
     );
+    // `wrong` is Active on purpose (fact 2 above): a refused principal
+    // costs the caller nothing it was already granted.
     for (id, state) in [
         ("right", FiberState::Active),
         ("wrong", FiberState::Active),

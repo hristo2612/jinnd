@@ -59,9 +59,15 @@ interface auth {
   // transport's protocol and does not gate the transport plugin's own
   // granted calls — that would be delegation between plugins, which this
   // contract does not do — so the check is the transport's obligation
-  // and the composition suite's to prove. What the kernel guarantees is
+  // and the composition suite's to prove. That proof lives where the
+  // door is: harness packet 2.8 (PLA-343), whose suite shows a wrong
+  // credential over the wire yielding this contract's refusal, zero
+  // effects and one `AuthDecided` row, and whose mutation removing the
+  // `verify` call fails the suite. What the kernel guarantees is
   // narrower and exact: there is one decision point, it refuses unless
-  // proven, and every decision is on the record.
+  // proven, and every decision is on the record. M3's second blocker
+  // (SOURCE-OF-TRUTH §7) closes when BOTH this authority and that door
+  // have landed.
   //
   // LAW 2, REDACTED. Every call lands ONE `AuthDecided` ledger row under
   // the calling entry — the credential NAME on a grant, and the SHA-256

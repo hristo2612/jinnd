@@ -37,6 +37,8 @@ use super::wire::{Callers, unknown};
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
+mod source_tests;
+#[cfg(test)]
 mod tests;
 
 /// Answer tag: granted; the principal's name follows as UTF-8.
