@@ -11,6 +11,19 @@ env:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    # M2-K17 — this job proves the lockfile builds. It never runs the binary
+    # and nothing debugs its output, so full DWARF for the whole dependency
+    # graph (wasmtime included) buys it nothing — and at debuginfo=2 it filled
+    # the runner's disk (run 33493961211, `No space left on device`).
+    # Job-scoped, not step-scoped, on purpose: cargo keys artifacts on the
+    # profile, so setting this on the `locked build` step alone would rebuild
+    # the graph a SECOND time beside the debuginfo=2 artifacts the earlier
+    # steps left in the same target/ — strictly more disk, not less.
+    # What the gate proves is unchanged: `cargo build --workspace --locked`
+    # still runs, over the whole workspace, and still fails on a bad lockfile.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       # M2-K17 — this job died on `No space left on device`. Before anything is
       # changed about what it costs, the headroom has to be a number: free space
