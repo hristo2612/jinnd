@@ -90,9 +90,11 @@ async fn a_foreign_wildcard_listener_answers_the_released_port_not_the_kernel() 
         descriptor.upgrade().is_none(),
         "the descriptor is dropped — closed — before the release returns"
     );
+    let _stray = std::net::TcpStream::connect(("127.0.0.1", rig.port))
+        .unwrap_or_else(|error| panic!("the foreigner answers the released port: {error}"));
     assert!(
-        std::net::TcpStream::connect(("127.0.0.1", rig.port)).is_err(),
-        "closed at release"
+        accepts_within(&foreign, Duration::from_millis(500)),
+        "the connect landed on the foreign wildcard listener"
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(

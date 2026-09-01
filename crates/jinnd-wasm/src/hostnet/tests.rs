@@ -293,8 +293,9 @@ async fn a_loopback_listener_accepts_reads_writes_and_sees_eof() {
 }
 
 /// A handle is the caller's alone (R4); the guest's `close` and the
-/// kernel's release both drop the socket on the record — a fresh connect
-/// to the released port is refused, and a second release is a no-op.
+/// kernel's release both drop the socket on the record — the descriptor
+/// is gone before the release returns (M2-K20), and a second release is a
+/// no-op.
 #[tokio::test]
 async fn handles_are_caller_scoped_and_the_release_closes_on_the_record() {
     let rig = rig();
@@ -306,14 +307,15 @@ async fn handles_are_caller_scoped_and_the_release_closes_on_the_record() {
     );
     assert_eq!(rig.ledger.refusals(), 1);
     assert!(TcpStream::connect(("127.0.0.1", rig.port)).is_ok());
+    let descriptor = descriptor_of(&rig, listener);
     rig.provider
         .withdraw(listener)
         .await
         .unwrap_or_else(|error| panic!("release: {error:?}"));
     assert_eq!(rig.provider.live(), 0);
     assert!(
-        TcpStream::connect(("127.0.0.1", rig.port)).is_err(),
-        "the port is released"
+        descriptor.upgrade().is_none(),
+        "the descriptor is dropped — closed — before the release returns"
     );
     assert!(rig.ledger.kinds().iter().any(|(kind, fiber)| matches!(
         kind,
@@ -589,7 +591,9 @@ async fn a_second_pending_connection_wakes_again_exactly_once() {
 /// Under a chatty peer the wake count is bounded by what the guest does,
 /// never by the byte count (R9): a flood of writes lands ONE wake until
 /// the guest reads; and once the socket is released no wake is ever
-/// delivered or ledgered again.
+/// delivered or ledgered again, and its descriptor is gone before the
+/// release returns (M2-K20: the descriptor, not the port — a foreign
+/// wildcard listener may answer the released port; `release_tests`).
 #[tokio::test]
 async fn a_flood_wakes_once_and_a_released_socket_never_wakes_again() {
     let rig = rig();
@@ -636,13 +640,14 @@ async fn a_flood_wakes_once_and_a_released_socket_never_wakes_again() {
         "a released socket never wakes"
     );
     let before = rig.ledger.readable_wakes(listener);
+    let descriptor = descriptor_of(&rig, listener);
     rig.provider
         .withdraw(listener)
         .await
         .unwrap_or_else(|error| panic!("release: {error:?}"));
     assert!(
-        TcpStream::connect(("127.0.0.1", rig.port)).is_err(),
-        "closed at release"
+        descriptor.upgrade().is_none(),
+        "the descriptor is dropped — closed — before the release returns"
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
