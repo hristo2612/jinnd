@@ -565,6 +565,16 @@ fn operator_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
     }
 }
 
+/// The M2-K21 `jinn:auth` mode, `auth:<name>:<presented>`: presents the
+/// credential through the handle lane and writes the RAW wire answer
+/// (tag + UTF-8) to `/auth-answer-<name>`, so the daemon test reads
+/// exactly what the guest saw.
+fn auth_mode(arg: &str) -> Result<(), GuestFault> {
+    let (name, presented) = arg.split_once(':').unwrap_or((arg, ""));
+    let answer = operator_call("jinn:auth", "verify", presented.as_bytes())?;
+    fs::write(&format!("/auth-answer-{name}"), &answer, "").map_err(fs_fault)
+}
+
 /// The settings contract the two-hop modes provide and consume (M2-K8 #26).
 const SETTINGS_CONTRACT: &str = "jinn:test/settings";
 
@@ -1004,6 +1014,9 @@ impl Guest for Fixture {
         }
         if mode == "introspect" || mode == "ledger-read" || mode.starts_with("profile-patch") {
             return operator_mode(mode, arg);
+        }
+        if mode == "auth" {
+            return auth_mode(arg);
         }
         if mode.starts_with("keystore") {
             return keystore_mode(mode);

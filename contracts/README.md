@@ -14,7 +14,7 @@ Bundles: `jinn-fs` (0.2.0; atomic commits M2-K8), `jinn-clock` (0.1.0),
 `jinn-process` (0.1.0), `jinn-net` (0.1.0, readiness wake M2-K7),
 `jinn-ledger` (0.1.0, finalized M2-K7), `jinn-introspect` (0.1.0),
 `jinn-profile` (0.2.0; non-blocking patch and reads M2-K8), `jinn-keystore`
-(0.1.0, M2-K8).
+(0.1.0, M2-K8), `jinn-auth` (0.1.0, M2-K21).
 
 ## Operation-class attenuation (M2-K8)
 

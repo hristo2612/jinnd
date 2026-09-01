@@ -29,6 +29,8 @@ pub use policy::{EnvPolicy, GrantScope, NetScope, ProcessScope, normalize_author
 pub const INTROSPECT_CONTRACT: &str = "jinn:introspect";
 /// The profile-patch contract's name (M2-K7, harness #21).
 pub const PROFILE_CONTRACT: &str = "jinn:profile";
+/// The operator-authentication contract's name (M2-K21).
+pub const AUTH_CONTRACT: &str = "jinn:auth";
 
 /// One scope value as the profile document wrote it (constitution 04
 /// §Format): the decoder preserves the written shape — including one it
@@ -118,7 +120,8 @@ enum Declared {
     /// `key-prefix`: the key-name prefixes a keystore grant admits
     /// (jinn:keystore, M2-K8); a bare grant admits no key.
     KeyPrefix,
-    /// The bundle declares no scope (jinn:ledger, jinn:introspect).
+    /// The bundle declares no scope (jinn:ledger, jinn:introspect,
+    /// jinn:auth).
     NoScope,
     /// No shipped bundle declares a scope type for this contract.
     Undeclared,
@@ -132,7 +135,7 @@ fn declared(contract: &str) -> Declared {
         NET_CONTRACT => Declared::NetPolicy,
         PROFILE_CONTRACT => Declared::EntryIds,
         KEYSTORE_CONTRACT => Declared::KeyPrefix,
-        "jinn:ledger" | INTROSPECT_CONTRACT => Declared::NoScope,
+        "jinn:ledger" | INTROSPECT_CONTRACT | AUTH_CONTRACT => Declared::NoScope,
         _ => Declared::Undeclared,
     }
 }

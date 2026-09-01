@@ -37,6 +37,14 @@ impl DaemonPaths {
         self.data.with_extension("keystore")
     }
 
+    /// The `jinn:auth` credential of record (M2-K21): the launcher-owned
+    /// operator token file, beside the root like the keystore — never
+    /// inside a guest's reach, and never written by the daemon.
+    #[must_use]
+    pub fn credential(&self) -> PathBuf {
+        self.data.with_extension("operator-token")
+    }
+
     /// The canonical form the watcher needs (M2-K5 #18): every path
     /// resolved against `cwd`, the profile's directory canonicalized — a
     /// bare `profile.json` names the working directory, never an empty

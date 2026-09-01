@@ -1,0 +1,85 @@
+// jinn:auth@0.1.0 (M2-K21) — who may issue a dispatch on the kernel's
+// inbound surface. Host capability contract supplied by the kernel (01
+// §Mechanical closure): the kernel has no inbound listener of its own — a
+// transport plugin holds one through `jinn:net` and the kernel sees only
+// bytes — so the kernel supplies the AUTHORITY instead: ONE credential,
+// ONE decision point, EVERY decision ledgered, and a refusal that is its
+// own typed class. Reached over `services.resolve("jinn:auth")` +
+// `services.call(handle, "verify", <presented UTF-8>)`, granted like any
+// contract; the bundle declares NO scope, so a scoped grant refuses at
+// admission (fail-closed, the M2-K2 law). Every call is non-blocking (R1).
+//
+// SCOPE (COO ruling, M2-K21): one operator, one credential. No accounts,
+// no roles, no tenancy, no remote authentication, no delegation between
+// plugins. If a later contract needs any of those it is a new design, not
+// an addition here.
+//
+// THREAT MODEL, WITH ITS LIMIT STATED. In model: a process on this
+// machine that is not the operator's launcher reaching the transport's
+// socket — by accident, by misconfiguration, or as a mistaken second
+// instance — and a future transport added without its author noticing
+// there was never a check. NOT IN MODEL: a malicious process running as
+// the SAME UID as the daemon. It can read whatever the daemon can read,
+// the credential file included, and no check here holds against it. A
+// guarantee that cannot hold against same-uid is not a guarantee, so none
+// is claimed.
+package jinn:auth@0.1.0;
+
+interface auth {
+  // The ONE refusal class of this contract. `unauthenticated` is
+  // deliberately its own case in its own contract: it is neither
+  // `jinn:net`'s `denied` (the allowlist — the caller's profile to widen)
+  // nor `failed` (the transport — worth retrying) nor `jinn:profile`'s
+  // `refused`. Its next move is different from all of them: present the
+  // operator's credential, or stop. The reason names WHICH precondition
+  // failed for the operator's log; it never carries credential bytes.
+  variant auth-error { unauthenticated(string) }
+
+  // Who the presented credential proved: the credential's NAME, never its
+  // value. v0.1 has exactly one, `operator`.
+  record principal { name: string }
+
+  // Effect class: read — this call mutates nothing and registers no
+  // inverse; the decision it records is a ledger ROW, not an effect.
+  //
+  // DENY BY DEFAULT. The credential of record is the launcher-owned
+  // token file beside the data root (metadata §credential). It is read
+  // ON EVERY CALL: a rotated credential grants and the old one refuses
+  // from the next call on, a deleted credential refuses everything from
+  // the next call on, and no restart is involved in either. Absent,
+  // unreadable, group- or world-accessible, over the size bound, or
+  // shorter than the minimum after trimming, the file is NOT a
+  // credential and every call refuses. Comparison is constant-time over
+  // SHA-256 digests.
+  //
+  // WHAT A TRANSPORT OWES. A plugin that serves an inbound connection
+  // (a `jinn:net` listener, a pipe, anything) issues NO dispatch on that
+  // connection's behalf before this call answers `principal` for a
+  // credential the connection presented. The kernel cannot see the
+  // transport's protocol and does not gate the transport plugin's own
+  // granted calls — that would be delegation between plugins, which this
+  // contract does not do — so the check is the transport's obligation
+  // and the composition suite's to prove. That proof lives where the
+  // door is: harness packet 2.8 (PLA-343), whose suite shows a wrong
+  // credential over the wire yielding this contract's refusal, zero
+  // effects and one `AuthDecided` row, and whose mutation removing the
+  // `verify` call fails the suite. What the kernel guarantees is
+  // narrower and exact: there is one decision point, it refuses unless
+  // proven, and every decision is on the record. M3's second blocker
+  // (SOURCE-OF-TRUTH §7) closes when BOTH this authority and that door
+  // have landed.
+  //
+  // LAW 2, REDACTED. Every call lands ONE `AuthDecided` ledger row under
+  // the calling entry — the credential NAME on a grant, and the SHA-256
+  // digest of what was presented either way. Never the presented bytes,
+  // never the credential.
+  //
+  // Wire: the payload is the presented credential's UTF-8; the answer is
+  // tag 0 + the principal's name as UTF-8, or tag 1 + the reason as
+  // UTF-8 (the `unauthenticated` case).
+  verify: func(presented: string) -> result<principal, auth-error>;
+}
+
+world auth-provider {
+  export auth;
+}

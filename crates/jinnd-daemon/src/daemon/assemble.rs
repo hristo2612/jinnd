@@ -20,8 +20,8 @@ use jinnd_wasm::{
 };
 
 use super::{
-    Daemon, DaemonPaths, Lifecycle, Readiness, introspect, ledger_cap, profile_cap, restarts,
-    storage, waits,
+    Daemon, DaemonPaths, Lifecycle, Readiness, auth_cap, introspect, ledger_cap, profile_cap,
+    restarts, storage, waits,
 };
 use crate::support::{SharedFibers, Sink, error};
 
@@ -118,6 +118,10 @@ impl Daemon {
             waits,
         )?;
         ledger_cap::HostLedger::register(&lane.broker, ledger.clone())?;
+        // The operator-authentication contract (M2-K21): the one decision
+        // point for "may this caller dispatch", reading the launcher-owned
+        // credential beside the data root, every decision a ledger row.
+        auth_cap::HostAuth::register(&lane.broker, ledger.clone(), paths.credential())?;
         profile_cap::HostProfile::register(
             &lane.broker,
             Arc::clone(&loader),

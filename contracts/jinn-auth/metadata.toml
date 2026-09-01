@@ -1,0 +1,74 @@
+# Contract-bundle metadata for jinn:auth@0.1.0 (M2-K21)
+
+[contract]
+name    = "jinn:auth"
+version = "0.1.0"
+
+# No scope type: a grant is the right to ASK whether a presented credential
+# is the operator's. There is nothing to attenuate — one credential, one
+# answer — so a scoped grant refuses fail-closed (M2-K2 law). Attenuation
+# is by grant or no grant.
+
+[operations.verify]
+# A read: nothing is mutated, no inverse is registered. The decision is a
+# ledger ROW (Law 2), never an effect (Law 3 has nothing to revert).
+effect      = "read"
+# The answer names a credential, never carries one; the reason on a
+# refusal names a precondition. The presented value is ledgered as its
+# SHA-256 digest only (02 §Redaction, the M2-K8 keystore precedent).
+sensitivity = "personal"
+
+[credential]
+# THE CREDENTIAL OF RECORD: one launcher-owned token file beside the data
+# root (`<data>.operator-token` — a sibling of `.keystore` and `.inverses`,
+# never inside a guest's `jinn:fs` reach). The daemon only READS it; the
+# launcher creates it, mode 0600, and hands the same bytes to its clients.
+name         = "operator"
+location     = "beside-the-data-root-never-inside-it"
+# Read on EVERY call, so rotation and revocation need no restart: overwrite
+# the file and the new value grants from the next call on while the old
+# refuses; delete it and everything refuses from the next call on.
+rotation     = "re-read-per-call-no-restart"
+# DENY BY DEFAULT, each a stated precondition and each answered
+# `unauthenticated`: the file is absent or unreadable; it is group- or
+# world-accessible (mode bits 0o077 set); it exceeds 4096 bytes; the value
+# after trimming ASCII whitespace is shorter than 16 bytes; the presented
+# value does not match. There is no default credential and no path that
+# grants when the file is missing.
+absent       = "deny"
+minimum-len  = 16
+maximum-file = 4096
+mode-mask    = "0o077-must-be-clear"
+compare      = "constant-time-over-sha256"
+
+[threat-model]
+# Stated so the guarantee is exact rather than flattering.
+in-model  = "foreign-process-or-mistaken-second-instance-reaching-the-socket; a-future-transport-added-without-a-check"
+# A process with the daemon's own uid can read the credential file and is
+# NOT defended against. Saying otherwise would be vacuous.
+same-uid  = "not-in-model"
+
+[bypass]
+# There is NO off switch: no environment variable, no profile field (the
+# bundle declares no scope), no build flag, no test seam. The provider's
+# source is scanned for each of those by a test in the daemon crate; a
+# test that needs a credential WRITES THE FILE, which is configuration.
+off-switch = "none"
+
+[equality]
+# Observational equivalence: the credential of record — same name, same
+# digest. The ledger rows are history (02), not state.
+relation = "credential-name-and-digest"
+
+[notes]
+# Every call is a ledger event twice over: the broker's `ContractCall` line
+# and the provider's own `AuthDecided { name, presented, granted }` row,
+# under the calling entry's attribution. Nothing is registered, so
+# suspend and dispose have nothing to release.
+lifecycle = "read-only"
+# What the kernel does NOT do, said plainly: it does not parse the
+# transport's protocol and does not gate a transport plugin's own granted
+# calls behind this one. A transport that skips `verify` is a plugin
+# defect the composition suite must catch; the kernel's promise is one
+# decision point, deny unless proven, every decision on the record.
+transport = "the-transport-calls-verify-before-any-dispatch-on-a-connection's-behalf"

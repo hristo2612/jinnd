@@ -37,6 +37,7 @@ pub(crate) struct HostLedger {
 fn sensitivity(kind: &LedgerEventKind) -> &'static str {
     match kind {
         LedgerEventKind::ErrorRecorded { .. }
+        | LedgerEventKind::AuthDecided { .. }
         | LedgerEventKind::KeystoreAccessed { .. }
         | LedgerEventKind::ProcessSpawned { .. }
         | LedgerEventKind::AmendmentAccepted { .. }

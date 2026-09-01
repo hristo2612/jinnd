@@ -16,6 +16,7 @@ fn usage() -> ! {
          [--artifacts <dir>] [--data <dir>]\n\
          env: JINND_KEYSTORE_PASSPHRASE | JINND_KEYSTORE_PASSPHRASE_FILE \
          (keystore master key; macOS default: the keychain)\n\
+         jinn:auth credential: <data>.operator-token, mode 0600, launcher-owned\n\
          stdin: revert <effect-id> <key> | status"
     );
     std::process::exit(2);

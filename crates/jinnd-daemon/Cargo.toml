@@ -48,6 +48,13 @@ tokio = { version = "1.47.1", features = [
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# The `jinn:auth` bundle is asserted by PARSING, never by substring (the
+# M2-K15 round-2 ruling; the M2-K19 `toml` precedent). Both are dev-only —
+# ZERO runtime surface, ZERO new packages in the lockfile: `toml` is already
+# a jinnd-wasm dev-dep and `wit-parser` rides in with the `wit-component`
+# dev-dep below (M2-K21).
+toml = { version = "1.1.4", default-features = false, features = ["parse", "std"] }
+wit-parser = "0.233.0"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "ring"] }
 # Encodes the checked-in fixture SOURCE to a component for the end-to-end

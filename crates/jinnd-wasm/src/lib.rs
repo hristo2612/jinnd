@@ -54,8 +54,8 @@ pub use alarms::{
 pub use artifact::{PinnedArtifact, admit};
 pub use broker::Broker;
 pub use grants::{
-    EnvPolicy, GrantScope, INTROSPECT_CONTRACT, NetScope, PROFILE_CONTRACT, ProcessScope,
-    ScopeValue, grant_refusals,
+    AUTH_CONTRACT, EnvPolicy, GrantScope, INTROSPECT_CONTRACT, NetScope, PROFILE_CONTRACT,
+    ProcessScope, ScopeValue, grant_refusals,
 };
 pub use handle::{
     ActivationOutcome, AlarmRecord, HostRecord, InstanceHandle, ListenRecord, Registration,
