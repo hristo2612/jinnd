@@ -52,16 +52,18 @@ pub fn grant_for(topic: &str) -> &str {
 /// and a task of its own, opened on that listener's first publish and
 /// dropped with its registration.
 ///
-/// This is the shape that makes sibling isolation structural rather than
-/// careful (R11). Round 1 walked listeners sequentially and a slow one held
-/// a quick sibling for its whole handler; round 2 made the deliveries of
-/// ONE publish concurrent, and the same stall reappeared BETWEEN publishes
-/// because the publish still joined before the next could start. A lane
-/// removes the join entirely: there is no point on the publish path where
-/// one listener's progress is a term in another's.
+/// This is what makes sibling isolation structural rather than careful
+/// (R11). Round 1 walked listeners sequentially and a slow one held a quick
+/// sibling for its whole handler; round 2 made the deliveries of ONE
+/// publish concurrent, and the stall reappeared BETWEEN publishes because
+/// the publish still joined before the next could start. A lane removes the
+/// join entirely: nowhere on the publish path is one listener's progress a
+/// term in another's.
 pub(super) struct Lane {
     inbox: tokio::sync::mpsc::Sender<Vec<u8>>,
 }
+
+type Sink = Option<Arc<dyn LedgerSink>>;
 
 impl Lane {
     /// Opens a listener's lane on the current runtime. Without one there is
@@ -98,8 +100,6 @@ impl Lane {
     }
 }
 
-type Sink = Option<Arc<dyn LedgerSink>>;
-
 impl LocalTopics {
     /// Publishes one KERNEL-ORIGIN payload to every listener of a reserved
     /// topic (M2-K13). This is not an `emit` and deliberately shares none
@@ -108,20 +108,17 @@ impl LocalTopics {
     /// can neither be waited on nor close a cycle (M2-K10), and no
     /// reply-expecting refusal applies (M2-K9).
     ///
-    /// **IT DOES NOT JOIN, AND CANNOT (R11).** It is not `async`: there is
-    /// no point in this function where a listener's progress could be
-    /// awaited, so no listener can delay the kernel, a sibling, or a
-    /// sibling's NEXT transition. It hands each listener's [`Lane`] the
-    /// payload and returns; delivery, ordering within a listener, trap
-    /// containment and the per-delivery `DispatchTrace` all belong to the
-    /// lane. Concurrency is ACROSS listeners; each listener is still served
-    /// strictly in commit order.
+    /// **IT DOES NOT JOIN, AND CANNOT (R11):** it is not `async`, so no
+    /// listener can delay the kernel, a sibling, or a sibling's NEXT
+    /// transition. It hands each listener's [`Lane`] the payload and
+    /// returns; delivery, per-listener ordering, trap containment and the
+    /// `DispatchTrace` belong to the lane.
     ///
     /// **A listener that cannot take it LOSES IT LOUDLY.** A lane past
     /// [`LANE_CAPACITY`] — or a listener with no runtime to open one on —
     /// refuses the payload, and the refusals land as one typed
-    /// `PublishDropped` row for the publish (Law 2, R9). The kernel never
-    /// grows a queue on a listener's behalf and never waits for room.
+    /// `PublishDropped` row (Law 2, R9). The kernel never grows a queue on
+    /// a listener's behalf and never waits for room.
     ///
     /// Answers how many listeners ACCEPTED the payload.
     pub fn publish(&self, topic: &str, payload: &[u8]) -> usize {
@@ -130,19 +127,20 @@ impl LocalTopics {
             let mut inner = self.lock();
             let mut reached = 0usize;
             let mut refused = 0u64;
-            for listener in inner.listeners.iter_mut() {
-                if listener.topic != topic {
-                    continue;
-                }
-                // No plugin code runs under this lock and nothing is
-                // awaited under it (R1): opening a lane spawns, and
-                // offering to one is a non-blocking bounded push.
-                let Listener {
-                    lane,
-                    target,
-                    token,
-                    ..
-                } = listener;
+            // No plugin code runs under this lock and nothing is awaited
+            // under it (R1): opening a lane spawns, and offering to one is
+            // a non-blocking bounded push.
+            let selected = inner
+                .listeners
+                .iter_mut()
+                .filter(|listener| listener.topic == topic);
+            for Listener {
+                lane,
+                target,
+                token,
+                ..
+            } in selected
+            {
                 let opened = match lane {
                     Some(lane) => Some(&*lane),
                     None => Lane::open(target, *token, topic, sink.clone())
