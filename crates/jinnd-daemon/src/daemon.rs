@@ -14,11 +14,12 @@ use std::sync::{Arc, Mutex};
 use jinnd_api::{ErrorCode, KernelError, LedgerEventKind, LedgerQuery, ReconcileReport};
 use jinnd_ledger::{Ledger, RevertLane};
 use jinnd_loader::{Document, FileStore, Loader};
-use jinnd_wasm::{HostFs, HostKeystore, LaneCore};
+use jinnd_wasm::{HostFs, HostKeystore, HostNet, LaneCore};
 
 pub use crate::paths::DaemonPaths;
 use crate::support::{SharedFibers, error, lock};
 pub(crate) use lifecycle::Lifecycle;
+pub use observe::UnitMember;
 
 mod assemble;
 mod introspect;
@@ -50,6 +51,10 @@ pub struct Daemon {
     pub(crate) loader: Arc<Loader>,
     pub(crate) lane: Arc<LaneCore>,
     hostfs: Arc<HostFs>,
+    /// The `jinn:net` provider, kept so the daemon can name the
+    /// IRREVERSIBLE outbound calls a revert unit must be refused for
+    /// (M2-K14; Law 3).
+    hostnet: Arc<HostNet>,
     pub(crate) keystore: Arc<HostKeystore>,
     pub(crate) fibers: SharedFibers,
     /// Per package, the pin last applied FROM THE PROFILE (see

@@ -11,6 +11,21 @@ use crate::support::error;
 
 use super::{Daemon, storage};
 
+/// One member of a revert unit, named by the provider that owns it
+/// (constitution 03 §Units of revert). Effect ids are minted per provider,
+/// so the provider is part of the address — a bare number would be
+/// ambiguous, and an ambiguous revert is the one thing Law 3 cannot have.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnitMember {
+    /// A revertible `jinn:fs` write, append, or removal.
+    Fs(EffectId),
+    /// A revertible `jinn:keystore` put or delete.
+    Keystore(EffectId),
+    /// An outbound `jinn:net` call: DECLARED IRREVERSIBLE (M2-K14;
+    /// contracts/jinn-net §operations.request).
+    Net(EffectId),
+}
+
 impl Daemon {
     /// Keyed exactly-once revert of one recorded fs effect (Law 3): the
     /// inverse restores the prior content, absence, or length from the
@@ -53,6 +68,68 @@ impl Daemon {
             self.hostfs.reclaim(effect).await?;
         }
         Ok(resolution)
+    }
+
+    /// Reverts one UNIT (constitution 03 §Units of revert), LIFO.
+    ///
+    /// The unit is decided WHOLE before any inverse runs: if it contains
+    /// an effect whose contract declares the operation `irreversible`, the
+    /// unit is REJECTED and nothing in it is applied (03 §51). A revert
+    /// that silently skipped the irreversible member — or that succeeded
+    /// while pretending the call had not happened — would be exactly the
+    /// falsehood Law 3 exists to prevent, so the refusal is typed
+    /// ([`ErrorCode::Irreversible`]) and names WHICH effect it could not
+    /// revert and WHY. There is no declared compensator for an outbound
+    /// call: the kernel cannot know what would correct an arbitrary one.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Irreversible`] for a unit containing an irreversible
+    /// effect, [`ErrorCode::NotFound`] for a member no provider owns, and
+    /// otherwise as [`Daemon::revert`].
+    pub async fn revert_unit(
+        &self,
+        unit: &[UnitMember],
+        key: &str,
+    ) -> Result<Vec<RevertResolution>, KernelError> {
+        for member in unit {
+            if let UnitMember::Net(effect) = member {
+                let named = self
+                    .hostnet
+                    .requests()
+                    .into_iter()
+                    .find(|(id, _)| id == effect);
+                return Err(match named {
+                    Some((_, label)) => error(
+                        ErrorCode::Irreversible,
+                        format!(
+                            "revert refused: the unit contains {label}, and a sent request cannot be un-sent — `jinn:net.request` is declared irreversible with no inverse and no compensator (constitution 03 §51). Nothing in the unit was reverted."
+                        ),
+                    ),
+                    None => error(
+                        ErrorCode::NotFound,
+                        format!("no jinn:net request effect {}", effect.0),
+                    ),
+                });
+            }
+        }
+        let mut resolved = Vec::with_capacity(unit.len());
+        for member in unit.iter().rev() {
+            resolved.push(match member {
+                UnitMember::Fs(effect) => self.revert(*effect, key).await?,
+                UnitMember::Keystore(effect) => self.revert_keystore(*effect, key).await?,
+                UnitMember::Net(_) => unreachable!("rejected above"),
+            });
+        }
+        Ok(resolved)
+    }
+
+    /// Every outbound `jinn:net` call this kernel has made: (id, label).
+    /// They are irreversible, so they are never consumed — the list is the
+    /// record a revert unit is refused against (M2-K14).
+    #[must_use]
+    pub fn net_effects(&self) -> Vec<(EffectId, String)> {
+        self.hostnet.requests()
     }
 
     /// Keyed exactly-once revert of one recorded keystore effect (M2-K8;

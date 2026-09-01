@@ -72,7 +72,8 @@ impl Daemon {
         // The jinn:process and jinn:net providers (M2-K6, finding 5): the
         // same choke point; their registrations release on suspend.
         HostProcess::new(Arc::clone(&lane.sink)).register(&lane.broker)?;
-        HostNet::new(Arc::clone(&lane.sink)).register(&lane.broker)?;
+        let hostnet = HostNet::new(Arc::clone(&lane.sink));
+        hostnet.register(&lane.broker)?;
         // The jinn:keystore provider (M2-K8, finding 5's remainder): the
         // sealed store sits beside the data root, out of every guest's
         // reach; its retained journal spans processes like the fs one.
@@ -131,6 +132,7 @@ impl Daemon {
             loader,
             lane,
             hostfs,
+            hostnet,
             keystore,
             fibers,
             applied_pins: Mutex::new(HashMap::new()),

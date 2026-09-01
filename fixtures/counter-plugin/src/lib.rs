@@ -97,6 +97,8 @@ fn keystore_fault(error: keystore::KeystoreError) -> GuestFault {
 /// The secret the keystore modes store: the daemon test greps the ledger
 /// file, the sealed store, and the inverses for these bytes (zero hits).
 const SECRET: &[u8] = b"sk-live-0xDEADBEEF-fixture-secret";
+/// The same secret as text, for the M2-K14 credential-in-a-call probe.
+const SECRET_TEXT: &str = "sk-live-0xDEADBEEF-fixture-secret";
 
 /// The M2-K8 keystore modes: `keystore` drives the whole bundle under an
 /// `engines/` prefix grant and leaves one key in place for the dispose
@@ -300,7 +302,110 @@ fn net_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
                 "the bind was not the typed refusal: {other:?}"
             ))),
         },
+        "net-out" => outbound_mode(arg),
+        "net-widen" => widen_mode(arg),
         other => Err(GuestFault::Failed(format!("unknown net mode {other}"))),
+    }
+}
+
+fn get(url: &str, headers: &[(String, String)]) -> Result<net::OutboundResponse, net::NetError> {
+    net::request(&net::OutboundRequest {
+        method: "GET".to_owned(),
+        url: url.to_owned(),
+        headers: headers.to_vec(),
+        body: Vec::new(),
+    })
+}
+
+/// The M2-K14 outbound matrix, driven from a real guest through the real
+/// daemon: `net-out:<allowed>,<denied>`. One revertible fs write joins it,
+/// so the daemon can build a revert UNIT that contains both a revertible
+/// effect and the irreversible call.
+fn outbound_mode(arg: &str) -> Result<(), GuestFault> {
+    let (allowed, denied) = arg
+        .split_once(',')
+        .ok_or_else(|| GuestFault::Failed("net-out wants <allowed>,<denied>".into()))?;
+    fs::write("/kept", b"written before the call", "").map_err(fs_fault)?;
+    // 1. An allowed authority answers, credential and query carried.
+    let answer = get(
+        &format!("http://127.0.0.1:{allowed}/probe?access_token={SECRET_TEXT}"),
+        &[("authorization".to_owned(), format!("Bearer {SECRET_TEXT}"))],
+    )
+    .map_err(net_fault)?;
+    if (answer.status, answer.body.as_slice()) != (200, b"pong".as_slice()) {
+        return Err(GuestFault::Failed(format!(
+            "the allowed call did not answer: {} {:?}",
+            answer.status, answer.body
+        )));
+    }
+    // 2. An off-allowlist authority is denied.
+    match get(&format!("http://127.0.0.1:{denied}/probe"), &[]) {
+        Err(net::NetError::Denied(_)) => {}
+        other => {
+            return Err(GuestFault::Failed(format!(
+                "an off-allowlist call was not denied: {other:?}"
+            )));
+        }
+    }
+    // 3. A malformed URL is a THIRD answer, never the same as a refusal.
+    match get("not a url", &[]) {
+        Err(net::NetError::Invalid(_)) => {}
+        other => {
+            return Err(GuestFault::Failed(format!(
+                "a malformed url was not invalid: {other:?}"
+            )));
+        }
+    }
+    // 4. A redirect off the allowlist is ANSWERED, never followed — and
+    //    the guest's own follow-up is authorized like any other call.
+    let hop = get(&format!("http://127.0.0.1:{allowed}/redirect"), &[]).map_err(net_fault)?;
+    if hop.status != 302 {
+        return Err(GuestFault::Failed(format!(
+            "the redirect was not answered: {}",
+            hop.status
+        )));
+    }
+    let location = hop
+        .headers
+        .iter()
+        .find(|(name, _)| name == "location")
+        .map(|(_, value)| value.clone())
+        .ok_or_else(|| GuestFault::Failed("the redirect carried no location".into()))?;
+    match get(&location, &[]) {
+        Err(net::NetError::Denied(_)) => Ok(()),
+        other => Err(GuestFault::Failed(format!(
+            "following the redirect was not denied: {other:?}"
+        ))),
+    }
+}
+
+/// The widening demonstration (`net-widen:<id>@<port>`): the entry tries to
+/// patch its OWN grants to add the target to its outbound allowlist, and
+/// the call is still refused afterwards.
+fn widen_mode(arg: &str) -> Result<(), GuestFault> {
+    let (id, port) = arg
+        .split_once('@')
+        .ok_or_else(|| GuestFault::Failed("net-widen wants <id>@<port>".into()))?;
+    let patch = format!(
+        r#"{{"grants":[{{"contract":"jinn:net","scope":{{"outbound":["127.0.0.1:{port}"]}}}}]}}"#
+    );
+    let answer = operator_call("jinn:profile", "patch-entry", &patch_payload(id, &patch))?;
+    let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
+    if answer.first() != Some(&1) {
+        return Err(GuestFault::Failed(format!(
+            "an entry widened its own grants: {answer:?}"
+        )));
+    }
+    if !reason.contains("itself") {
+        return Err(GuestFault::Failed(format!(
+            "the refusal did not name the reason: {reason}"
+        )));
+    }
+    match get(&format!("http://127.0.0.1:{port}/probe"), &[]) {
+        Err(net::NetError::Denied(_)) => Ok(()),
+        other => Err(GuestFault::Failed(format!(
+            "the call was admitted after a refused widening: {other:?}"
+        ))),
     }
 }
 
