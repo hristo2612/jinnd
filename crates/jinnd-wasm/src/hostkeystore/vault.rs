@@ -12,7 +12,7 @@ use jinnd_api::{ErrorCode, KernelError};
 
 use super::master::{MasterKeySource, entropy};
 use crate::broker_state::refusal;
-use crate::hostfs::retention::commit_atomic;
+use crate::hostfs::retention::{commit_atomic, sweep_staged};
 use crate::hostwire::{Reader, put_segment};
 
 const STORE_FILE: &str = "secrets.bin";
@@ -83,6 +83,9 @@ impl Vault {
     /// served empty).
     pub(crate) fn open(dir: &Path, source: MasterKeySource) -> Result<Self, KernelError> {
         std::fs::create_dir_all(dir).map_err(|error| failed("create", &error))?;
+        // The sealed document commits through the same protocol, so the
+        // same crash leaves the same orphan here (M2-K19; I4).
+        sweep_staged(dir);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

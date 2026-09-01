@@ -39,7 +39,20 @@ sensitivity = "personal"
 effect      = "revertible"
 sensitivity = "personal"
 # Inverse obligation (03): restore the file's prior content, or prior absence.
-# Witness: post-inverse state observationally equal to pre-state under [equality].
+# Witness: post-inverse state observationally equal to pre-state under [recovery]
+# Crash recovery of an interrupted commit (M2-K19; I4). `<name>.jinnd-stage`
+# is the staging name of `<name>` and is RESERVED to the kernel by the
+# `stage-fsync-rename` commit shape declared above. A crash between the
+# `create` that opens the window and the `rename` that closes it leaves that
+# staged file behind. The rename IS the commit point, so such a file has no
+# claim on any state: the target holds its prior content and the effect
+# either never registered or has a durable inverse restoring exactly that
+# prior. It is therefore DELETED when the provider next opens, never adopted
+# — the bytes may be a prefix that `sync_all` never made durable. I4: a
+# crash leaves no trace a clean shutdown does not.
+policy = "sweep-staged-on-open-never-adopt"
+
+[equality].
 inverse     = "restore-prior-content-or-absence"
 # Commit shape (M2-K8, harness #22): staged beside the target as
 # `<name>.jinnd-stage`, fsynced, renamed into place — a concurrent reader

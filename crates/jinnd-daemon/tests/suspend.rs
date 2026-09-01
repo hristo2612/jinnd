@@ -232,13 +232,57 @@ fn spawn_daemon(paths: &DaemonPaths) -> std::process::Child {
         .spawn()
         .unwrap_or_else(|error| panic!("spawn jinnd: {error}"));
     let deadline = Instant::now() + Duration::from_secs(30);
-    while std::fs::read(paths.data.join("log/a.txt")).ok().as_deref() != Some(b"one\ntwo\n")
-        || paths.data.join("log/b.txt").exists()
-    {
+    while !bundle_settled(paths) {
         assert!(Instant::now() < deadline, "the entry activates in time");
         std::thread::sleep(Duration::from_millis(50));
     }
     child
+}
+
+/// Whether any staged file is left anywhere under `dir` — the kernel's
+/// reserved `<name>.jinnd-stage` (`crates/jinnd-wasm/src/hostfs/retention.rs`,
+/// `STAGE_SUFFIX`), which exists only between the `create` that opens a
+/// commit window and the `rename` that closes it.
+fn staged_present(dir: &std::path::Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| name.ends_with(".jinnd-stage"))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The readiness predicate (M2-K19). `log/b.txt`'s ABSENCE is ambiguous:
+/// the guest has not staged it yet, or it is staged and the rename has not
+/// landed. The old gate tested only that absence, so it could return
+/// mid-write and sample a commit in flight — which is why SIGKILL and
+/// SIGINT were seen disagreeing by exactly one `.jinnd-stage` file.
+///
+/// What separates the two states is what only ever grows: the retained
+/// inverses, one persisted per effect BEFORE its mutation commits. The
+/// bundle registers four (`write a`, `append a`, `write b`, `remove b`),
+/// so at four the REMOVE's inverse is already durable — which means the
+/// write of `b.txt` committed, so `b.txt` absent now means the remove
+/// committed too, not that the write has yet to start. The staged-file
+/// check closes the last window: no commit is in flight anywhere, in the
+/// guest's tree or in the spill. Only then is the disk final and a crash
+/// and a clean shutdown obliged to agree on it.
+fn bundle_settled(paths: &DaemonPaths) -> bool {
+    std::fs::read(paths.data.join("log/a.txt")).ok().as_deref() == Some(b"one\ntwo\n")
+        && !paths.data.join("log/b.txt").exists()
+        && inverse_files(paths) >= 4
+        && !staged_present(&paths.data)
+        && !staged_present(&paths.inverses())
 }
 
 /// Ruling 2, composition-shaped: the real daemon under SIGINT preserves the

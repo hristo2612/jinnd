@@ -13,9 +13,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::super::retention::{Header, Prior, Record, commit_atomic};
 use super::super::effect_label;
-use super::{FS_CONTRACT, HostFs, Home, Recording, home};
+use super::super::retention::{Header, Prior, Record, commit_atomic};
+use super::{FS_CONTRACT, Home, HostFs, Recording, home};
 use crate::peer::LedgerSink;
 
 /// Names the target the child process must commit to; its presence is what
@@ -135,8 +135,17 @@ fn a_crash_inside_the_stage_window_leaves_an_orphan_the_next_boot_sweeps() {
         let _ = std::fs::remove_file(&target);
     }
     assert!(forced, "a crash was forced inside the stage window");
-    assert!(staged.exists(), "the crash left the staged file behind");
     assert!(!target.exists(), "the commit never landed: no target");
+    // The orphan is the real staged artifact of the real write, caught
+    // between `create` and `rename`: a prefix of the payload, never the
+    // renamed target.
+    let orphan =
+        std::fs::read(&staged).unwrap_or_else(|error| panic!("the orphan is there: {error}"));
+    assert!(
+        orphan.len() <= PAYLOAD && orphan.iter().all(|byte| *byte == b'K'),
+        "the orphan is a prefix of the interrupted write: {} bytes",
+        orphan.len()
+    );
 
     let _provider = reboot(&home);
     assert!(
