@@ -8,7 +8,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::super::{LocalTopics, TRANSITIONS_TOPIC};
-use super::{Timed, Trapping, settled};
+use super::{Timed, Trap, Trapping, settled};
+use crate::peer::LedgerSink;
+use crate::topics::tests::RecordingSink;
 
 /// R11 SIBLING ISOLATION **ACROSS SUCCESSIVE PUBLISHES** — the defect
 /// the M2-K13 round-2 verifier measured at 305 ms after round 2 made
@@ -139,6 +141,7 @@ async fn a_trap_reaches_neither_a_sibling_nor_the_lanes_next_transition() {
             start,
             seen: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             traps: 1,
+            site: Trap::Inside,
         }),
     );
     topics.listen(
@@ -166,5 +169,82 @@ async fn a_trap_reaches_neither_a_sibling_nor_the_lanes_next_transition() {
         1,
         "the trapping listener's OWN lane survived its trap and took the \
          next transition (R11)"
+    );
+}
+
+/// A trap raised BEFORE the future is returned is contained too (R11) —
+/// the M2-K13 round-3 verifier's probe, reproduced as the case. `deliver`
+/// is the listener's own code and it runs on whatever stack calls it, so
+/// containment that wraps only the RETURNED FUTURE never sees a panic
+/// raised on the way to producing one: the probe accepted two publishes
+/// and recorded `deliver_calls=1`, because the first synchronous trap
+/// killed the lane loop and the second transition never ran.
+///
+/// What makes that a SELF-CONTRADICTION rather than a rough edge — and
+/// so not eligible to land as a known limit — is the silence. This
+/// packet's entire back-pressure claim is that a transition a listener
+/// does not get is bounded, COUNTED and ledgered. A dead lane loses
+/// every later transition with no `PublishDropped` row and no failure
+/// count, which is the absence class this program keeps meeting.
+///
+/// So both halves are asserted: the lane still CALLS the listener again
+/// and the next transition lands, and the trap that did happen is on the
+/// ledger as a counted failure rather than as nothing at all.
+#[tokio::test(start_paused = true)]
+async fn a_trap_before_the_future_is_returned_does_not_kill_the_lane() {
+    let sink = Arc::new(RecordingSink::default());
+    let topics = LocalTopics::traced(Arc::clone(&sink) as Arc<dyn LedgerSink>);
+    let start = Instant::now();
+    let landed = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    topics.listen(
+        TRANSITIONS_TOPIC,
+        0,
+        1,
+        None,
+        Arc::new(Trapping {
+            landed: Arc::clone(&landed),
+            start,
+            seen: Arc::clone(&calls),
+            traps: 1,
+            site: Trap::Before,
+        }),
+    );
+    // Exactly the probe: two publishes, both accepted, the first
+    // trapping synchronously.
+    assert_eq!(topics.publish(TRANSITIONS_TOPIC, b"one"), 1);
+    assert_eq!(topics.publish(TRANSITIONS_TOPIC, b"two"), 1);
+    assert_eq!(
+        settled(&landed, 1).await.len(),
+        1,
+        "the lane died on a synchronous trap and its next transition \
+         never ran (R11)"
+    );
+    // PRECONDITION, asserted: the listener really was CALLED twice, so
+    // the delivery above is the second transition and not a retry of the
+    // first — `deliver_calls=1` was the probe's whole finding.
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "deliver_calls"
+    );
+    // AND THE TRAP IS NOT SILENT: the delivery that failed is counted on
+    // the ledger, so no transition goes missing without a row (Law 2).
+    let failures: u32 = sink
+        .recorded()
+        .iter()
+        .filter_map(|(kind, _)| match kind {
+            jinnd_api::LedgerEventKind::DispatchTrace {
+                topic, failures, ..
+            } => {
+                assert_eq!(topic, TRANSITIONS_TOPIC);
+                Some(*failures)
+            }
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        failures, 1,
+        "a contained trap is a COUNTED failure, never an absence"
     );
 }

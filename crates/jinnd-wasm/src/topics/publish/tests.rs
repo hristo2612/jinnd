@@ -43,6 +43,16 @@ impl EventTarget for Timed {
     }
 }
 
+/// WHERE a listener's trap lands, which is the whole of M2-K13 round 4:
+/// a trap `Inside` the future is contained by the task the delivery runs
+/// on, but one `Before` it is raised by `deliver` ITSELF, on whatever
+/// stack made the call — so containment that wraps only the future never
+/// sees it.
+pub(super) enum Trap {
+    Before,
+    Inside,
+}
+
 /// A listener that TRAPS on its first `traps` deliveries and answers
 /// after that — so a lane that survived a trap can be seen carrying
 /// the next transition rather than merely not crashing.
@@ -51,6 +61,7 @@ pub(super) struct Trapping {
     pub(super) start: Instant,
     pub(super) seen: Arc<std::sync::atomic::AtomicUsize>,
     pub(super) traps: usize,
+    pub(super) site: Trap,
 }
 
 impl EventTarget for Trapping {
@@ -64,6 +75,10 @@ impl EventTarget for Trapping {
         let start = self.start;
         let attempt = self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let trap = attempt < self.traps;
+        assert!(
+            !(trap && matches!(self.site, Trap::Before)),
+            "a listener trapped BEFORE returning its future"
+        );
         Box::pin(async move {
             assert!(!trap, "a listener trapped inside its delivery");
             lock(&landed).push(start.elapsed());

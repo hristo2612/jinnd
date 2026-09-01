@@ -81,7 +81,20 @@ impl Lane {
                 // lane nor a sibling's (R9, R11). Serial WITHIN the lane:
                 // isolation across listeners is never reordering inside
                 // one, so a listener sees transitions in commit order.
-                let settled = tokio::spawn(target.deliver(token, &topic, payload)).await;
+                //
+                // THE CALL IS INSIDE THE TASK, not its argument: `deliver`
+                // is the listener's own code and runs on whatever stack
+                // invokes it, so building the future out here would raise
+                // a synchronous trap on the LANE'S stack — outside the
+                // containment meant to hold it — and kill the loop. A dead
+                // loop then loses every later transition with no count and
+                // no ledger row, which is the absence this packet exists
+                // to refuse (R11, Law 2).
+                let listener = Arc::clone(&target);
+                let subject = topic.clone();
+                let settled =
+                    tokio::spawn(async move { listener.deliver(token, &subject, payload).await })
+                        .await;
                 if let Some(sink) = &sink {
                     sink.append(
                         LedgerEventKind::DispatchTrace {
