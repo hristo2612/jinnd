@@ -162,10 +162,12 @@ impl Lifecycle {
                 return;
             };
             for item in batch {
+                // Hands off; never joins (M2-K13 R11). The publish is not
+                // async, so no listener can hold this loop — and therefore
+                // no listener can hold a SIBLING's next transition.
                 self.lane
                     .topics
-                    .publish(TRANSITIONS_TOPIC, &payload(&item, mark))
-                    .await;
+                    .publish(TRANSITIONS_TOPIC, &payload(&item, mark));
             }
         }
     }
