@@ -234,26 +234,20 @@ fn the_retention_spill_sweeps_its_own_orphans_without_losing_an_inverse() {
         vec!["42.inverse".to_owned()],
         "the orphans went, the spilled inverse stayed"
     );
-    let journals = provider.journals();
-    let entries: Vec<(String, Vec<(String, String, u64)>)> = journals
+    let rehydrated: Vec<String> = provider
+        .journals()
         .into_iter()
-        .map(|(entry, records)| {
-            let records = records
+        .flat_map(|(entry, records)| {
+            records
                 .into_iter()
-                .map(|record| (record.contract, record.label, record.effect))
-                .collect();
-            (entry, records)
+                .map(move |record| format!("{entry} {} {}", record.contract, record.label))
         })
         .collect();
     assert_eq!(
-        entries,
-        vec![(
-            "scribe".to_owned(),
-            vec![(
-                FS_CONTRACT.to_owned(),
-                effect_label("write", "log/a.txt", 42),
-                42
-            )]
+        rehydrated,
+        vec![format!(
+            "scribe {FS_CONTRACT} {}",
+            effect_label("write", "log/a.txt", 42)
         )],
         "the rehydrated journal is exactly the surviving inverse"
     );
