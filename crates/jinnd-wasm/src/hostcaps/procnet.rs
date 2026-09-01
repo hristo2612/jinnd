@@ -10,7 +10,9 @@
 
 use crate::bindings::{net, process};
 use crate::handle::{HostRecord, Registration};
-use crate::hostwire::{self, Reader, decode_handle, encode_spawn, put_segment};
+use crate::hostwire::{
+    self, Reader, decode_handle, decode_response, encode_request, encode_spawn, put_segment,
+};
 use crate::instance::HostState;
 use jinnd_api::KernelError;
 
@@ -207,17 +209,23 @@ impl process::Host for HostState {
 }
 
 impl net::Host for HostState {
+    /// The outbound one-shot (M2-K14): admitted into the journal like any
+    /// effect (a sealed seat refuses on the record), then ONE crossing.
+    /// The call registers NO undo — it is declared irreversible, and a
+    /// journal entry claiming otherwise would be the Law-3 falsehood.
     async fn request(
         &mut self,
-        method: String,
-        url: String,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, net::NetError> {
-        let mut wire = Vec::new();
-        put_segment(&mut wire, method.as_bytes());
-        put_segment(&mut wire, url.as_bytes());
-        wire.extend(body);
-        Ok(crossing(self, NET_CONTRACT, "request", wire).await?)
+        req: net::OutboundRequest,
+    ) -> Result<net::OutboundResponse, net::NetError> {
+        self.admit("jinn:net request")?;
+        let wire = encode_request(&req.method, &req.url, &req.headers, &req.body);
+        let answer = crossing(self, NET_CONTRACT, "request", wire).await?;
+        let (status, headers, body) = decode_response(&answer)?;
+        Ok(net::OutboundResponse {
+            status,
+            headers,
+            body,
+        })
     }
 
     async fn listen(&mut self, addr: String) -> Result<u64, net::NetError> {

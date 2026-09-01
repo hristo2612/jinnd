@@ -8,14 +8,17 @@
 //! dispose alike (closed, ledgered). Every call is non-blocking (R1):
 //! `accept` and `read` answer `would-block`, `write` answers what the
 //! socket took. Bytes are data plane and are not ledgered. Readiness
+//! Outbound (M2-K14) is `request`: one authorized, bounded, IRREVERSIBLE
+//! call to a loopback target — see `request`. Readiness
 //! (M2-K7, harness #23): every held socket has a wake task that delivers
 //! `jinn:net/readable` to the holder when a listener has a pending
 //! connection or a connection has bytes/EOF — one wake per readiness
 //! transition the guest has not acted on, so a server holds NO alarm;
 //! the guest that ignores wakes and polls still works.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use jinnd_api::{ErrorCode, KernelError, KernelFuture, LedgerEventKind, RefusalReason};
 use tokio::io::unix::AsyncFd;
@@ -28,8 +31,12 @@ use crate::hostcaps::NET_CONTRACT;
 use crate::hostwire::encode_handle;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
+mod http;
 mod ops;
 mod readiness;
+mod request;
+#[cfg(all(test, not(feature = "loom")))]
+mod request_tests;
 mod socket;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
@@ -41,10 +48,16 @@ pub use readiness::READABLE_TOPIC;
 use socket::{Socket, Wake};
 use wake::WakeTable;
 
-/// The `jinn:net` provider: the table of live sockets and their wake state.
+/// The `jinn:net` provider: the table of live sockets and their wake
+/// state, plus the outbound calls it has made — which nothing can take
+/// back (M2-K14; Law 3).
 pub struct HostNet {
     core: ProviderCore<Socket>,
     wakes: WakeTable,
+    /// Every authorized outbound call, by effect id: its label and the
+    /// fiber it is charged to. Irreversible, so it is never consumed and
+    /// never withdrawn — it is the record a revert unit is refused for.
+    requests: Mutex<BTreeMap<u64, (String, Option<jinnd_api::FiberId>)>>,
 }
 
 fn failed(what: &str, error: &std::io::Error) -> KernelError {
@@ -58,6 +71,7 @@ impl HostNet {
         Arc::new(Self {
             core: ProviderCore::new(NET_CONTRACT, sink),
             wakes: WakeTable::default(),
+            requests: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -236,13 +250,7 @@ impl Peer for NetPeer {
         Box::pin(async move {
             match operation.as_str() {
                 "listen" => provider.listen(caller, payload).await,
-                // Declared, not provided (R10: no HTTP client in the
-                // kernel); typed so a caller classifies it, never a hang.
-                "request" => Err(refusal(
-                    ErrorCode::PluginFailed,
-                    "jinn:net request is not provided in v0.1 (no HTTP client in the kernel)"
-                        .to_owned(),
-                )),
+                "request" => provider.request(caller, payload).await,
                 other => provider.handle_op(caller, other, &payload).await,
             }
         })
