@@ -164,6 +164,13 @@ fn every_shipped_contract_bundle_is_well_formed() {
 fn the_reader_refuses_the_shapes_that_shipped_past_a_substring_assertion() {
     for (bundle, expected) in [
         ("[equality].\nkey = \"v\"\n", "malformed table header"),
+        // The round-2 hole: a dotted header with an EMPTY segment. TOML
+        // rejects it; a hand-written reader that checks the glyph set
+        // rather than the grammar waves it through.
+        (
+            "[recovery..policy]\non-failure = \"refuse-open\"\n",
+            "malformed table header",
+        ),
         ("[a]\nkey \"v\"\n", "neither a table header nor a key"),
         ("key = \"v\"\n", "sits outside any table"),
         ("[a]\nkey = unquoted\n", "unreadable value"),
