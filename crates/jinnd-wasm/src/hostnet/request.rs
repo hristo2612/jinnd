@@ -25,16 +25,17 @@
 //! guest instead of killing its activation (the M2-K12 lesson). No lock is
 //! held across an await.
 
-use std::net::SocketAddr;
 use std::time::Instant;
 
 use jinnd_api::{EffectId, KernelError, LedgerEventKind};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{Duration, timeout};
 
 use super::HostNet;
+use super::admit::Dial;
 use super::http;
+use super::tls;
 use crate::hostwire::{decode_body_request, decode_request, encode_response};
 use crate::peer::PeerId;
 
@@ -101,7 +102,7 @@ impl HostNet {
     ) -> Result<Answered, KernelError> {
         let target = http::parse(&url)?;
         let scope = self.outbound_scope(caller)?;
-        let addr = self.admit(caller, &scope, &target, None)?;
+        let dial = self.admit(caller, &scope, &target, None)?;
         let head = http::head(&method, &target, &headers, &body)?;
         let fiber = self.core.attribution(caller);
         // The attempt is an irreversible effect the moment it is
@@ -111,7 +112,10 @@ impl HostNet {
         let effect = EffectId(self.core.mint());
         let started = Instant::now();
         let sent = (head.len() + body.len()) as u64;
-        let outcome = timeout(BOUND, exchange(addr, head, &body)).await;
+        // The whole exchange — the TLS handshake included (M2-K15) — sits
+        // inside the one bound, so a peer that stalls mid-handshake
+        // answers the guest a typed failure instead of eating its deadline.
+        let outcome = timeout(BOUND, exchange(dial, &target.authority, head, &body)).await;
         let answered = match outcome {
             Ok(answered) => answered,
             Err(_elapsed) => Err(http::failed(format!(
@@ -151,23 +155,52 @@ impl HostNet {
     }
 }
 
-/// One exchange on one connection: dial, write the whole request, read the
-/// head, then exactly the body the head declares (or to EOF). The socket
-/// is dropped — closed — when this returns, whatever the outcome.
+/// One exchange on one connection: dial the ADMITTED target, complete the
+/// TLS handshake when the transport asks for one, then talk HTTP/1.1 over
+/// whatever came back. The socket is dropped — closed — when this returns,
+/// whatever the outcome.
+///
+/// The connection is dialled from a [`Dial`], which exists only on the far
+/// side of the allowlist: there is no path here that reaches an address
+/// admission never saw.
 async fn exchange(
-    addr: SocketAddr,
+    dial: Dial,
+    authority: &str,
     head: Vec<u8>,
     body: &[u8],
-) -> Result<(u16, Vec<(String, String)>, Vec<u8>), KernelError> {
-    let mut stream = TcpStream::connect(addr)
-        .await
-        .map_err(|error| http::failed(format!("connect {addr}: {error}")))?;
+) -> Result<Answered, KernelError> {
+    match dial {
+        Dial::Plain(addr) => {
+            let stream = TcpStream::connect(addr)
+                .await
+                .map_err(|error| http::failed(format!("connect {authority}: {error}")))?;
+            talk(stream, authority, head, body).await
+        }
+        Dial::Tls(host, port) => {
+            let stream = TcpStream::connect((host.as_str(), port))
+                .await
+                .map_err(|error| http::failed(format!("connect {authority}: {error}")))?;
+            let stream = tls::connect(&host, authority, stream).await?;
+            talk(stream, authority, head, body).await
+        }
+    }
+}
+
+/// One HTTP/1.1 exchange over an established stream, plaintext or TLS:
+/// write the whole request, read the head, then exactly the body the head
+/// declares (or to EOF).
+async fn talk<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    authority: &str,
+    head: Vec<u8>,
+    body: &[u8],
+) -> Result<Answered, KernelError> {
     let mut request = head;
     request.extend_from_slice(body);
     stream
         .write_all(&request)
         .await
-        .map_err(|error| http::failed(format!("write {addr}: {error}")))?;
+        .map_err(|error| http::failed(format!("write {authority}: {error}")))?;
     let mut buffer = Vec::new();
     let (head, mut held) = loop {
         if let Ok(parsed) = http::response(&buffer) {
@@ -182,7 +215,7 @@ async fn exchange(
         let read = stream
             .read(&mut chunk)
             .await
-            .map_err(|error| http::failed(format!("read {addr}: {error}")))?;
+            .map_err(|error| http::failed(format!("read {authority}: {error}")))?;
         if read == 0 {
             // EOF with no complete head: let the parser name it.
             break http::response(&buffer)?;
@@ -200,7 +233,7 @@ async fn exchange(
         let read = stream
             .read(&mut chunk)
             .await
-            .map_err(|error| http::failed(format!("read {addr}: {error}")))?;
+            .map_err(|error| http::failed(format!("read {authority}: {error}")))?;
         if read == 0 {
             break;
         }

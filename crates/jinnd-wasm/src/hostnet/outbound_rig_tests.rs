@@ -226,7 +226,11 @@ impl Rig {
     /// A GET through `door`, keeping the WHOLE error — what the caller is
     /// told, not just how it is classified. The M2-K15 redaction pins read
     /// the prose, so they need it (`door_get` throws it away).
-    pub(super) async fn door_get_told(&self, door: Door, url: &str) -> Result<Vec<u8>, KernelError> {
+    pub(super) async fn door_get_told(
+        &self,
+        door: Door,
+        url: &str,
+    ) -> Result<Vec<u8>, KernelError> {
         let payload = match door {
             Door::Declared => {
                 let mut wire = Vec::new();

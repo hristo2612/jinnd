@@ -303,6 +303,7 @@ fn net_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
             ))),
         },
         "net-out" => outbound_mode(arg),
+        "net-tls" => tls_mode(arg),
         "net-widen" => widen_mode(arg),
         other => Err(GuestFault::Failed(format!("unknown net mode {other}"))),
     }
@@ -384,6 +385,50 @@ fn outbound_mode(arg: &str) -> Result<(), GuestFault> {
         Err(net::NetError::Denied(_)) => Ok(()),
         other => Err(GuestFault::Failed(format!(
             "the declared shape bypassed the allowlist: {other:?}"
+        ))),
+    }
+}
+
+/// The M2-K15 TLS matrix through a real guest (`net-tls:<allowed>,<denied>`).
+///
+/// `allowed` speaks TLS behind a certificate the kernel does not anchor, so
+/// the guest sees `untrusted` — a THIRD refusal case beside `denied` and
+/// `failed`, which is the whole point of adding it. `denied` is off the
+/// allowlist and never dialled. The authorized-but-unbelieved call still
+/// LANDS its irreversible ledger row: the host test reverts it.
+fn tls_mode(arg: &str) -> Result<(), GuestFault> {
+    let (allowed, denied) = arg
+        .split_once(',')
+        .ok_or_else(|| GuestFault::Failed("net-tls wants <allowed>,<denied>".into()))?;
+    fs::write("/kept", b"written before the call", "").map_err(fs_fault)?;
+    // 1. Admitted, reached, and REFUSED on its certificate. The credential
+    //    rides along so the host test can grep the ledger for it.
+    match get(
+        &format!("https://127.0.0.1:{allowed}/probe?access_token={SECRET_TEXT}"),
+        &[("authorization".to_owned(), format!("Bearer {SECRET_TEXT}"))],
+    ) {
+        Err(net::NetError::Untrusted(_)) => {}
+        other => {
+            return Err(GuestFault::Failed(format!(
+                "an unanchored certificate was not untrusted: {other:?}"
+            )));
+        }
+    }
+    // 2. Off the allowlist over https is still DENIED, and denied first:
+    //    a caller learns nothing about a target it may not reach.
+    match get(&format!("https://127.0.0.1:{denied}/probe"), &[]) {
+        Err(net::NetError::Denied(_)) => {}
+        other => {
+            return Err(GuestFault::Failed(format!(
+                "an off-allowlist https call was not denied: {other:?}"
+            )));
+        }
+    }
+    // 3. The 0.1.0 declaration reaches the same door with the same answer.
+    match net::request("GET", &format!("https://127.0.0.1:{allowed}/probe"), &[]) {
+        Err(net::NetError::Untrusted(_)) => Ok(()),
+        other => Err(GuestFault::Failed(format!(
+            "the declared door answered differently: {other:?}"
         ))),
     }
 }

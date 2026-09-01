@@ -20,8 +20,21 @@ pub(super) fn invalid(detail: String) -> KernelError {
     refusal(ErrorCode::InvalidProfile, format!("net request: {detail}"))
 }
 
+/// Which transport a URL asks for, and therefore how far it may reach
+/// (M2-K15). Two transports, two reaches: `Tls` may reach any authority
+/// the allowlist admits, because the certificate — not the resolver —
+/// decides who answered; `Plain` keeps the loopback-only reach M2-K14 gave
+/// it, because a kernel that would carry a credential in the clear to an
+/// arbitrary host is not one TLS made safer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Transport {
+    Plain,
+    Tls,
+}
+
 /// One outbound target as the provider reads it off a URL.
 pub(super) struct Target {
+    pub(super) transport: Transport,
     /// The normalized `host:port` authority the allowlist is matched on.
     pub(super) authority: String,
     pub(super) host: String,
@@ -34,27 +47,33 @@ pub(super) struct Target {
     pub(super) path: String,
 }
 
-/// Reads one absolute `http://` URL.
+/// Reads one absolute `http://` or `https://` URL.
+///
+/// The scheme's default port is supplied when the URL omits it — 80 for
+/// http, 443 for https. That is a reading of a URL and never a widening of
+/// a grant: an allowlist entry is normalized on its own, where a missing
+/// port still means 80, so a grant meant for https names `:443` (Law 1).
 ///
 /// # Errors
 ///
 /// [`invalid`] for anything this provider cannot make sense of: another
-/// scheme (TLS is M2-K15), no authority, userinfo in the authority, or a
-/// port that is not a u16.
+/// scheme, no authority, userinfo in the authority, or a port that is not
+/// a u16.
 pub(super) fn parse(url: &str) -> Result<Target, KernelError> {
     let lower = url.to_lowercase();
-    if lower.starts_with("https://") {
-        return Err(invalid(
-            "https is not provided in v0.2 — no TLS stack in the kernel (M2-K15)".to_owned(),
-        ));
-    }
-    let rest = lower
-        .starts_with("http://")
-        .then(|| &url[7..])
-        .ok_or_else(|| invalid(format!("{url:?} is not an absolute http:// url")))?;
+    let (transport, scheme) = if lower.starts_with("https://") {
+        (Transport::Tls, "https://")
+    } else if lower.starts_with("http://") {
+        (Transport::Plain, "http://")
+    } else {
+        return Err(invalid(format!(
+            "{url:?} is not an absolute http:// or https:// url"
+        )));
+    };
+    let rest = &url[scheme.len()..];
     let split = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(split);
-    let (authority, host, port) = normalize_authority(authority)
+    let (authority, host, port) = normalize_authority(&defaulted(authority, transport))
         .ok_or_else(|| invalid(format!("{url:?} has no readable host:port authority")))?;
     let target = match tail.split_once('#') {
         Some((before, _)) => before,
@@ -63,12 +82,31 @@ pub(super) fn parse(url: &str) -> Result<Target, KernelError> {
     let target = if target.is_empty() { "/" } else { target };
     let path = target.split_once('?').map_or(target, |(path, _)| path);
     Ok(Target {
+        transport,
         authority,
         host,
         port,
         target: target.to_owned(),
         path: path.to_owned(),
     })
+}
+
+/// Writes the scheme's default port onto an authority that names none, so
+/// one normalizer answers both schemes. A bracketed IPv6 literal carries
+/// its port after the `]`; anything else, after the single `:`.
+fn defaulted(authority: &str, transport: Transport) -> String {
+    if transport == Transport::Plain {
+        return authority.to_owned();
+    }
+    let ported = match authority.rsplit_once(']') {
+        Some((_, tail)) => tail.starts_with(':'),
+        None => authority.contains(':'),
+    };
+    if ported || authority.is_empty() {
+        authority.to_owned()
+    } else {
+        format!("{authority}:443")
+    }
 }
 
 /// Builds the request head. The kernel writes the framing headers; a

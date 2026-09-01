@@ -138,8 +138,8 @@ pub(super) fn tls_target(identity_of: Identity, answer: Answer) -> Target {
     .with_single_cert(leaf.chain, leaf.key)
     .unwrap_or_else(|error| panic!("server cert: {error}"));
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap_or_else(|error| panic!("bind: {error}"));
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("bind: {error}"));
     let port = listener
         .local_addr()
         .unwrap_or_else(|error| panic!("addr: {error}"))
