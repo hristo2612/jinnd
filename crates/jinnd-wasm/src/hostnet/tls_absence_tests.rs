@@ -94,10 +94,19 @@ fn the_extra_anchor_seam_is_cfg_test_at_every_occurrence() {
                 .find(|earlier| !earlier.trim().is_empty())
                 .map(|earlier| earlier.trim())
                 .unwrap_or_default();
-            assert_eq!(
-                guard,
-                "#[cfg(test)]",
-                "{path}:{}: the anchor seam is not test-only",
+            // The crate's test-only guard, in the two forms its test
+            // modules use. `cfg(test)` ALONE is not enough here and the
+            // loom job proved it on the first push: the rig feeding the
+            // seam is configured out under `--features loom`, so the
+            // seam's guard has to carry the same exclusion or the crate
+            // does not compile there. Both spellings are test-only, and
+            // neither is reachable from a release build — which is the
+            // property this pin exists for.
+            const TEST_ONLY: [&str; 2] =
+                ["#[cfg(test)]", "#[cfg(all(test, not(feature = \"loom\")))]"];
+            assert!(
+                TEST_ONLY.contains(&guard),
+                "{path}:{}: the anchor seam is guarded {guard:?}, which is not test-only",
                 index + 1
             );
         }

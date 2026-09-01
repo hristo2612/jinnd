@@ -66,7 +66,7 @@ pub(super) fn untrusted(detail: String) -> KernelError {
 fn anchors() -> RootCertStore {
     let mut store = RootCertStore::empty();
     store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "loom")))]
     extra_anchors(&mut store);
     store
 }
@@ -74,8 +74,13 @@ fn anchors() -> RootCertStore {
 /// THE ONE TEST-ONLY SEAM (M2-K15). It adds trust anchors; it never
 /// weakens verification, and there is no code in this crate that can —
 /// rustls' bypass door is not called anywhere and no verifier of our own
-/// exists. `#[cfg(test)]`, so it is not in a release build at all.
-#[cfg(test)]
+/// exists. It is not in a release build at all.
+///
+/// The guard carries the loom exclusion because the rig that feeds it
+/// does: a bare `cfg(test)` compiled here and NOT under `--features
+/// loom`, which the loom job caught on the first push. Local greens are
+/// one build of one crate on one platform (M2-K12).
+#[cfg(all(test, not(feature = "loom")))]
 fn extra_anchors(store: &mut RootCertStore) {
     for anchor in super::tls_rig_tests::anchor() {
         store
