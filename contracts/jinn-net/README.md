@@ -2,8 +2,14 @@
 
 The base host-provider network contract (M2-K6; R7): the server edition an
 operator API needs — `listen` / `accept` / `read` / `write` / `close` on
-loopback — plus the outbound one-shot `request`, provided from 0.2.0
-(M2-K14) for plain HTTP to a loopback target.
+loopback — plus the outbound one-shot, provided from 0.2.0 (M2-K14) for
+plain HTTP to a loopback target.
+
+0.1.0 -> 0.2.0 is STRICTLY ADDITIVE (R12). `request(method, url, body)`
+keeps its 0.1.0 declaration byte for byte and starts working;
+`send-request(outbound-request) -> outbound-response` arrives beside it
+with the shape a real call needs. One door, two handles: same authority,
+same ledger row, same effect class.
 
 ## Grant
 
@@ -43,7 +49,7 @@ once; what was just consumed never re-announces).
 A server holds no alarm. A guest that ignores wakes and polls (from a
 `jinn:clock` alarm) still works.
 
-## Outbound `request` (0.2.0, M2-K14)
+## Outbound `request` / `send-request` (0.2.0, M2-K14)
 
 Authority is the grant's `outbound` allowlist. An allowlist entry and a
 request URL are both normalized to `host:port` (lowercased host, port 80
@@ -56,7 +62,7 @@ which one it got:
 
 | answer | means |
 |---|---|
-| `denied(reason)` | off the allowlist, or a target that is not loopback |
+| `denied(reason)` | off the allowlist, or a target that is not loopback — including the authority a `30x` redirects to |
 | `invalid(reason)` | a URL this provider cannot make sense of: not `http://`, no host, userinfo in the authority, a bad port |
 | `failed(reason)` | the call was authorized and the network, the bound, or the response failed |
 
@@ -67,12 +73,12 @@ Stated limits of 0.2.0, each with its reason:
   `localhost`. No resolver is consulted: name resolution is ambient
   authority, and a name that resolves off-loopback is exactly the hole the
   allowlist exists to close.
-- **A `30x` is answered, never followed.** The status and headers reach the
-  caller; the kernel makes no second request. That closes the redirect hole
-  by construction rather than by re-checking: the kernel cannot make a call
-  the allowlist did not admit because it makes exactly one call. A caller
-  that wants the redirect issues its own `request`, which is authorized
-  like any other.
+- **A `30x` is never followed, and an off-allowlist one is `denied` inside
+  the call.** The `location` crosses the same admission the initial target
+  crossed; one this provider cannot parse cannot be proven admitted and is
+  refused too. A hop to an authority the caller may already reach is
+  answered, still unfollowed. The `NetRequested` row lands either way. Full
+  reasoning beside `send-request` in `contract.wit`.
 - **`transfer-encoding: chunked` is not decoded** — a typed `failed`. The
   provider sends `connection: close` and reads `content-length`, or to EOF.
 - **Bounded (R9).** 3s for the whole call — under the 5s guest-call
@@ -88,17 +94,23 @@ granting its authority.
 
 ## Irreversibility (Law 3)
 
-`request` is declared `effect = "irreversible"`. A sent request cannot be
-un-sent, so there is no inverse and no declared compensator. A revert unit
-containing a `request` event is REJECTED WHOLE and nothing in it is
-applied — a partial revert must never be mistakable for a clean one
-(03 §51).
+Both outbound operations are declared `effect = "irreversible"`: a sent
+request cannot be un-sent, so there is no inverse and no compensator, and
+a revert unit containing one is REJECTED WHOLE with a typed refusal naming
+WHICH call it could not revert (03 §51).
+
+The guarantee is DURABLE, not merely live. The `NetRequested` row carries
+the effect id, so the ledger IS the register of outbound calls and there
+is no second, in-memory one (R5). A daemon reopened over the same ledger
+still names an earlier process's request as irreversible, and seeds its
+effect counter past the durable high-water mark at boot so an id never
+names two calls.
 
 ## Ledger
 
 `NetListening { handle, port }`, `NetAccepted { listener, handle }`,
 `NetClosed { handle }`, `NetReadable { handle }` (one per delivered wake),
-and `NetRequested { method, host, path, status, request_bytes,
+and `NetRequested { effect, method, host, path, status, request_bytes,
 response_bytes, duration_ms }` — with the calling entry's attribution.
 Bytes are data plane and are not ledgered.
 
