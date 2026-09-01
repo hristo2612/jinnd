@@ -129,8 +129,28 @@ const SHIPPED: [(&str, &str); 8] = [
 /// The class pin. A contract of record that does not parse is not a
 /// contract, and no amount of care at review time has caught this shape —
 /// this is the fifth instance. Now a machine reads them all.
+///
+/// `include_str!` needs literal paths, so the list above is written by
+/// hand — which would make THIS assertion the next one that cannot fire,
+/// the moment a ninth bundle lands unlisted. So the list is checked
+/// against the directory rather than trusted.
 #[test]
 fn every_shipped_contract_bundle_is_well_formed() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts");
+    let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|refused| panic!("read {}: {refused}", dir.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.join("metadata.toml").is_file())
+        .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
+        .collect();
+    on_disk.sort();
+    let mut listed: Vec<String> = SHIPPED.iter().map(|(name, _)| (*name).to_owned()).collect();
+    listed.sort();
+    assert_eq!(
+        on_disk, listed,
+        "every bundle on disk is read here: add it to SHIPPED"
+    );
+
     for (name, bundle) in SHIPPED {
         if let Err(refused) = tables(bundle) {
             panic!("contracts/{name}/metadata.toml: {refused}");
