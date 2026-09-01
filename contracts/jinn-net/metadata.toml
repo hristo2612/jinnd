@@ -1,8 +1,8 @@
-# Contract-bundle metadata for jinn:net@0.1.0 (M2-K6)
+# Contract-bundle metadata for jinn:net@0.2.0 (M2-K6; outbound M2-K14)
 
 [contract]
 name    = "jinn:net"
-version = "0.1.0"
+version = "0.2.0"
 
 [scope]
 type   = "net-policy"
@@ -21,13 +21,30 @@ type   = "net-policy"
 # Profile syntax (04 §Format): `{ contract = "jinn:net", scope = { bind =
 # [7800, 7899] } }`.
 subset = "bind-range-containment-and-outbound-host-subset"
+# OUTBOUND MATCHING (M2-K14). An `outbound` entry and a request URL are
+# both normalized to `host:port` — lowercased host, the scheme's default
+# port (80 for http) supplied when the entry or the URL omits it — and the
+# entry admits the URL iff the two normal forms are EQUAL. No wildcards, no
+# suffix match, no "host alone means every port": granting `example.com`
+# confers `example.com:80` and nothing else, exactly as a bind grant of
+# `[1000,1000]` and `[2000,2000]` never confers 1500 (Law 1, the M2-K8
+# round-3 ruling read for hosts). A plugin cannot widen its own allowlist:
+# `jinn:net` has no operation that writes a grant, and `jinn:profile`
+# refuses an entry patching itself. KNOWN LIMIT, stated: an entry granted
+# `jinn:profile` over ANOTHER entry can widen THAT entry's outbound
+# allowlist — granting profile-edit over an entry IS granting its
+# authority, and narrowing that is profile authoring, not kernel work.
 
 [operations.request]
-effect      = "read"
+# LAW 3, THE FIRST GENUINELY IRREVERSIBLE EFFECT (03 §Irreversible): a sent
+# request cannot be un-sent. There is no inverse and no declared
+# compensator — the kernel cannot know what would correct an arbitrary
+# call. A revert unit containing a `request` event is REJECTED WHOLE, with
+# a typed refusal naming the effect it could not revert and why; nothing in
+# the unit is applied, so a partial revert can never be mistaken for a
+# clean one (03 §51).
+effect      = "irreversible"
 sensitivity = "personal"
-# NOT PROVIDED in v0.1 (R10: no HTTP client in the kernel). The provider
-# answers a typed failure; the outbound allowlist is admitted and carried
-# for the edition that consumes it.
 
 [operations.listen]
 effect      = "kernel-registration"
@@ -63,9 +80,27 @@ relation = "live-socket-set-under-scope"
 # (ledgered); the next `activate` re-listens. Dispose closes them in the
 # LIFO trail.
 lifecycle = "kernel-registration-closed-on-suspend-relistened-on-activate"
-# Every listen, accept, and close is a ledger event with entry attribution
-# (Law 2). accept/read answer `would-block`, write answers the accepted
-# count (R1). Out of scope in v0.1: TLS, non-loopback listening, UDP.
+# Every listen, accept, close, and REQUEST is a ledger event with entry
+# attribution (Law 2). accept/read answer `would-block`, write answers the
+# accepted count (R1). Out of scope in v0.2: TLS and non-loopback outbound
+# (M2-K15), non-loopback listening, UDP.
+#
+# WHAT A REQUEST WRITES TO THE LEDGER (M2-K14; Law 2 vs 02 §Redaction).
+# `NetRequested { method, host, path, status, request_bytes,
+# response_bytes, duration_ms }` — the SHAPE of the call, never its
+# content. Never the request or response body, never any header (an
+# `Authorization` header carries exactly the credential the keystore
+# exists to protect), and never the URL's query string, which routinely
+# carries one too (`?access_token=`). The path is recorded up to `?`. A
+# URL carrying userinfo (`http://user:pw@host/`) is refused as `invalid`
+# rather than recorded with its credential stripped: the kernel does not
+# quietly accept a call whose authority it had to edit.
+#
+# BOUNDS (R9: nothing unbounded). The whole call is bounded at 3s —
+# deliberately UNDER the 5s guest-call deadline, so a slow target answers
+# the guest a typed `failed` instead of killing its activation (the M2-K12
+# lesson). The response body is capped at 1 MiB; past the cap the call is
+# a typed `failed`, never a truncated body passed off as whole.
 # Readiness wake (M2-K7, additive): `lifecycle.handle-event(handle,
 # "jinn:net/readable", 8-byte LE handle)` on a listener's pending
 # connection or a connection's bytes/EOF — one wake per transition the

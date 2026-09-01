@@ -9,10 +9,11 @@ const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
+    // 0.9.0 (M2-K14): `net.request` is provided and reshaped;
     // 0.8.0 (M2-K13): the kernel becomes a publisher on this world's bus;
     // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
     // 0.6.0 (M2-K9) the typed `restarting` one.
-    assert!(WORLD.contains("package jinn:plugin@0.8.0;"));
+    assert!(WORLD.contains("package jinn:plugin@0.9.0;"));
     assert!(WORLD.contains("Suspend ≠ dispose"));
 }
 
@@ -176,9 +177,39 @@ fn process_and_net_imports_return_their_bundles_errors() {
             WORLD.contains(declared),
             "the world carries {declared} verbatim"
         );
-        assert!(WORLD.contains(&format!("result<list<u8>, {error}>")));
     }
+    assert!(WORLD.contains("result<list<u8>, process-error>"));
     assert!(WORLD.contains("output-truncated }"));
+}
+
+/// M2-K14 (R12, Law 3): the world and the bundle ship the outbound one-shot
+/// with its version, its shape, and its irreversibility — a guest author
+/// learns from the contract, never from the implementation.
+#[test]
+fn the_world_and_the_bundle_declare_the_outbound_one_shot() {
+    const NET: &str = include_str!("../../../../contracts/jinn-net/contract.wit");
+    const META: &str = include_str!("../../../../contracts/jinn-net/metadata.toml");
+    assert!(NET.contains("package jinn:net@0.2.0;"));
+    for declared in [
+        "record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }",
+        "record outbound-response { status: u16, headers: list<header>, body: list<u8> }",
+        "request: func(req: outbound-request) -> result<outbound-response, net-error>;",
+    ] {
+        assert!(NET.contains(declared), "the bundle declares {declared}");
+        assert!(WORLD.contains(declared), "the world carries {declared}");
+    }
+    // Law 3 admits exactly two categories, and this one is DECLARED — with
+    // no inverse and no compensator to mistake for one.
+    let block = META
+        .split("[operations.request]")
+        .nth(1)
+        .and_then(|rest| rest.split("[operations.listen]").next())
+        .unwrap_or_else(|| panic!("the bundle declares operations.request"));
+    assert!(block.contains(r#"effect      = "irreversible""#), "{block}");
+    assert!(
+        !block.lines().any(|line| line.starts_with("inverse")),
+        "no inverse is declared: {block}"
+    );
 }
 
 /// M2-K13 (R3/R12/Law 2): the kernel's lifecycle PUBLISH is declared where
@@ -188,7 +219,6 @@ fn process_and_net_imports_return_their_bundles_errors() {
 #[test]
 fn the_world_and_the_bundle_declare_the_lifecycle_publish() {
     const INTROSPECT: &str = include_str!("../../../../contracts/jinn-introspect/contract.wit");
-    assert!(WORLD.contains("package jinn:plugin@0.8.0;"));
     assert!(WORLD.contains("KERNEL-RESERVED topic is REFUSED here in every mode"));
     assert!(WORLD.contains("subscribed under `jinn:introspect`"));
     assert!(INTROSPECT.contains("record transition {"));

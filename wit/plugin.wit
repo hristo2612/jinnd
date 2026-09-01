@@ -1,4 +1,4 @@
-/// jinn:plugin@0.7.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.9.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
@@ -35,6 +35,14 @@
 /// included: the kernel awaits every listener delivery end to end, so
 /// fire-and-forget discards the answer, never the wait.
 /// Additive: no existing case, signature, or meaning changes.
+/// 0.9.0 (M2-K14): `net.request` is PROVIDED — plain HTTP to a loopback
+/// target, authorized against the grant's `outbound` allowlist — and takes
+/// the shape a real call needs: `outbound-request` in (headers included),
+/// `outbound-response` out (status and headers included). This is the one
+/// signature change of the 0.x line, and it is one a 0.1.0 guest cannot
+/// have depended on: `request` answered a typed failure at EVERY call
+/// until now (contracts/jinn-net 0.2.0 states the same). `request` is
+/// declared IRREVERSIBLE: a revert unit containing one is rejected.
 /// A 0.x minor is semver's compatibility boundary (cargo's own reading);
 /// the only 0.1.0 guests are the in-tree fixtures and the harness, which
 /// adopts through its pin-bump procedure.
@@ -47,7 +55,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.8.0;
+package jinn:plugin@0.9.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -453,13 +461,30 @@ interface net {
   /// One non-blocking read: bytes now, nothing yet, or the peer's close.
   variant read-result { data(list<u8>), would-block, eof }
 
-  /// Performs one request, answering the response body. NOT PROVIDED in
-  /// v0.1 (the kernel carries no HTTP client, R10): the provider answers a
-  /// typed `failed`; the outbound allowlist scope is admitted
-  /// for the edition that consumes it (see the bundle README).
-  /// Broker wire: operation `request`, payload = u32-LE length + method
-  /// bytes, u32-LE length + url bytes, then the body.
-  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;
+  /// One request or response header line.
+  type header = tuple<string, string>;
+
+  /// One outbound call and its answer (0.9.0, M2-K14).
+  record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }
+  record outbound-response { status: u16, headers: list<header>, body: list<u8> }
+
+  /// Performs ONE outbound request and answers the response. Authorized
+  /// against the grant's `outbound` allowlist, matched on the URL's
+  /// normalized `host:port` (bundle metadata §scope). Effect class:
+  /// IRREVERSIBLE — a sent request cannot be un-sent, so no inverse and no
+  /// compensator exist and a revert unit containing one is rejected.
+  /// Three distinct refusals: `denied` off the allowlist or not loopback,
+  /// `invalid` for a URL this provider cannot make sense of, `failed` for
+  /// an authorized call the network or the response failed. v0.2 limits:
+  /// `http://` only (TLS is M2-K15), loopback literal targets only (no
+  /// resolver is consulted), a `30x` is ANSWERED and never followed, no
+  /// chunked decoding, a 1 MiB body cap and a 3s bound — under the guest
+  /// deadline, so a slow target answers rather than kills the activation.
+  /// Broker wire: operation `request`, payload = u32-LE header count, then
+  /// u32-LE-prefixed method, url, and each header name and value, then the
+  /// body; answer = u32-LE status, u32-LE header count, each header name
+  /// and value prefixed, then the body.
+  request: func(req: outbound-request) -> result<outbound-response, net-error>;
 
   /// Binds one loopback listener at `addr` (`ip:port`); a non-loopback
   /// address or a port outside the granted range is refused on the

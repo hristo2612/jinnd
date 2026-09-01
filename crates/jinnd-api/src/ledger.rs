@@ -114,6 +114,24 @@ pub enum LedgerEventKind {
     /// One `jinn:net` listener or connection closed — by the guest, or by
     /// the kernel releasing the registration (M2-K6).
     NetClosed { handle: u64 },
+    /// One `jinn:net` OUTBOUND REQUEST that was sent (M2-K14; Law 2 vs
+    /// constitution 02 §Redaction). The record is the call's SHAPE, never
+    /// its content: no body and no header — an `Authorization` header
+    /// carries exactly the credential the keystore exists to protect — and
+    /// `path` stops at `?`, because a query string carries one just as
+    /// readily. `status` is 0 when no response was read. The effect is
+    /// declared IRREVERSIBLE: this row is the only trace a sent request
+    /// can ever leave, so it is written whether the call succeeded or the
+    /// response failed. (Authorized M2-K14 additive facade delta.)
+    NetRequested {
+        method: String,
+        host: String,
+        path: String,
+        status: u16,
+        request_bytes: u64,
+        response_bytes: u64,
+        duration_ms: u64,
+    },
     /// One `jinn:net` readiness wake delivered to the plugin holding the
     /// socket (M2-K7, harness #23; Law 2): the listener has a pending
     /// connection, or the connection has bytes or EOF — one wake per

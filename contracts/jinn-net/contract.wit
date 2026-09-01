@@ -1,14 +1,21 @@
-// jinn:net@0.1.0 (M2-K6) — the base host-provider network contract.
+// jinn:net@0.2.0 (M2-K14) — the base host-provider network contract.
 // Host capability contract supplied by the kernel (01 §Mechanical closure):
-// `request` is the outbound one-shot (NOT PROVIDED in v0.1 — no HTTP client
-// in the kernel, R10; answered as a typed failure), the server edition
-// listens on loopback and serves connections. Listeners and connections are
-// KERNEL REGISTRATIONS (metadata `lifecycle`): closed and ledgered on
-// suspend and on dispose; a plugin re-listens in `activate`. Every call is
-// non-blocking (R1). The plugin world's `net` import (wit/plugin.wit,
-// 0.4.0) carries this interface verbatim with the broker wire beside each
-// operation; this bundle is the contract of record (R12).
-package jinn:net@0.1.0;
+// `request` is the outbound one-shot (PROVIDED from 0.2.0, plain HTTP to a
+// LOOPBACK target only), the server edition listens on loopback and serves
+// connections. Listeners and connections are KERNEL REGISTRATIONS (metadata
+// `lifecycle`): closed and ledgered on suspend and on dispose; a plugin
+// re-listens in `activate`. Every call is non-blocking (R1). The plugin
+// world's `net` import (wit/plugin.wit, 0.9.0) carries this interface
+// verbatim with the broker wire beside each operation; this bundle is the
+// contract of record (R12).
+//
+// 0.1.0 -> 0.2.0 (R12): `request` was declared NOT PROVIDED in 0.1.0 and
+// answered a typed failure at EVERY call, so no 0.1.0 caller could depend
+// on its answer shape. 0.2.0 provides it and gives it the shape a real
+// call needs — headers in, status and headers out. A 0.x MINOR is semver's
+// compatibility boundary (wit/plugin.wit states the same rule); every
+// other operation is unchanged.
+package jinn:net@0.2.0;
 
 interface net {
   // `not-found`: an unknown or foreign handle. Callers classify by case:
@@ -19,9 +26,32 @@ interface net {
   variant accept-result { connection(net-handle), would-block }
   variant read-result { data(list<u8>), would-block, eof }
 
-  // Outbound one-shot; authorized against the scope's outbound host
-  // allowlist by the edition that provides it.
-  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;
+  // One request or response header line.
+  type header = tuple<string, string>;
+
+  record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }
+  record outbound-response { status: u16, headers: list<header>, body: list<u8> }
+
+  // Outbound one-shot. effect = IRREVERSIBLE (Law 3, 03 §51): a sent
+  // request cannot be un-sent, there is no inverse, and a revert unit
+  // containing one is REJECTED — never partially applied, never silently
+  // skipped. No compensator is declared: the kernel cannot know what would
+  // correct an arbitrary call.
+  //
+  // Authority is the scope's `outbound` allowlist, matched on the URL's
+  // normalized `host:port` authority (metadata §scope). Refusals are three
+  // DISTINCT answers, never one blurred one: `denied` = off the allowlist
+  // (or a non-loopback target), `invalid` = a URL this provider cannot
+  // make sense of, `failed` = the call was authorized and the network or
+  // the response failed.
+  //
+  // v0.2 limits, stated: `http://` only (TLS is M2-K15); the target must
+  // resolve to LOOPBACK literally (`127.0.0.0/8`, `::1`, `localhost`) — no
+  // resolver is consulted; a `30x` is ANSWERED, never followed, so the
+  // kernel can never make a second request the allowlist did not admit;
+  // `transfer-encoding: chunked` is not decoded; the response body is
+  // capped and the whole call is bounded (metadata §notes).
+  request: func(req: outbound-request) -> result<outbound-response, net-error>;
 
   // effect = kernel registration: inverse obligation = close. Loopback
   // only in v0.1; the port must sit in the granted bind range.
