@@ -185,3 +185,86 @@ pub fn encode_handle(handle: u64) -> Vec<u8> {
 pub fn decode_handle(answer: &[u8]) -> Result<u64, KernelError> {
     Reader::new(answer, "handle answer").u64()
 }
+
+/// Decodes the 0.1.0 `request` wire: prefixed method, prefixed url, then
+/// the body — no header count, because that shape carries no header.
+///
+/// # Errors
+///
+/// A malformed payload.
+pub fn decode_body_request(payload: &[u8]) -> Result<(String, String, Vec<u8>), KernelError> {
+    let mut reader = Reader::new(payload, "net request");
+    let method = reader.text()?;
+    let url = reader.text()?;
+    Ok((method, url, reader.rest().to_vec()))
+}
+
+/// Encodes a `send-request` (M2-K14): u32-LE header count, then the method, the
+/// url, and each header name and value as prefixed segments, then the body.
+#[must_use]
+pub fn encode_request(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut wire = u32::try_from(headers.len())
+        .unwrap_or(u32::MAX)
+        .to_le_bytes()
+        .to_vec();
+    put_segment(&mut wire, method.as_bytes());
+    put_segment(&mut wire, url.as_bytes());
+    for (name, value) in headers {
+        put_segment(&mut wire, name.as_bytes());
+        put_segment(&mut wire, value.as_bytes());
+    }
+    wire.extend(body);
+    wire
+}
+
+/// Decodes a `request` (the shape [`encode_request`] writes).
+#[allow(clippy::type_complexity)]
+pub fn decode_request(
+    payload: &[u8],
+) -> Result<(String, String, Vec<(String, String)>, Vec<u8>), KernelError> {
+    let mut reader = Reader::new(payload, "net request");
+    let count = reader.u32()?;
+    let method = reader.text()?;
+    let url = reader.text()?;
+    let headers = (0..count)
+        .map(|_| Ok((reader.text()?, reader.text()?)))
+        .collect::<Result<Vec<_>, KernelError>>()?;
+    Ok((method, url, headers, reader.rest().to_vec()))
+}
+
+/// Encodes a response: u32-LE status, u32-LE header count, each header
+/// name and value prefixed, then the body.
+#[must_use]
+pub fn encode_response(status: u16, headers: &[(String, String)], body: &[u8]) -> Vec<u8> {
+    let mut wire = u32::from(status).to_le_bytes().to_vec();
+    wire.extend(
+        u32::try_from(headers.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for (name, value) in headers {
+        put_segment(&mut wire, name.as_bytes());
+        put_segment(&mut wire, value.as_bytes());
+    }
+    wire.extend(body);
+    wire
+}
+
+/// Decodes a response (the shape [`encode_response`] writes).
+#[allow(clippy::type_complexity)]
+pub fn decode_response(
+    answer: &[u8],
+) -> Result<(u16, Vec<(String, String)>, Vec<u8>), KernelError> {
+    let mut reader = Reader::new(answer, "net response");
+    let status = u16::try_from(reader.u32()?).unwrap_or(u16::MAX);
+    let count = reader.u32()?;
+    let headers = (0..count)
+        .map(|_| Ok((reader.text()?, reader.text()?)))
+        .collect::<Result<Vec<_>, KernelError>>()?;
+    Ok((status, headers, reader.rest().to_vec()))
+}

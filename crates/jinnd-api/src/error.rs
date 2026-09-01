@@ -32,6 +32,12 @@ pub enum ErrorCode {
     /// code, never by folding a generic error. (Authorized M2-K3 additive
     /// facade delta; harness finding 3.)
     NotFound,
+    /// The operation is declared `irreversible` at the contract level, so
+    /// no inverse exists and a revert unit containing it is rejected
+    /// whole (Law 3, constitution 03 §51). Operator-surface only: it
+    /// answers a revert, never a guest call. (Authorized M2-K14 additive
+    /// facade delta; "revert failed" is not an answer — R3.)
+    Irreversible,
 }
 
 /// Structured error value. Plugin panics are converted before crossing this boundary.

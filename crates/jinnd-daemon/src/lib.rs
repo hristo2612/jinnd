@@ -19,7 +19,7 @@ mod support;
 mod swap;
 mod watch;
 
-pub use daemon::Daemon;
+pub use daemon::{Daemon, UnitMember};
 pub use jinnd_wasm::{MasterKeySource, PASSPHRASE_ENV, PASSPHRASE_FILE_ENV, SwapOutcome};
 pub use paths::DaemonPaths;
 pub use watch::{Watch, log_report, log_status};

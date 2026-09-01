@@ -8,6 +8,9 @@
 //! dispose alike (closed, ledgered). Every call is non-blocking (R1):
 //! `accept` and `read` answer `would-block`, `write` answers what the
 //! socket took. Bytes are data plane and are not ledgered. Readiness
+//! Outbound (M2-K14) is `request` and `send-request`: one authorized,
+//! bounded, IRREVERSIBLE call to a loopback target — see `request`.
+//! Readiness
 //! (M2-K7, harness #23): every held socket has a wake task that delivers
 //! `jinn:net/readable` to the holder when a listener has a pending
 //! connection or a connection has bytes/EOF — one wake per readiness
@@ -28,8 +31,21 @@ use crate::hostcaps::NET_CONTRACT;
 use crate::hostwire::encode_handle;
 use crate::peer::{LedgerSink, Peer, PeerId};
 
+mod admit;
+mod http;
 mod ops;
+#[cfg(all(test, not(feature = "loom")))]
+mod outbound_rig_tests;
 mod readiness;
+mod request;
+#[cfg(all(test, not(feature = "loom")))]
+mod request_bounds_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod request_doors_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod request_record_tests;
+#[cfg(all(test, not(feature = "loom")))]
+mod request_tests;
 mod socket;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
@@ -41,7 +57,10 @@ pub use readiness::READABLE_TOPIC;
 use socket::{Socket, Wake};
 use wake::WakeTable;
 
-/// The `jinn:net` provider: the table of live sockets and their wake state.
+/// The `jinn:net` provider: the table of live sockets and their wake
+/// state. The outbound calls it has made are NOT held here — they are
+/// irreversible, so the durable ledger row is their only register (R5:
+/// one mutation primitive; M2-K14 round 2).
 pub struct HostNet {
     core: ProviderCore<Socket>,
     wakes: WakeTable,
@@ -236,13 +255,8 @@ impl Peer for NetPeer {
         Box::pin(async move {
             match operation.as_str() {
                 "listen" => provider.listen(caller, payload).await,
-                // Declared, not provided (R10: no HTTP client in the
-                // kernel); typed so a caller classifies it, never a hang.
-                "request" => Err(refusal(
-                    ErrorCode::PluginFailed,
-                    "jinn:net request is not provided in v0.1 (no HTTP client in the kernel)"
-                        .to_owned(),
-                )),
+                "request" => provider.request(caller, payload).await,
+                "send-request" => provider.send_request(caller, payload).await,
                 other => provider.handle_op(caller, other, &payload).await,
             }
         })

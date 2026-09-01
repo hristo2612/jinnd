@@ -392,3 +392,69 @@ fn an_ops_attenuation_admits_declared_operations_only() {
         None
     );
 }
+
+/// M2-K14: an authority's normal form, and the allowlist match built on it
+/// — EQUALITY, never a prefix, a suffix, or a host that swallows every
+/// port (Law 1, the M2-K8 hull ruling read for hosts).
+#[test]
+fn an_outbound_entry_admits_its_own_authority_and_nothing_beside_it() {
+    use super::policy::normalize_authority;
+    for (written, normal) in [
+        ("example.com", "example.com:80"),
+        ("EXAMPLE.com:8080", "example.com:8080"),
+        ("127.0.0.1:7799", "127.0.0.1:7799"),
+        ("[::1]:7799", "[::1]:7799"),
+        ("[::1]", "[::1]:80"),
+    ] {
+        assert_eq!(
+            normalize_authority(written).map(|(normal, _, _)| normal),
+            Some(normal.to_owned()),
+            "{written}"
+        );
+    }
+    // Not a readable authority: userinfo (a credential is refused, never
+    // edited out), an empty host, a port that is not a u16, a path.
+    for bad in ["", "user:pw@host", ":80", "host:notaport", "host/path"] {
+        assert!(normalize_authority(bad).is_none(), "{bad}");
+    }
+    let scope = NetScope {
+        bind: Vec::new(),
+        outbound: vec!["example.com".to_owned(), "127.0.0.1:7799".to_owned()],
+    };
+    assert!(scope.admits_authority("example.com:80"));
+    assert!(scope.admits_authority("127.0.0.1:7799"));
+    for beside in [
+        "example.com:443",
+        "example.com:7799",
+        "sub.example.com:80",
+        "127.0.0.1:7800",
+        "127.0.0.2:7799",
+        "localhost:7799",
+    ] {
+        assert!(!scope.admits_authority(beside), "{beside}");
+    }
+    assert!(
+        !NetScope::default().admits_authority("example.com:80"),
+        "a bare grant reaches nothing"
+    );
+}
+
+/// Grants of one contract COMPOSE their outbound allowlists (round-2
+/// ruling 2): the union, never a widened wildcard.
+#[test]
+fn outbound_allowlists_compose_as_their_union() {
+    let mut held = GrantScope::Net(NetScope {
+        bind: Vec::new(),
+        outbound: vec!["a.example:80".to_owned()],
+    });
+    held.union(GrantScope::Net(NetScope {
+        bind: Vec::new(),
+        outbound: vec!["b.example:80".to_owned()],
+    }));
+    let GrantScope::Net(scope) = &held else {
+        panic!("net scope")
+    };
+    assert!(scope.admits_authority("a.example:80"));
+    assert!(scope.admits_authority("b.example:80"));
+    assert!(!scope.admits_authority("c.example:80"));
+}

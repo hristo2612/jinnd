@@ -1,14 +1,22 @@
-// jinn:net@0.1.0 (M2-K6) — the base host-provider network contract.
+// jinn:net@0.2.0 (M2-K14) — the base host-provider network contract.
 // Host capability contract supplied by the kernel (01 §Mechanical closure):
-// `request` is the outbound one-shot (NOT PROVIDED in v0.1 — no HTTP client
-// in the kernel, R10; answered as a typed failure), the server edition
-// listens on loopback and serves connections. Listeners and connections are
-// KERNEL REGISTRATIONS (metadata `lifecycle`): closed and ledgered on
-// suspend and on dispose; a plugin re-listens in `activate`. Every call is
-// non-blocking (R1). The plugin world's `net` import (wit/plugin.wit,
-// 0.4.0) carries this interface verbatim with the broker wire beside each
-// operation; this bundle is the contract of record (R12).
-package jinn:net@0.1.0;
+// `request` and `send-request` are the outbound one-shots (PROVIDED from
+// 0.2.0, plain HTTP to a LOOPBACK target only); the server edition listens
+// on loopback and serves
+// connections. Listeners and connections are KERNEL REGISTRATIONS (metadata
+// `lifecycle`): closed and ledgered on suspend and on dispose; a plugin
+// re-listens in `activate`. Every call is non-blocking (R1). The plugin
+// world's `net` import (wit/plugin.wit, 0.9.0) carries this interface
+// verbatim with the broker wire beside each operation; this bundle is the
+// contract of record (R12).
+//
+// 0.1.0 -> 0.2.0 (R12): STRICTLY ADDITIVE. `request` keeps its 0.1.0
+// declaration byte for byte and starts working; the shape a real call
+// needs — headers in, status and headers out — arrives as a NEW operation
+// beside it, `send-request`, with the records `outbound-request` and
+// `outbound-response` and the type `header`. No existing operation, case,
+// or meaning changes.
+package jinn:net@0.2.0;
 
 interface net {
   // `not-found`: an unknown or foreign handle. Callers classify by case:
@@ -19,9 +27,54 @@ interface net {
   variant accept-result { connection(net-handle), would-block }
   variant read-result { data(list<u8>), would-block, eof }
 
-  // Outbound one-shot; authorized against the scope's outbound host
-  // allowlist by the edition that provides it.
+  // Outbound one-shot, PROVIDED from 0.2.0 at its 0.1.0 DECLARATION,
+  // unchanged byte for byte: answers the response body alone and sends no
+  // header of its own. A caller needing headers, or the response's status
+  // and headers, calls `send-request`. R12 within a major admits addition
+  // and nothing else — a provision is not a licence to re-shape a declared
+  // operation, however reliably it used to fail.
   request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;
+
+  // One request or response header line (0.2.0).
+  type header = tuple<string, string>;
+
+  record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }
+  record outbound-response { status: u16, headers: list<header>, body: list<u8> }
+
+  // The whole-response outbound one-shot (0.2.0, ADDITIVE — added beside
+  // `request`, never in place of it). Both operations are ONE door with
+  // two handles: same authority, same ledger record, same effect class.
+  //
+  // effect = IRREVERSIBLE (Law 3, 03 §51): a sent request cannot be
+  // un-sent, there is no inverse, and a revert unit containing one is
+  // REJECTED — never partially applied, never silently skipped. No
+  // compensator is declared: the kernel cannot know what would correct an
+  // arbitrary call. The refusal is durable, not merely live: the ledger
+  // row carries the effect id, so a request stays irreversible across a
+  // daemon reopen rather than fading to an unknown handle.
+  //
+  // Authority is the scope's `outbound` allowlist, matched on the URL's
+  // normalized `host:port` authority (metadata §scope). Refusals are three
+  // DISTINCT answers, never one blurred one: `denied` = off the allowlist
+  // (or a non-loopback target), `invalid` = a URL this provider cannot
+  // make sense of, `failed` = the call was authorized and the network or
+  // the response failed.
+  //
+  // v0.2 limits, stated: `http://` only (TLS is M2-K15); the target must
+  // resolve to LOOPBACK literally (`127.0.0.0/8`, `::1`, `localhost`) — no
+  // resolver is consulted; `transfer-encoding: chunked` is not decoded;
+  // the response body is capped and the whole call is bounded (metadata
+  // §notes).
+  //
+  // REDIRECTS. A `30x` is never followed. One whose `location` names an
+  // authority the allowlist does not admit — or one the provider cannot
+  // parse, and so cannot prove admitted — is `denied` INSIDE this call,
+  // naming the authority. Answering the hop and trusting the caller not to
+  // take it would move the allowlist boundary out of the kernel and into
+  // the guarded party, which is not an authority at all. A `30x` to an
+  // authority the allowlist DOES admit is answered, still unfollowed: the
+  // caller may re-issue it, under the same check as any other call.
+  send-request: func(req: outbound-request) -> result<outbound-response, net-error>;
 
   // effect = kernel registration: inverse obligation = close. Loopback
   // only in v0.1; the port must sit in the granted bind range.

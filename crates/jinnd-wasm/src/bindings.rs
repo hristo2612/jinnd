@@ -30,9 +30,10 @@ pub fn wire_error(error: jinnd_api::KernelError) -> types::KernelError {
         }
         ErrorCode::EffectFailed => types::KernelError::GrantRefused(error.message),
         ErrorCode::NotFound => types::KernelError::ProviderFailed(error.message),
-        ErrorCode::DependencyCycle | ErrorCode::InvalidProfile | ErrorCode::DuplicateProvision => {
-            types::KernelError::Invalid(error.message)
-        }
+        ErrorCode::DependencyCycle
+        | ErrorCode::InvalidProfile
+        | ErrorCode::DuplicateProvision
+        | ErrorCode::Irreversible => types::KernelError::Invalid(error.message),
     }
 }
 
@@ -92,7 +93,8 @@ impl From<jinnd_api::KernelError> for process::ProcessError {
             ErrorCode::EffectFailed => Self::Denied(error.message),
             ErrorCode::DependencyCycle
             | ErrorCode::InvalidProfile
-            | ErrorCode::DuplicateProvision => Self::Invalid(error.message),
+            | ErrorCode::DuplicateProvision
+            | ErrorCode::Irreversible => Self::Invalid(error.message),
             _ => Self::Failed(error.message),
         }
     }
@@ -107,7 +109,8 @@ impl From<jinnd_api::KernelError> for net::NetError {
             ErrorCode::EffectFailed => Self::Denied(error.message),
             ErrorCode::DependencyCycle
             | ErrorCode::InvalidProfile
-            | ErrorCode::DuplicateProvision => Self::Invalid(error.message),
+            | ErrorCode::DuplicateProvision
+            | ErrorCode::Irreversible => Self::Invalid(error.message),
             _ => Self::Failed(error.message),
         }
     }
@@ -123,7 +126,8 @@ impl From<jinnd_api::KernelError> for keystore::KeystoreError {
             ErrorCode::EffectFailed => Self::Denied(error.message),
             ErrorCode::DependencyCycle
             | ErrorCode::InvalidProfile
-            | ErrorCode::DuplicateProvision => Self::Invalid(error.message),
+            | ErrorCode::DuplicateProvision
+            | ErrorCode::Irreversible => Self::Invalid(error.message),
             _ => Self::Failed(error.message),
         }
     }

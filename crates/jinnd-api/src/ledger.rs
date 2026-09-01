@@ -10,13 +10,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DispatchMode, EffectId, EntryId, FiberId, KernelError, Owed, Transition};
 
-/// Proof that one appended event is durable: the receipt resolves only after
-/// the event's commit returned, never before (constitution 02).
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Receipt {
-    /// The event's monotonic sequence in the device-local stream.
-    pub sequence: u64,
-}
+mod record;
+
+// Re-exported so every path stays exactly what it was. The revert
+// vocabulary deliberately does NOT move: `LedgerEventKind::RevertResolved`
+// carries a `RevertResolution`, so the two belong in one file.
+pub use record::{LedgerQuery, LedgerRecord, Receipt};
 
 /// The typed kernel-boundary event families of v0.1 (R3; constitution 02).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -114,6 +113,28 @@ pub enum LedgerEventKind {
     /// One `jinn:net` listener or connection closed — by the guest, or by
     /// the kernel releasing the registration (M2-K6).
     NetClosed { handle: u64 },
+    /// One `jinn:net` OUTBOUND REQUEST that was sent (M2-K14; Law 2 vs
+    /// constitution 02 §Redaction). The record is the call's SHAPE, never
+    /// its content: no body and no header — an `Authorization` header
+    /// carries exactly the credential the keystore exists to protect — and
+    /// `path` stops at `?`, because a query string carries one just as
+    /// readily. `status` is 0 when no response was read. The effect is
+    /// declared IRREVERSIBLE, and `effect` is what makes that DURABLE:
+    /// this row is the only trace a sent request can ever leave, so it is
+    /// written whether the call succeeded or the response failed, and it
+    /// carries the effect id a revert unit names — an irreversibility
+    /// that lived only in a live map would expire with the process.
+    /// (Authorized M2-K14 additive facade delta.)
+    NetRequested {
+        effect: EffectId,
+        method: String,
+        host: String,
+        path: String,
+        status: u16,
+        request_bytes: u64,
+        response_bytes: u64,
+        duration_ms: u64,
+    },
     /// One `jinn:net` readiness wake delivered to the plugin holding the
     /// socket (M2-K7, harness #23; Law 2): the listener has a pending
     /// connection, or the connection has bytes or EOF — one wake per
@@ -245,30 +266,6 @@ pub enum SwapPhaseKind {
     InstanceHealthy,
     Committed,
     RolledBack,
-}
-
-/// One event as recorded: monotonic sequence, wall-clock timestamp, typed
-/// kind, and attribution to the profile entry and/or fiber that caused it
-/// (the error→entry rule; the card's timestamped-event requirement).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct LedgerRecord {
-    pub sequence: u64,
-    /// Milliseconds since the Unix epoch, stamped by the writer as the event
-    /// commits. Ordering authority stays with `sequence`: wall clocks may
-    /// repeat or step; the sequence never does.
-    pub timestamp: u64,
-    pub kind: LedgerEventKind,
-    pub entry: Option<EntryId>,
-    pub fiber: Option<FiberId>,
-}
-
-/// A ledger read: by entry, by fiber, and/or from a sequence (inclusive).
-/// Empty means the whole stream, in sequence order.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct LedgerQuery {
-    pub entry: Option<EntryId>,
-    pub fiber: Option<FiberId>,
-    pub from_sequence: Option<u64>,
 }
 
 /// The idempotency key of one revert operation: a same-key retry of a
