@@ -45,6 +45,60 @@ impl NetScope {
             .iter()
             .any(|(low, high)| (*low..=*high).contains(&port))
     }
+
+    /// Whether the allowlist admits an outbound call to `authority`, given
+    /// already in the normal form [`normalize_authority`] answers (M2-K14).
+    ///
+    /// An entry admits the target iff their normal forms are EQUAL: no
+    /// wildcard, no suffix match, and no "the host alone means every port"
+    /// — granting `example.com` confers `example.com:80` and nothing else,
+    /// exactly as two disjoint bind ranges never confer the port between
+    /// them (Law 1, the M2-K8 round-3 ruling read for hosts). Fail-closed:
+    /// the empty allowlist, and an entry that is not a readable authority,
+    /// admit nothing.
+    #[must_use]
+    pub fn admits_authority(&self, authority: &str) -> bool {
+        self.outbound
+            .iter()
+            .filter_map(|entry| normalize_authority(entry))
+            .any(|(normal, _, _)| normal == authority)
+    }
+}
+
+/// One authority — `host`, `host:port`, or `[v6]:port` — in normal form:
+/// `(normal, host, port)`, host lowercased and `port` defaulted to 80 (the
+/// only scheme v0.2 speaks). `None` for anything that is not a readable
+/// authority: an empty host, userinfo (`user:pw@host` — a credential in a
+/// URL is refused, never quietly edited out), a port that is not a u16, or
+/// an unterminated v6 literal.
+#[must_use]
+pub fn normalize_authority(text: &str) -> Option<(String, String, u16)> {
+    if text.is_empty() || text.contains('@') || text.contains('/') {
+        return None;
+    }
+    let (host, port) = if let Some(rest) = text.strip_prefix('[') {
+        let (inside, tail) = rest.split_once(']')?;
+        (inside.to_owned(), tail.strip_prefix(':').map(str::to_owned))
+    } else {
+        match text.split_once(':') {
+            Some((host, port)) => (host.to_owned(), Some(port.to_owned())),
+            None => (text.to_owned(), None),
+        }
+    };
+    let port = match port {
+        None => 80,
+        Some(port) => port.parse().ok()?,
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.to_lowercase();
+    let normal = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    Some((normal, host, port))
 }
 
 /// Sorts and coalesces `ranges` in place: overlapping and ADJACENT ranges

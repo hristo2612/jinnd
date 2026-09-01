@@ -91,6 +91,14 @@ impl<T: Owned> ProviderCore<T> {
         self.next.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// Raises the counter's floor to `floor` so the next mint is strictly
+    /// above it (M2-K14). "Never reused" is a promise about ids, not about
+    /// process lifetimes: a provider whose ids outlive its process reads
+    /// its own high-water mark out of the durable record at boot.
+    pub(crate) fn seed(&self, floor: u64) {
+        self.next.fetch_max(floor, Ordering::SeqCst);
+    }
+
     pub(crate) fn insert(&self, handle: u64, row: T) {
         lock(&self.table).insert(handle, row);
     }

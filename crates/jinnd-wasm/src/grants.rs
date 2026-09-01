@@ -23,7 +23,7 @@ mod tests;
 
 use ops::admit_ops;
 pub(crate) use ops::attenuate;
-pub use policy::{EnvPolicy, GrantScope, NetScope, ProcessScope};
+pub use policy::{EnvPolicy, GrantScope, NetScope, ProcessScope, normalize_authority};
 
 /// The read-only composition contract's name (M2-K7, harness #19).
 pub const INTROSPECT_CONTRACT: &str = "jinn:introspect";

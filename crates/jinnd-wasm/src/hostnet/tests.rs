@@ -17,7 +17,7 @@ use crate::hostcaps::NET_CONTRACT;
 use crate::hostwire::{TAG_DATA, TAG_EOF, TAG_WOULD_BLOCK};
 use crate::peer::LedgerSink;
 
-struct Recording(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
+pub(super) struct Recording(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
 
 impl LedgerSink for Recording {
     fn append(&self, kind: LedgerEventKind, fiber: Option<FiberId>) {
@@ -29,7 +29,11 @@ impl LedgerSink for Recording {
 }
 
 impl Recording {
-    fn kinds(&self) -> Vec<(LedgerEventKind, Option<FiberId>)> {
+    pub(super) fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+
+    pub(super) fn kinds(&self) -> Vec<(LedgerEventKind, Option<FiberId>)> {
         self.0
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -314,10 +318,11 @@ async fn handles_are_caller_scoped_and_the_release_closes_on_the_record() {
     assert_eq!(rig.provider.live(), 0, "the guest's close releases too");
 }
 
-/// `request` is declared and not provided in v0.1: a typed provider
-/// failure, never a hang or a silent empty answer.
+/// A malformed `request` payload is the typed malformed answer, never a
+/// hang or a silent empty one. (`request` itself is provided from M2-K14;
+/// its authority, bounds and record are pinned in `request_tests`.)
 #[tokio::test]
-async fn request_is_declared_not_provided() {
+async fn a_malformed_request_payload_is_typed() {
     let rig = rig();
     assert_eq!(
         rig.call(rig.guest, "request", Vec::new()).await,
