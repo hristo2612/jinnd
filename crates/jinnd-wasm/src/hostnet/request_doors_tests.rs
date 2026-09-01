@@ -104,10 +104,17 @@ async fn both_doors_keep_invalid_distinct_from_denied() {
         let rig = rig(&["127.0.0.1:1"]);
         for bad in [
             "not a url",
-            "https://127.0.0.1:1/x",
+            // M2-K15: `https` is PROVIDED from 0.3.0, so the unsupported
+            // scheme that stands for "cannot make sense of it" is one the
+            // contract genuinely does not name. The reading is unchanged;
+            // only the example moved with the contract.
+            "ftp://127.0.0.1:1/x",
             "http://",
+            "https://",
             "http://user:pw@127.0.0.1:1/x",
+            "https://user:pw@127.0.0.1:1/x",
             "http://127.0.0.1:notaport/x",
+            "https://127.0.0.1:notaport/x",
         ] {
             assert_eq!(
                 rig.door_get(door, bad).await,

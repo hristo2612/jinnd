@@ -81,10 +81,15 @@ async fn the_three_refusals_are_three_distinct_answers() {
     let rig = rig(&["127.0.0.1:1"]);
     for bad in [
         "not a url",
-        "https://127.0.0.1:1/x",
+        // M2-K15: `https` is provided from 0.3.0; the unsupported scheme
+        // is now one the contract genuinely does not name.
+        "ftp://127.0.0.1:1/x",
         "http://",
+        "https://",
         "http://user:pw@127.0.0.1:1/x",
+        "https://user:pw@127.0.0.1:1/x",
         "http://127.0.0.1:notaport/x",
+        "https://127.0.0.1:notaport/x",
     ] {
         assert_eq!(
             rig.get(bad).await,
