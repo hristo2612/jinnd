@@ -104,11 +104,17 @@ interface composition {
   // or before it. A listener holding `jinn:ledger` can check that itself
   // rather than take it on trust.
   //
-  // BACK-PRESSURE. The kernel never waits on a listener. A listener slow
-  // enough to fill the kernel's bound LOSES transitions — and every loss
-  // is counted twice: as a `PublishDropped` ledger event, and as a gap in
-  // the `ordinal` this listener receives. Nothing is ever reordered:
-  // deliveries follow the order the kernel committed.
+  // BACK-PRESSURE, AND WHAT A SLOW SUBSCRIBER COSTS. The kernel never
+  // waits on a listener, and neither does any other listener: every
+  // subscriber has a delivery queue of its own, and the kernel hands its
+  // payload over without ever joining. A listener that dawdles inside
+  // `handle-event` therefore delays NOBODY — not the kernel, not a
+  // sibling, and not a sibling's next transition. It pays for its own
+  // slowness alone: once its own queue is full it LOSES transitions, and
+  // every loss is counted twice — as a `PublishDropped` ledger event, and
+  // as a gap in the `ordinal` this listener receives. Nothing is ever
+  // reordered: one subscriber's deliveries follow the order the kernel
+  // committed them in, whatever its siblings are doing.
   //
   // LATE JOIN AND REPLAY. There is NO replay, and a late joiner is told so
   // rather than left to assume otherwise: `ordinal` counts every

@@ -145,10 +145,8 @@ impl LocalTopics {
                 } = listener;
                 let opened = match lane {
                     Some(lane) => Some(&*lane),
-                    None => match Lane::open(target, *token, topic, sink.clone()) {
-                        Some(fresh) => Some(&*lane.insert(fresh)),
-                        None => None,
-                    },
+                    None => Lane::open(target, *token, topic, sink.clone())
+                        .map(|fresh| &*lane.insert(fresh)),
                 };
                 match opened {
                     Some(lane) if lane.inbox.try_send(payload.to_vec()).is_ok() => reached += 1,

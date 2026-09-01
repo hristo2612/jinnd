@@ -17,12 +17,15 @@
 //!    only once every append sent before it has committed. `committed-by`
 //!    carries that mark, so a listener can check the guarantee itself rather
 //!    than take it on trust (Law 2).
-//! 2. **Back-pressure.** The kernel never waits on a listener: the hand-off
-//!    is a bounded push that cannot block, and delivery happens on this
-//!    task. A listener slow enough to fill [`CAPACITY`] loses transitions —
-//!    and the loss is COUNTED, as a `PublishDropped` ledger row and as a gap
-//!    in the listener's own `ordinal`. An uncounted drop would be the
-//!    absence class returning (R9).
+//! 2. **Back-pressure, bounded TWICE and joined nowhere.** The kernel never
+//!    waits on a listener. [`CAPACITY`] here bounds the hand-off from the
+//!    commit path to this task, so a commit burst can never grow the
+//!    kernel's memory; `publish` then bounds each LISTENER separately, on a
+//!    lane of its own, and returns without joining — so a slow listener
+//!    delays neither the kernel nor a sibling nor a sibling's next
+//!    transition (R11). Either bound loses LOUDLY: a `PublishDropped`
+//!    ledger row and a gap in the listener's own `ordinal`. An uncounted
+//!    drop would be the absence class returning (R9).
 //! 3. **Late join and replay.** There is NO replay. A listener that mounts
 //!    mid-life is told so plainly: `ordinal` is the kernel's own count of
 //!    transitions published since this process started, so a first delivery

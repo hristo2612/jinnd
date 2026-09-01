@@ -102,17 +102,34 @@ async fn until(seen: &Arc<Mutex<Vec<u64>>>, want: usize) -> Vec<u64> {
     }
 }
 
-/// THE REAL OVERFLOW, end to end and deterministic: a listener slow
-/// enough to fill the bound loses transitions, and the loss is visible
-/// TWICE over — as a `PublishDropped` row on the real ledger, and as
-/// the gap it leaves in the ordinals the listener receives.
+/// THE OFFER LANE'S OVERFLOW, end to end and deterministic: commits
+/// that outrun the publisher past the bound lose transitions, and the
+/// loss is visible TWICE over — as a `PublishDropped` row on the real
+/// ledger, and as the gap it leaves in the ordinals the listener
+/// receives.
 ///
-/// Deterministic by construction, not by timing: the listener's first
-/// delivery PARKS, so the queue is provably full while the rest are
-/// offered. A round-1 fixture that merely reloaded six times never
-/// filled `CAPACITY` and asserted `0 gaps <= 0 dropped` — an assertion
-/// that passes for a weaker reason than its name promises. This one
-/// states its preconditions and fails on them.
+/// **Which bound this is, stated exactly (M2-K13 round 3).** There are
+/// two, in series, and they fill for different reasons. THIS one is
+/// [`CAPACITY`], between the kernel's commit path and the publisher
+/// task: it fills when transitions are COMMITTED faster than the
+/// publisher can drain them, which is what the burst below does — the
+/// offers are synchronous, so the publisher cannot be scheduled between
+/// them. A SLOW LISTENER no longer fills this queue at all; since round
+/// 3 the publish hands off without joining, so a dawdling listener
+/// fills its OWN lane instead, and that half is proven at
+/// `jinnd_wasm::topics::publish::tests::
+/// a_lane_past_its_bound_refuses_ledgers_the_loss_and_keeps_delivering`.
+///
+/// Round 2 named a slow listener as the cause here and was right at the
+/// time; the round-3 fix moved the cause, and a probe confirmed it —
+/// with the gate released so nothing parks, this still passed. Saying
+/// so is the point: an assertion that survives for a different reason
+/// than its name gives is the vacuity class, whichever direction it
+/// drifts in.
+///
+/// The parking listener remains, and earns its place: it holds the
+/// FIRST delivery, so the drain, the ordinals and the gap are observed
+/// in one release rather than raced for.
 #[tokio::test]
 async fn a_real_overflow_is_ledgered_and_shows_as_a_gap_in_the_ordinals() {
     const LOST: usize = 7;
@@ -141,18 +158,21 @@ async fn a_real_overflow_is_ledgered_and_shows_as_a_gap_in_the_ordinals() {
     let publisher = Lifecycle::new(ledger.clone(), lane);
     let entry = EntryId("watcher".to_owned());
 
-    // One transition, and the publisher parks inside its delivery.
+    // One transition, delivered; the listener parks inside it so the
+    // drain below is observed in one release rather than raced for.
     publisher.offer(&entry, &transition());
     started.notified().await;
 
-    // With the publisher held there, offer past the bound. CAPACITY
-    // queue up; the last LOST have nowhere to go.
+    // Now COMMIT past the bound in one synchronous burst: the publisher
+    // task cannot be scheduled between these offers, so CAPACITY queue
+    // up and the last LOST have nowhere to go.
     for _ in 0..(CAPACITY + LOST) {
         publisher.offer(&entry, &transition());
     }
     // PRECONDITION, asserted before anything is claimed about loss:
     // the queue is FULL and the kernel really did drop. A test that
-    // cannot establish this does not get to pass.
+    // cannot establish this does not get to pass. (The burst above is
+    // what fills it — see the note on the two bounds, above.)
     {
         let pending = lock(&publisher.pending);
         assert_eq!(
