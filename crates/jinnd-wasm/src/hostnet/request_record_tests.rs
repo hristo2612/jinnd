@@ -62,7 +62,11 @@ async fn the_declared_request_shape_is_provided_at_the_same_door() {
     let server = target(ok_body("pong"));
     let rig = rig_pair(server.port);
     let body = rig
-        .legacy("GET", &format!("http://127.0.0.1:{}/probe", server.port))
+        .legacy(
+            "GET",
+            &format!("http://127.0.0.1:{}/probe", server.port),
+            &[],
+        )
         .await
         .unwrap_or_else(|code| panic!("legacy request: {code:?}"));
     assert_eq!(body, b"pong", "the declared shape answers the body alone");
@@ -76,8 +80,12 @@ async fn the_declared_request_shape_is_provided_at_the_same_door() {
     // refused exactly like one through the new one.
     let elsewhere = target(ok_body("secret"));
     assert_eq!(
-        rig.legacy("GET", &format!("http://127.0.0.1:{}/x", elsewhere.port))
-            .await,
+        rig.legacy(
+            "GET",
+            &format!("http://127.0.0.1:{}/x", elsewhere.port),
+            &[]
+        )
+        .await,
         Err(ErrorCode::EffectFailed),
         "the old shape is not a way around the allowlist"
     );

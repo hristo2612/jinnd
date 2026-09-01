@@ -41,6 +41,8 @@ mod request;
 #[cfg(all(test, not(feature = "loom")))]
 mod request_bounds_tests;
 #[cfg(all(test, not(feature = "loom")))]
+mod request_doors_tests;
+#[cfg(all(test, not(feature = "loom")))]
 mod request_record_tests;
 #[cfg(all(test, not(feature = "loom")))]
 mod request_tests;

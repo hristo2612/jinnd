@@ -116,7 +116,6 @@ async fn a_sent_request_is_still_irreversible_after_a_reopen() {
         .await
         .unwrap_or_else(|error| panic!("net effects: {error:?}"));
     assert_eq!(before.len(), 3, "the first run really called: {before:?}");
-    let (old, old_label) = before[0].clone();
     first
         .shutdown()
         .await
@@ -135,22 +134,29 @@ async fn a_sent_request_is_still_irreversible_after_a_reopen() {
         report.errors
     );
 
-    let refused = second
-        .revert_unit(&[UnitMember::Net(old)], "after-reopen")
-        .await
-        .err()
-        .unwrap_or_else(|| panic!("a request stays irreversible across a reopen"));
-    assert_eq!(
-        refused.code,
-        ErrorCode::Irreversible,
-        "not NotFound, not a generic failure: {}",
-        refused.message
-    );
-    assert!(
-        refused.message.contains(&old_label),
-        "and it still names the call it could not take back: {}",
-        refused.message
-    );
+    // BOTH DOORS, after the reopen (COO round-2 steer). The fixture's
+    // calls [0] and [1] entered through `send-request`; call [2] entered
+    // through the 0.1.0 `request` declaration. A legacy door whose calls
+    // were merely SENT — not recorded as irreversible — would leave a way
+    // to make an untakeable-back call the kernel later fails to name.
+    for (which, (effect, label)) in [(0, before[0].clone()), (2, before[2].clone())] {
+        let refused = second
+            .revert_unit(&[UnitMember::Net(effect)], &format!("after-reopen-{which}"))
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("call {which} stays irreversible across a reopen"));
+        assert_eq!(
+            refused.code,
+            ErrorCode::Irreversible,
+            "call {which}: not NotFound, not a generic failure: {}",
+            refused.message
+        );
+        assert!(
+            refused.message.contains(&label),
+            "call {which} still names what it could not take back: {}",
+            refused.message
+        );
+    }
 
     // The reopened run minted its own ids ABOVE the durable high-water
     // mark: an irreversible id names ONE call forever, never two.

@@ -133,6 +133,21 @@ pub(super) fn rig_pair(port: u16) -> Rig {
 
 type Answered = Result<(u16, Vec<(String, String)>, Vec<u8>), ErrorCode>;
 
+/// The two provided entry points. They are one door with two handles, and
+/// that is a claim about the kernel's own code — so every property this
+/// card asserts is proven entering through BOTH, never through the new one
+/// with the old one assumed (COO round-2 steer). A legacy door that skips
+/// the allowlist would be worse than no legacy door.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Door {
+    /// `request` at its 0.1.0 declaration and 0.1.0 broker wire.
+    Declared,
+    /// `send-request`, the 0.2.0 whole-response edition.
+    Whole,
+}
+
+pub(super) const DOORS: [Door; 2] = [Door::Declared, Door::Whole];
+
 impl Rig {
     /// One `send-request`: the whole-response edition (0.2.0).
     pub(super) async fn request(
@@ -157,14 +172,54 @@ impl Rig {
 
     /// One `request` at its 0.1.0 declaration and 0.1.0 broker wire: no
     /// header count, no headers, the response BODY alone.
-    pub(super) async fn legacy(&self, method: &str, url: &str) -> Result<Vec<u8>, ErrorCode> {
+    pub(super) async fn legacy(
+        &self,
+        method: &str,
+        url: &str,
+        body: &[u8],
+    ) -> Result<Vec<u8>, ErrorCode> {
         let mut wire = Vec::new();
         put_segment(&mut wire, method.as_bytes());
         put_segment(&mut wire, url.as_bytes());
+        wire.extend(body);
         self.broker
             .dispatch(self.guest, NET_CONTRACT, "request", wire)
             .await
             .map_err(|error| error.code)
+    }
+
+    /// One call through `door`, answering the response BODY — the only
+    /// part both shapes agree on, and enough for every refusal class.
+    pub(super) async fn through(
+        &self,
+        door: Door,
+        method: &str,
+        url: &str,
+        body: &[u8],
+    ) -> Result<Vec<u8>, ErrorCode> {
+        match door {
+            Door::Declared => self.legacy(method, url, body).await,
+            Door::Whole => self
+                .request(method, url, &[], body)
+                .await
+                .map(|(_, _, body)| body),
+        }
+    }
+
+    /// A GET through `door`.
+    pub(super) async fn door_get(&self, door: Door, url: &str) -> Result<Vec<u8>, ErrorCode> {
+        self.through(door, "GET", url, &[]).await
+    }
+
+    /// The effect ids this rig recorded, in order.
+    pub(super) fn effects(&self) -> Vec<u64> {
+        self.requested()
+            .iter()
+            .map(|kind| match kind {
+                LedgerEventKind::NetRequested { effect, .. } => effect.0,
+                _ => panic!("not a request row"),
+            })
+            .collect()
     }
 
     /// Every `NetRequested` row this rig recorded.
