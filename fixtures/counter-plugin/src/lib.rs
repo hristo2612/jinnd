@@ -56,6 +56,15 @@ const CONSUMER_UNDO_TOKEN: u64 = 22;
 const CYCLE_TOPIC: &str = "jinn:test/cycle-notice";
 /// The token the `cycle-*` listeners subscribe under.
 const CYCLE_TOKEN: u64 = 31;
+/// The kernel's RESERVED lifecycle topic (M2-K13, harness #40/#41): the
+/// kernel publishes every committed fiber transition here. Listening needs
+/// the `jinn:introspect` grant; no guest may emit on it.
+const TRANSITIONS_TOPIC: &str = "jinn:introspect/transitions";
+/// The token the `lifecycle-*` modes subscribe to the reserved topic under.
+const LIFECYCLE_TOKEN: u64 = 41;
+/// The ledger contract the lifecycle listener consults from inside a
+/// delivery (the ordering probe).
+const LEDGER_CONTRACT: &str = "jinn:ledger";
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static PICKY: AtomicBool = AtomicBool::new(false);
@@ -324,6 +333,16 @@ fn echo_tick() -> Result<(), GuestFault> {
 }
 
 /// One operator-contract call over the handle lane (M2-K7).
+/// The ledger's committed high-water mark, read from inside a delivery.
+fn ledger_high_water() -> Result<u64, GuestFault> {
+    let answer = operator_call(LEDGER_CONTRACT, "last-seq", &[])?;
+    let bytes: [u8; 8] = answer
+        .as_slice()
+        .try_into()
+        .map_err(|_| GuestFault::Failed("last-seq is not a u64".into()))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
 fn operator_call(contract: &str, operation: &str, payload: &[u8]) -> Result<Vec<u8>, GuestFault> {
     let handle = services::resolve(contract).map_err(fault)?;
     services::call(handle, operation, payload).map_err(fault)
@@ -467,6 +486,57 @@ fn notify_mode(mode: &str) -> Result<(), GuestFault> {
             Ok(())
         }
         other => Err(GuestFault::Failed(format!("unknown notify mode {other}"))),
+    }
+}
+
+/// The M2-K13 modes (harness #40/#41) — the kernel's own lifecycle
+/// publish. `lifecycle-listener` subscribes to the reserved topic and
+/// writes every delivery down; `lifecycle-slow` is the same listener that
+/// dawdles inside each delivery (the back-pressure probe);
+/// `lifecycle-eavesdrop` asserts an UNGRANTED subscribe is refused; and
+/// `lifecycle-forge` asserts a granted guest still cannot EMIT on the
+/// reserved topic — only the kernel publishes there.
+fn lifecycle_mode(mode: &str) -> Result<(), GuestFault> {
+    match mode {
+        "lifecycle-listener" | "lifecycle-slow" => {
+            effects::register("lifecycle effect", 1).map_err(fault)?;
+            jinn::plugin::events::listen(TRANSITIONS_TOPIC, LIFECYCLE_TOKEN)
+                .map(|_| ())
+                .map_err(fault)
+        }
+        "lifecycle-eavesdrop" => {
+            match jinn::plugin::events::listen(TRANSITIONS_TOPIC, LIFECYCLE_TOKEN) {
+                // The refusal is WRITTEN DOWN, not merely survived: a test
+                // that only checks the activation did not fault would pass
+                // just as well with no gate at all.
+                Err(refusal) => fs::write("/eavesdrop.out", format!("{refusal:?}").as_bytes(), "")
+                    .map_err(fs_fault),
+                Ok(_) => Err(GuestFault::Failed(
+                    "an ungranted lifecycle subscribe was not refused".into(),
+                )),
+            }
+        }
+        "lifecycle-forge" => {
+            jinn::plugin::events::listen(TRANSITIONS_TOPIC, LIFECYCLE_TOKEN).map_err(fault)?;
+            let forged = jinn::plugin::events::emit(
+                TRANSITIONS_TOPIC,
+                jinn::plugin::types::DispatchMode::Emit,
+                &jinn::plugin::types::Selector::All,
+                b"forged",
+            );
+            match forged {
+                Err(refusal) => {
+                    fs::write("/forge.out", format!("{refusal:?}").as_bytes(), "")
+                        .map_err(fs_fault)
+                }
+                Ok(_) => Err(GuestFault::Failed(
+                    "a guest emit on the reserved lifecycle topic was not refused".into(),
+                )),
+            }
+        }
+        other => Err(GuestFault::Failed(format!(
+            "unknown lifecycle mode {other}"
+        ))),
     }
 }
 
@@ -788,6 +858,9 @@ impl Guest for Fixture {
         if mode.starts_with("cycle-") {
             return cycle_mode(mode);
         }
+        if mode.starts_with("lifecycle-") {
+            return lifecycle_mode(mode);
+        }
         match mode {
             "trap" => panic!("fixture trap mode"),
             "spin" => loop {
@@ -1003,6 +1076,26 @@ impl Guest for Fixture {
         // delivery. The kernel refuses that call rather than letting both
         // ends run to the guest deadline; what it answered is recorded and
         // the handler returns normally, so nothing here is a stall.
+        // The kernel's own lifecycle publish (M2-K13): every delivery is
+        // written down verbatim, followed by what the ledger had ALREADY
+        // committed when the delivery landed — the in-handler half of the
+        // ordering proof (a delivery may never precede its ledger row).
+        if topic == TRANSITIONS_TOPIC {
+            if token != LIFECYCLE_TOKEN {
+                return Err(GuestFault::Failed(
+                    "a malformed lifecycle delivery arrived".into(),
+                ));
+            }
+            let mut line = payload;
+            line.push(b'\t');
+            line.extend(ledger_high_water()?.to_string().into_bytes());
+            line.push(b'\n');
+            fs::append("/transitions.log", &line, "").map_err(fs_fault)?;
+            if MODE.lock().unwrap().as_str() == "lifecycle-slow" {
+                dawdle(400)?;
+            }
+            return Ok(Vec::new());
+        }
         if topic == CYCLE_TOPIC {
             if token != CYCLE_TOKEN {
                 return Err(GuestFault::Failed("a malformed notice arrived".into()));

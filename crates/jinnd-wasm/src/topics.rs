@@ -16,8 +16,10 @@ use crate::peer::LedgerSink;
 use crate::selector::{RealmOracle, Selector, selects};
 use crate::waits::{Cycle, WaitGraph, WaitTicket};
 
+mod publish;
 mod restarting;
 
+pub use publish::{TRANSITIONS_TOPIC, grant_for, reserved};
 use restarting::expects_reply;
 pub use restarting::{RestartOracle, Unserved};
 
@@ -36,6 +38,10 @@ struct Listener {
     /// identity a reply-expecting walk asks the restart oracle about.
     fiber: Option<FiberId>,
     target: Arc<dyn EventTarget>,
+    /// This listener's private delivery lane (M2-K13), opened on its first
+    /// kernel publish and dropped with the registration — a withdrawn
+    /// listener's lane task ends when its queue closes.
+    lane: Option<publish::Lane>,
 }
 
 /// One listener registration for an atomic [`LocalTopics::rebind`].
@@ -173,6 +179,7 @@ impl LocalTopics {
             token,
             fiber,
             target,
+            lane: None,
         });
         id
     }
@@ -208,6 +215,7 @@ impl LocalTopics {
                     token: registration.token,
                     fiber: registration.fiber,
                     target: registration.target,
+                    lane: None,
                 });
                 id
             })

@@ -1,4 +1,5 @@
-// jinn:introspect@0.3.0 (M2-K10, harness #32; 0.2.0 M2-K9, #31; 0.1.0
+// jinn:introspect@0.4.0 (M2-K13, harness #40/#41; 0.3.0 M2-K10, #32;
+// 0.2.0 M2-K9, #31; 0.1.0
 // M2-K7, #19) — the read-only composition
 // contract. The kernel supplies it (01 §Mechanical closure); a plugin sees
 // the composition only when its profile entry grants this contract. Every
@@ -7,7 +8,7 @@
 // this path (R1). Reached over `services.resolve("jinn:introspect")` +
 // `services.call(handle, <operation>, [])`; answers are the UTF-8 JSON of
 // the records below, field names as written (kebab-case).
-package jinn:introspect@0.3.0;
+package jinn:introspect@0.4.0;
 
 interface composition {
   // The kernel registrations one live seat holds, by class.
@@ -80,6 +81,72 @@ interface composition {
   // profile/artifact watcher is armed (the machine-readable shape of the
   // readiness line, harness #12).
   record readiness { boot-reconciled: bool, watcher-armed: bool }
+
+  // ONE COMMITTED FIBER TRANSITION, PUSHED (0.4.0). The kernel publishes
+  // every transition it commits on the RESERVED topic
+  // `jinn:introspect/transitions`, as the UTF-8 JSON of this record. A
+  // holder of this contract's grant SUBSCRIBES with the plugin world's
+  // `events.listen` on that topic and receives deliveries as
+  // `lifecycle.handle-event`; nothing else may write there — a guest
+  // `events.emit` on the reserved topic is REFUSED, so a witnessed
+  // transition can never be confused with a forged one.
+  //
+  // WHY IT EXISTS. `entries` answers from a snapshot, so a consumer can
+  // only ever see a fiber at REST. Three of the states this contract's own
+  // `state` field names — `unloading`, `pending`, `loading` — sit between
+  // two rests and no poller reaches them. A catalog built on the pull
+  // therefore announces transitions it did not witness and cannot time.
+  // This delivery is what it witnesses instead.
+  //
+  // ORDERING AGAINST THE LEDGER. A delivery NEVER precedes its ledger row.
+  // `committed-by` is a ledger sequence the kernel had already committed
+  // through when this delivery began, and the transition's own row sits at
+  // or before it. A listener holding `jinn:ledger` can check that itself
+  // rather than take it on trust.
+  //
+  // BACK-PRESSURE, AND WHAT A SLOW SUBSCRIBER COSTS. The kernel never
+  // waits on a listener, and neither does any other listener: every
+  // subscriber has a delivery queue of its own, and the kernel hands its
+  // payload over without ever joining. A listener that dawdles inside
+  // `handle-event` therefore delays NOBODY — not the kernel, not a
+  // sibling, and not a sibling's next transition. It pays for its own
+  // slowness alone: once its own queue is full it LOSES transitions, and
+  // every loss is counted twice — as a `PublishDropped` ledger event, and
+  // as a gap in the `ordinal` this listener receives. Nothing is ever
+  // reordered: one subscriber's deliveries follow the order the kernel
+  // committed them in, whatever its siblings are doing.
+  //
+  // LATE JOIN AND REPLAY. There is NO replay, and a late joiner is told so
+  // rather than left to assume otherwise: `ordinal` counts every
+  // transition this kernel process has published, so a first delivery
+  // above 1 states exactly how many preceded the subscription. A listener
+  // holding `jinn:ledger` recovers them from the stream itself.
+  //
+  // AUTHORITY. Every field here is one this contract's own pull already
+  // admits: `entry`, `fiber` and `incarnation` are `entry`'s fields, and
+  // `from`/`to` are values of `entry.state`'s vocabulary. The kernel's
+  // `cause` for a transition is DELIBERATELY ABSENT: nothing in this
+  // contract answers WHY a transition happened, so delivering it would
+  // widen the grant rather than push what it already admits. A consumer
+  // that needs the cause holds `jinn:ledger` and reads the row.
+  record transition {
+    // The profile entry, exactly as `entry.id` names it.
+    entry: string,
+    // The fiber, exactly as `entry.fiber` names it.
+    fiber: u64,
+    // The entry's live incarnation as the kernel saw it when the
+    // transition was committed; absent when no incarnation was installed.
+    incarnation: option<u64>,
+    // The states, from `entry.state`'s vocabulary.
+    from: string,
+    to: string,
+    // This kernel process's publish count, from 1. Gaps are losses; a
+    // first value above 1 is a late join. Never reused, never reordered.
+    ordinal: u64,
+    // A ledger sequence already committed when this delivery began; the
+    // transition's own row is at or before it.
+    committed-by: u64,
+  }
 
   // Effect class: read. Operation `entries`, empty payload; answer = the
   // JSON list of `entry`, in document order.

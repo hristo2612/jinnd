@@ -21,6 +21,13 @@
 /// answers when a selected listener's incarnation already owes a
 /// transition, each carrying a `refused-target`. They are four cases and
 /// not one because they are four different NEXT MOVES for the caller.
+/// 0.8.0 (M2-K13): the kernel becomes a PUBLISHER on this world's own
+/// event bus. It publishes every fiber transition it commits on the
+/// RESERVED topic `jinn:introspect/transitions`, whose payload is declared
+/// in `contracts/jinn-introspect` (0.4.0). Additive: no signature changes.
+/// Two guest-visible rules join `events` (see `listen` and `emit`): a
+/// reserved topic is subscribed under the grant of the CONTRACT it belongs
+/// to, and no guest may ever emit on one.
 /// 0.7.0 (M2-K10): `kernel-error` gains `cycle` — the typed refusal of a
 /// crossing that would close a WAIT CYCLE, carrying a `wait-cycle` record
 /// that names both ends and the wait path between them. It answers a
@@ -40,7 +47,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.7.0;
+package jinn:plugin@0.8.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -228,12 +235,29 @@ interface events {
   /// and an emitter whose listener calls back into it deadlocks in `emit`
   /// exactly as in `serial`. The whole walk is refused with `cycle`
   /// before any listener runs.
+  ///
+  /// A KERNEL-RESERVED topic is REFUSED here in every mode (M2-K13): the
+  /// kernel is its only publisher. A guest that could write to one could
+  /// hand a consumer a transition the kernel never committed, and the
+  /// whole point of the publish is that a consumer emits what it WITNESSED
+  /// rather than what it inferred. Listening on such a topic is allowed
+  /// under the owning contract's grant; emitting on it never is.
   emit: func(topic: string, mode: dispatch-mode, target: selector, payload: list<u8>)
     -> result<list<list<u8>>, kernel-error>;
 
   /// Registers this instance as a listener of `topic`. Registration is just
   /// an effect (LAW §3); withdrawal is `lifecycle.undo` like any other.
   /// Deliveries arrive as `lifecycle.handle-event(token, ...)`.
+  ///
+  /// A subscription is covered by the grant of the topic's own name, with
+  /// ONE class of exception (M2-K13): a KERNEL-RESERVED topic is covered
+  /// by the grant of the contract it belongs to, because the payload the
+  /// kernel publishes there is bounded by exactly what that contract's own
+  /// reads already admit. `jinn:introspect/transitions` — every fiber
+  /// transition the kernel commits, declared in `contracts/jinn-introspect`
+  /// — is subscribed under `jinn:introspect`. Without that grant the
+  /// subscription is refused on the record, like any other authority
+  /// refusal.
   listen: func(topic: string, token: u64) -> result<effect-id, kernel-error>;
 }
 

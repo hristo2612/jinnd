@@ -146,7 +146,7 @@ impl Daemon {
     /// Emits every committed fiber transition the ledger has not yet seen
     /// (R6: transitions are ledger events; ordered, unreceipted lane).
     pub fn sync_transitions(&self) {
-        crate::support::sync_transitions(&self.fibers, &self.ledger);
+        crate::support::sync_transitions(&self.fibers, &self.ledger, Some(&self.lifecycle));
     }
 
     /// The file watcher is armed (M2-K7 `jinn:introspect` readiness): the

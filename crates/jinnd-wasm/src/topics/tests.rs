@@ -25,7 +25,7 @@ mod refusal;
 mod registry;
 
 #[derive(Default)]
-struct RecordingSink(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
+pub(in crate::topics) struct RecordingSink(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
 
 impl LedgerSink for RecordingSink {
     fn append(&self, kind: LedgerEventKind, fiber: Option<FiberId>) {
@@ -37,7 +37,7 @@ impl LedgerSink for RecordingSink {
 }
 
 impl RecordingSink {
-    fn recorded(&self) -> Vec<(LedgerEventKind, Option<FiberId>)> {
+    pub(in crate::topics) fn recorded(&self) -> Vec<(LedgerEventKind, Option<FiberId>)> {
         self.0
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())

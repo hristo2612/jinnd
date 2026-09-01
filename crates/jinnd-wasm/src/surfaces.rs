@@ -35,6 +35,33 @@ impl HostState {
     }
 }
 
+impl HostState {
+    /// Refuses a guest write to a kernel-reserved topic (M2-K13), on the
+    /// record with the fiber's attribution. Only the kernel publishes
+    /// there; a guest holding the topic's grant may LISTEN, never emit.
+    ///
+    /// # Errors
+    ///
+    /// The reservation refusal ([`jinnd_api::ErrorCode::EffectFailed`]).
+    fn reserve(&self, topic: &str) -> Result<(), jinnd_api::KernelError> {
+        if !crate::topics::reserved(topic) {
+            return Ok(());
+        }
+        let error = jinnd_api::KernelError {
+            code: jinnd_api::ErrorCode::EffectFailed,
+            message: format!("{topic} is published by the kernel; a guest may only listen on it"),
+            fiber: self.seat.fiber,
+        };
+        self.seat.broker.ledger().append(
+            jinnd_api::LedgerEventKind::ErrorRecorded {
+                error: error.clone(),
+            },
+            self.seat.fiber,
+        );
+        Err(error)
+    }
+}
+
 impl bindings::effects::Host for HostState {
     async fn register(
         &mut self,
@@ -112,6 +139,12 @@ impl bindings::events::Host for HostState {
         target: bindings::types::Selector,
         payload: Vec<u8>,
     ) -> Result<Vec<Vec<u8>>, bindings::types::KernelError> {
+        // A kernel-reserved topic is PUBLISHED, never emitted (M2-K13): a
+        // guest that could write to it could hand a catalog a transition
+        // the kernel never committed, which is the fabrication class the
+        // whole publish path exists to end. The refusal is a ledger event
+        // like every other authority refusal (Law 1, Law 2).
+        self.reserve(&topic).map_err(bindings::wire_error)?;
         let report = self
             .seat
             .topics
@@ -150,9 +183,12 @@ impl bindings::events::Host for HostState {
         // Subscriptions are covered by the contract grant in v0.1
         // (constitution 01 §Grants): listening on a topic requires the grant
         // of the topic's name, and the refusal is a ledger event (Law 1).
+        // A kernel-reserved topic belongs to the contract whose authority
+        // bounds its payload, and is gated by THAT grant (M2-K13) — the
+        // same check, on the name the contract is granted under.
         self.seat
             .broker
-            .check_grant(self.seat.peer, &topic)
+            .check_grant(self.seat.peer, crate::topics::grant_for(&topic))
             .map_err(bindings::wire_error)?;
         if self.seat.staging {
             // Recorded, not routed (R8): the registration is committed at
