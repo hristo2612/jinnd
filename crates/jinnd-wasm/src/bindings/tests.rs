@@ -182,34 +182,66 @@ fn process_and_net_imports_return_their_bundles_errors() {
     assert!(WORLD.contains("output-truncated }"));
 }
 
-/// M2-K14 (R12, Law 3): the world and the bundle ship the outbound one-shot
-/// with its version, its shape, and its irreversibility — a guest author
-/// learns from the contract, never from the implementation.
+/// M2-K14 (R12, Law 3): the world and the bundle ship BOTH outbound
+/// one-shots with their version, their shapes, and their irreversibility —
+/// a guest author learns from the contract, never from the implementation.
+///
+/// Every function assertion is anchored on the line start (`\n  `), because
+/// an unanchored `contains("request: func(...)")` is satisfied by
+/// `send-request: func(...)` as a plain substring — it would pass whichever
+/// name the operation carried, and would not have noticed round 1
+/// REPLACING the 0.1.0 declaration instead of adding beside it. That is the
+/// vacuity class this packet exists to prevent; it is not allowed in the
+/// test that guards the packet.
 #[test]
-fn the_world_and_the_bundle_declare_the_outbound_one_shot() {
+fn the_world_and_the_bundle_declare_both_outbound_one_shots() {
     const NET: &str = include_str!("../../../../contracts/jinn-net/contract.wit");
     const META: &str = include_str!("../../../../contracts/jinn-net/metadata.toml");
     assert!(NET.contains("package jinn:net@0.2.0;"));
     for declared in [
-        "record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }",
-        "record outbound-response { status: u16, headers: list<header>, body: list<u8> }",
-        "request: func(req: outbound-request) -> result<outbound-response, net-error>;",
+        "\n  record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }",
+        "\n  record outbound-response { status: u16, headers: list<header>, body: list<u8> }",
+        // R12: the 0.1.0 declaration, PRESERVED byte for byte.
+        "\n  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;",
+        // 0.2.0: the whole-response edition, added BESIDE it.
+        "\n  send-request: func(req: outbound-request) -> result<outbound-response, net-error>;",
     ] {
-        assert!(NET.contains(declared), "the bundle declares {declared}");
-        assert!(WORLD.contains(declared), "the world carries {declared}");
+        assert!(NET.contains(declared), "the bundle declares {declared:?}");
+        assert!(WORLD.contains(declared), "the world carries {declared:?}");
     }
-    // Law 3 admits exactly two categories, and this one is DECLARED — with
-    // no inverse and no compensator to mistake for one.
-    let block = META
-        .split("[operations.request]")
-        .nth(1)
-        .and_then(|rest| rest.split("[operations.listen]").next())
-        .unwrap_or_else(|| panic!("the bundle declares operations.request"));
-    assert!(block.contains(r#"effect      = "irreversible""#), "{block}");
-    assert!(
-        !block.lines().any(|line| line.starts_with("inverse")),
-        "no inverse is declared: {block}"
-    );
+    // Law 3 admits exactly two categories, and BOTH doors are DECLARED —
+    // with no inverse and no compensator to mistake for one. A legacy door
+    // whose effect class went undeclared would be a Law 3 violation.
+    for (operation, next) in [
+        ("[operations.request]", "[operations.send-request]"),
+        ("[operations.send-request]", "[operations.listen]"),
+    ] {
+        let block = META
+            .split(operation)
+            .nth(1)
+            .and_then(|rest| rest.split(next).next())
+            .unwrap_or_else(|| panic!("the bundle declares {operation}"));
+        assert!(
+            block.contains(r#"effect      = "irreversible""#),
+            "{operation}: {block}"
+        );
+        assert!(
+            !block.lines().any(|line| line.starts_with("inverse")),
+            "{operation} declares no inverse: {block}"
+        );
+    }
+    // The durable row's shape is stated where a guest author reads it, and
+    // it LEADS with the effect id — the field that makes the irreversible
+    // class survive a reopen (round-2 verifier Minor).
+    for source in [
+        META,
+        include_str!("../../../../contracts/jinn-net/README.md"),
+    ] {
+        assert!(
+            source.contains("NetRequested { effect, method, host, path, status, request_bytes,"),
+            "the bundle states the row shape the facade actually writes"
+        );
+    }
 }
 
 /// M2-K13 (R3/R12/Law 2): the kernel's lifecycle PUBLISH is declared where

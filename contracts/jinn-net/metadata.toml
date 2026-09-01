@@ -103,9 +103,12 @@ lifecycle = "kernel-registration-closed-on-suspend-relistened-on-activate"
 # (M2-K15), non-loopback listening, UDP.
 #
 # WHAT A REQUEST WRITES TO THE LEDGER (M2-K14; Law 2 vs 02 §Redaction).
-# `NetRequested { method, host, path, status, request_bytes,
+# `NetRequested { effect, method, host, path, status, request_bytes,
 # response_bytes, duration_ms }` — the SHAPE of the call, never its
-# content. Never the request or response body, never any header (an
+# content. `effect` leads because it is what makes the irreversible class
+# above DURABLE: it is the id a revert unit names, and without it on the
+# row the refusal would live only as long as the process that sent the
+# call. Never the request or response body, never any header (an
 # `Authorization` header carries exactly the credential the keystore
 # exists to protect), and never the URL's query string, which routinely
 # carries one too (`?access_token=`). The path is recorded up to `?`. A
