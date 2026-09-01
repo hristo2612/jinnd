@@ -9,11 +9,12 @@ const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
+    // 0.10.0 (M2-K15): `net-error` gains `untrusted`;
     // 0.9.0 (M2-K14): `net.request` is provided and reshaped;
     // 0.8.0 (M2-K13): the kernel becomes a publisher on this world's bus;
     // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
     // 0.6.0 (M2-K9) the typed `restarting` one.
-    assert!(WORLD.contains("package jinn:plugin@0.9.0;"));
+    assert!(WORLD.contains("package jinn:plugin@0.10.0;"));
     assert!(WORLD.contains("Suspend ≠ dispose"));
 }
 
@@ -207,7 +208,7 @@ fn process_and_net_imports_return_their_bundles_errors() {
 fn the_world_and_the_bundle_declare_both_outbound_one_shots() {
     const NET: &str = include_str!("../../../../contracts/jinn-net/contract.wit");
     const META: &str = include_str!("../../../../contracts/jinn-net/metadata.toml");
-    assert!(NET.contains("package jinn:net@0.2.0;"));
+    assert!(NET.contains("package jinn:net@0.3.0;"));
     for declared in [
         "\n  record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }",
         "\n  record outbound-response { status: u16, headers: list<header>, body: list<u8> }",
@@ -215,6 +216,11 @@ fn the_world_and_the_bundle_declare_both_outbound_one_shots() {
         "\n  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;",
         // 0.2.0: the whole-response edition, added BESIDE it.
         "\n  send-request: func(req: outbound-request) -> result<outbound-response, net-error>;",
+        // 0.3.0 (M2-K15): ONE case added to `net-error`, the whole
+        // declaration asserted as a line so a case that went MISSING —
+        // or one whose payload changed — fails here. An unanchored
+        // `contains("untrusted")` would pass on the prose above it.
+        "\n  variant net-error { not-found, denied(string), failed(string), invalid(string), untrusted(string) }",
     ] {
         assert!(NET.contains(declared), "the bundle declares {declared:?}");
         assert!(WORLD.contains(declared), "the world carries {declared:?}");
