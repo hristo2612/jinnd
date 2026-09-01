@@ -129,7 +129,10 @@ fn every_shipped_contract_bundle_is_well_formed() {
 #[test]
 fn the_parser_refuses_the_shapes_that_got_past_a_substring_and_a_hand_reader() {
     for (shape, bundle) in [
-        ("a trailing dot after a header", "[equality].\nkey = \"v\"\n"),
+        (
+            "a trailing dot after a header",
+            "[equality].\nkey = \"v\"\n",
+        ),
         (
             "an empty dotted segment",
             "[recovery..policy]\non-failure = \"refuse-open\"\n",
