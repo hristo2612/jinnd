@@ -7,6 +7,159 @@ const WORLD: &str = include_str!("../../../../wit/plugin.wit");
 const FS_META: &str = include_str!("../../../../contracts/jinn-fs/metadata.toml");
 const CLOCK_META: &str = include_str!("../../../../contracts/jinn-clock/metadata.toml");
 
+// ---------------------------------------------------------------------------
+// Contract text is asserted by PARSING (M2-K15 round-2 ruling), never by
+// substring. `WORLD.contains("package jinn:plugin@0.10.0;")` is satisfied by
+// those bytes ANYWHERE — a doc comment above a declaration that says
+// something else satisfies it — and no substring can see a variant case's
+// PAYLOAD or a function's parameter TYPES at all. `wit_parser::Resolve` is
+// the toolchain's own parser: it observes the DECLARATION.
+// ---------------------------------------------------------------------------
+
+/// Parse a standalone WIT document, answering the resolved graph and the
+/// package it declares. A document the toolchain cannot read fails here,
+/// naming the file — that is a broken contract of record whatever bytes it
+/// happens to contain.
+fn parse_wit(file: &str, text: &str) -> (wit_parser::Resolve, wit_parser::PackageId) {
+    let mut resolve = wit_parser::Resolve::default();
+    let package = resolve
+        .push_str(file, text)
+        .unwrap_or_else(|err| panic!("{file} parses as WIT: {err:#}"));
+    (resolve, package)
+}
+
+/// The declared package identity, `namespace:name@version`, as the parser
+/// read it rather than as the file spells it.
+fn package_id(resolve: &wit_parser::Resolve, package: wit_parser::PackageId) -> String {
+    resolve.packages[package].name.to_string()
+}
+
+/// One named interface out of a parsed package.
+fn interface<'a>(
+    resolve: &'a wit_parser::Resolve,
+    package: wit_parser::PackageId,
+    name: &str,
+) -> &'a wit_parser::Interface {
+    let id = *resolve.packages[package]
+        .interfaces
+        .get(name)
+        .unwrap_or_else(|| panic!("the package declares interface {name}"));
+    &resolve.interfaces[id]
+}
+
+/// A type as WIT spells it, for the forms these contracts use. An
+/// unanticipated form PANICS rather than rendering to something comparable:
+/// a shape nobody expected is a finding, not a pass.
+fn render(resolve: &wit_parser::Resolve, ty: wit_parser::Type) -> String {
+    use wit_parser::{Type, TypeDefKind};
+    match ty {
+        Type::Bool => "bool".into(),
+        Type::U8 => "u8".into(),
+        Type::U16 => "u16".into(),
+        Type::U32 => "u32".into(),
+        Type::U64 => "u64".into(),
+        Type::S8 => "s8".into(),
+        Type::S16 => "s16".into(),
+        Type::S32 => "s32".into(),
+        Type::S64 => "s64".into(),
+        Type::F32 => "f32".into(),
+        Type::F64 => "f64".into(),
+        Type::Char => "char".into(),
+        Type::String => "string".into(),
+        Type::ErrorContext => "error-context".into(),
+        Type::Id(id) => {
+            let def = &resolve.types[id];
+            if let Some(name) = &def.name {
+                return name.clone();
+            }
+            match &def.kind {
+                TypeDefKind::List(inner) => format!("list<{}>", render(resolve, *inner)),
+                TypeDefKind::Option(inner) => format!("option<{}>", render(resolve, *inner)),
+                TypeDefKind::Tuple(tuple) => {
+                    let parts: Vec<_> = tuple.types.iter().map(|t| render(resolve, *t)).collect();
+                    format!("tuple<{}>", parts.join(", "))
+                }
+                TypeDefKind::Result(result) => match (result.ok, result.err) {
+                    (Some(ok), Some(err)) => {
+                        format!("result<{}, {}>", render(resolve, ok), render(resolve, err))
+                    }
+                    (Some(ok), None) => format!("result<{}>", render(resolve, ok)),
+                    (None, Some(err)) => format!("result<_, {}>", render(resolve, err)),
+                    (None, None) => "result".into(),
+                },
+                other => panic!("unrendered WIT type form: {other:?}"),
+            }
+        }
+    }
+}
+
+/// A function as `name: func(param: type, ...) -> result`, from the PARSED
+/// signature — so a renamed parameter, a reordered one, or a changed type
+/// all fail here, none of which a substring on the source line can see.
+fn signature(
+    resolve: &wit_parser::Resolve,
+    iface: &wit_parser::Interface,
+    name: &str,
+) -> String {
+    let func = iface
+        .functions
+        .get(name)
+        .unwrap_or_else(|| panic!("the interface declares {name}"));
+    let params: Vec<_> = func
+        .params
+        .iter()
+        .map(|(param, ty)| format!("{param}: {}", render(resolve, *ty)))
+        .collect();
+    let result = func
+        .result
+        .map(|ty| format!(" -> {}", render(resolve, ty)))
+        .unwrap_or_default();
+    format!("{}: func({}){result}", func.name, params.join(", "))
+}
+
+/// A variant's cases as `name` / `name(payload)`, in declaration order.
+fn variant_cases(
+    resolve: &wit_parser::Resolve,
+    iface: &wit_parser::Interface,
+    name: &str,
+) -> Vec<String> {
+    let id = *iface
+        .types
+        .get(name)
+        .unwrap_or_else(|| panic!("the interface declares {name}"));
+    match &resolve.types[id].kind {
+        wit_parser::TypeDefKind::Variant(variant) => variant
+            .cases
+            .iter()
+            .map(|case| match case.ty {
+                Some(ty) => format!("{}({})", case.name, render(resolve, ty)),
+                None => case.name.clone(),
+            })
+            .collect(),
+        other => panic!("{name} is a variant, not {other:?}"),
+    }
+}
+
+/// A record's fields as `name: type`, in declaration order.
+fn record_fields(
+    resolve: &wit_parser::Resolve,
+    iface: &wit_parser::Interface,
+    name: &str,
+) -> Vec<String> {
+    let id = *iface
+        .types
+        .get(name)
+        .unwrap_or_else(|| panic!("the interface declares {name}"));
+    match &resolve.types[id].kind {
+        wit_parser::TypeDefKind::Record(record) => record
+            .fields
+            .iter()
+            .map(|field| format!("{}: {}", field.name, render(resolve, field.ty)))
+            .collect(),
+        other => panic!("{name} is a record, not {other:?}"),
+    }
+}
+
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
     // 0.10.0 (M2-K15): `net-error` gains `untrusted`;
@@ -14,7 +167,8 @@ fn world_is_versioned_for_suspend_semantics() {
     // 0.8.0 (M2-K13): the kernel becomes a publisher on this world's bus;
     // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
     // 0.6.0 (M2-K9) the typed `restarting` one.
-    assert!(WORLD.contains("package jinn:plugin@0.10.0;"));
+    let (resolve, package) = parse_wit("plugin.wit", WORLD);
+    assert_eq!(package_id(&resolve, package), "jinn:plugin@0.10.0");
     assert!(WORLD.contains("Suspend ≠ dispose"));
 }
 
@@ -208,22 +362,65 @@ fn process_and_net_imports_return_their_bundles_errors() {
 fn the_world_and_the_bundle_declare_both_outbound_one_shots() {
     const NET: &str = include_str!("../../../../contracts/jinn-net/contract.wit");
     const META: &str = include_str!("../../../../contracts/jinn-net/metadata.toml");
-    assert!(NET.contains("package jinn:net@0.3.0;"));
-    for declared in [
-        "\n  record outbound-request { method: string, url: string, headers: list<header>, body: list<u8> }",
-        "\n  record outbound-response { status: u16, headers: list<header>, body: list<u8> }",
-        // R12: the 0.1.0 declaration, PRESERVED byte for byte.
-        "\n  request: func(method: string, url: string, body: list<u8>) -> result<list<u8>, net-error>;",
-        // 0.2.0: the whole-response edition, added BESIDE it.
-        "\n  send-request: func(req: outbound-request) -> result<outbound-response, net-error>;",
-        // 0.3.0 (M2-K15): ONE case added to `net-error`, the whole
-        // declaration asserted as a line so a case that went MISSING —
-        // or one whose payload changed — fails here. An unanchored
-        // `contains("untrusted")` would pass on the prose above it.
-        "\n  variant net-error { not-found, denied(string), failed(string), invalid(string), untrusted(string) }",
+    // BOTH documents PARSED, and every declaration below asserted in each:
+    // the bundle is the contract of record, the world carries it verbatim
+    // (R12), and a drift between the two is exactly what has to fail.
+    let (net_resolve, net_package) = parse_wit("jinn-net.wit", NET);
+    let (world_resolve, world_package) = parse_wit("plugin.wit", WORLD);
+    assert_eq!(package_id(&net_resolve, net_package), "jinn:net@0.3.0");
+    for (document, resolve, package) in [
+        ("the bundle", &net_resolve, net_package),
+        ("the world", &world_resolve, world_package),
     ] {
-        assert!(NET.contains(declared), "the bundle declares {declared:?}");
-        assert!(WORLD.contains(declared), "the world carries {declared:?}");
+        let net = interface(resolve, package, "net");
+        assert_eq!(
+            record_fields(resolve, net, "outbound-request"),
+            [
+                "method: string",
+                "url: string",
+                "headers: list<header>",
+                "body: list<u8>"
+            ],
+            "{document}"
+        );
+        assert_eq!(
+            record_fields(resolve, net, "outbound-response"),
+            ["status: u16", "headers: list<header>", "body: list<u8>"],
+            "{document}"
+        );
+        // R12: the 0.1.0 declaration, PRESERVED — same name, same
+        // parameters in the same order, same result. Round 1 of M2-K14
+        // REPLACED it instead of adding beside it, and the substring that
+        // was supposed to notice could not: `contains("request: func(")`
+        // is satisfied by `send-request` alone.
+        assert_eq!(
+            signature(resolve, net, "request"),
+            "request: func(method: string, url: string, body: list<u8>) \
+             -> result<list<u8>, net-error>",
+            "{document}"
+        );
+        // 0.2.0: the whole-response edition, added BESIDE it.
+        assert_eq!(
+            signature(resolve, net, "send-request"),
+            "send-request: func(req: outbound-request) -> result<outbound-response, net-error>",
+            "{document}"
+        );
+        // 0.3.0 (M2-K15): ONE case ADDED to `net-error`. The whole case
+        // list in declaration order, each with its payload — so a case
+        // gone missing, renamed, reordered, or re-typed fails here. No
+        // substring observes a payload at all, and `contains("untrusted")`
+        // is satisfied by the prose above the declaration.
+        assert_eq!(
+            variant_cases(resolve, net, "net-error"),
+            [
+                "not-found",
+                "denied(string)",
+                "failed(string)",
+                "invalid(string)",
+                "untrusted(string)"
+            ],
+            "{document}"
+        );
     }
     // Law 3 admits exactly two categories, and BOTH doors are DECLARED —
     // with no inverse and no compensator to mistake for one. A legacy door

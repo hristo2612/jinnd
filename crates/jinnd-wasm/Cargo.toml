@@ -82,3 +82,14 @@ tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "sy
 # serde-free `DeTable` document API, no serializer, no derive, no serde.
 toml = { version = "1.1.4", default-features = false, features = ["parse", "std"] }
 wit-component = "0.233.0"
+# The contract of record is asserted by PARSING, never by substring
+# (M2-K15 round-2 ruling; the M2-K19 `toml` precedent for the bundles).
+# A `contains` observes bytes wherever they sit — a version in a doc
+# comment satisfies it while the declaration below says something else —
+# and it cannot see a variant case's payload at all. R10: dev-only, ZERO
+# runtime surface, and ZERO new packages in the lockfile — `wit-parser`
+# 0.233.0 is already in the tree as a public dependency of the
+# `wit-component` dev-dep above, and its types cannot be named without
+# depending on it directly. A hand-written WIT reader is neither small
+# nor boring.
+wit-parser = "0.233.0"
