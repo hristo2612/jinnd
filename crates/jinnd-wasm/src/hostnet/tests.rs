@@ -330,11 +330,15 @@ async fn handles_are_caller_scoped_and_the_release_closes_on_the_record() {
             .await,
         Err(ErrorCode::NotFound)
     );
-    let again = rig.listen().await;
-    rig.call(rig.guest, "close", with_handle(again, &[]))
+    // A fresh port for the guest's own close: a just-released port is the
+    // OS's to hand back when it likes (M2-K20; `release_tests`).
+    let fresh = self::rig();
+    let again = fresh.listen().await;
+    fresh
+        .call(fresh.guest, "close", with_handle(again, &[]))
         .await
         .unwrap_or_else(|code| panic!("close: {code:?}"));
-    assert_eq!(rig.provider.live(), 0, "the guest's close releases too");
+    assert_eq!(fresh.provider.live(), 0, "the guest's close releases too");
 }
 
 /// A malformed `request` payload is the typed malformed answer, never a

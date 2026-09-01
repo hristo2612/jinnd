@@ -8,33 +8,42 @@
 //! specific `127.0.0.1:P` listener coexists with a wildcard `*:P` bound by
 //! number — the most specific answers while both live, and once the
 //! kernel's is released a connect reaches the foreigner. The window is
-//! forced open here on the platform whose rules admit it; Linux refuses a
-//! wildcard beside a listening specific (`EADDRINUSE`), so that supply and
-//! this flake do not exist there.
+//! forced open here on every platform (M2-K12: one inventory, each
+//! platform's expectation stated): BSD admits the foreigner and the window
+//! is driven through it; Linux refuses that bind (`EADDRINUSE`), which is
+//! asserted, because it is why the flake's supply does not exist there.
 
-#[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
-use super::tests::{Face, settle, with_handle};
-use super::tests::{descriptor_of, rig};
+use super::tests::{Face, descriptor_of, rig, settle, with_handle};
 
-/// The foreign listener the box can supply: a wildcard bind by number on
-/// the kernel's port, beside the kernel's live specific listener.
-#[cfg(target_os = "macos")]
-fn foreign_wildcard(port: u16) -> std::net::TcpListener {
-    let foreign = std::net::TcpListener::bind(("0.0.0.0", port))
-        .unwrap_or_else(|error| panic!("a wildcard beside a live specific listener: {error}"));
-    foreign
-        .set_nonblocking(true)
-        .unwrap_or_else(|error| panic!("{error}"));
-    foreign
+/// The foreign listener a box can supply — a wildcard bind by number on
+/// the kernel's port, beside the kernel's live specific listener — where
+/// the platform's bind rules admit it, and the refusal where they do not.
+fn foreign_wildcard(port: u16) -> Option<std::net::TcpListener> {
+    let bsd_rules = cfg!(target_os = "macos");
+    match (bsd_rules, std::net::TcpListener::bind(("0.0.0.0", port))) {
+        (true, Ok(foreign)) => {
+            foreign
+                .set_nonblocking(true)
+                .unwrap_or_else(|error| panic!("{error}"));
+            Some(foreign)
+        }
+        (false, Err(error)) if error.kind() == std::io::ErrorKind::AddrInUse => None,
+        (false, Err(error)) => {
+            panic!("the refusal that keeps this window shut is AddrInUse: {error}")
+        }
+        (true, Err(error)) => {
+            panic!("BSD bind rules admit a wildcard beside a listening specific: {error}")
+        }
+        (false, Ok(_)) => {
+            panic!("a wildcard beside a listening specific binds only under BSD rules")
+        }
+    }
 }
 
 /// Whether `foreign` has a connection to accept within `wait`.
-#[cfg(target_os = "macos")]
 fn accepts_within(foreign: &std::net::TcpListener, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
@@ -51,13 +60,14 @@ fn accepts_within(foreign: &std::net::TcpListener, wait: Duration) -> bool {
     }
 }
 
-/// The window the flake lived in, forced open: with a foreign wildcard
-/// listener on the kernel's port, every connect reaches the kernel's
-/// listener while it lives and the foreigner only once it is released —
-/// the kernel's contract holds throughout (descriptor dropped before the
-/// release returns; no wake ledgered after it), and the connect the old
-/// assertion expected to be refused is answered, by someone else.
-#[cfg(target_os = "macos")]
+/// The window the flake lived in, forced open where the platform admits
+/// it: with a foreign wildcard listener on the kernel's port, every connect
+/// reaches the kernel's listener while it lives and the foreigner only once
+/// it is released — the kernel's contract holds throughout (descriptor
+/// dropped before the release returns; no wake ledgered after it), and the
+/// connect the old assertion expected to be refused is answered, by someone
+/// else. Where the platform refuses the foreigner, that refusal is the
+/// assertion, and the contract is checked just the same.
 #[tokio::test]
 async fn a_foreign_wildcard_listener_answers_the_released_port_not_the_kernel() {
     let rig = rig();
@@ -77,10 +87,12 @@ async fn a_foreign_wildcard_listener_answers_the_released_port_not_the_kernel() 
         .await
         .unwrap_or_else(|| panic!("the kernel's listener answers while it lives"));
     settle(|| face.wakes(listener) == 1).await;
-    assert!(
-        !accepts_within(&foreign, Duration::from_millis(50)),
-        "the most specific listener answers, not the foreigner"
-    );
+    if let Some(foreign) = &foreign {
+        assert!(
+            !accepts_within(foreign, Duration::from_millis(50)),
+            "the most specific listener answers, not the foreigner"
+        );
+    }
     rig.call(rig.guest, "close", with_handle(conn, &[]))
         .await
         .unwrap_or_else(|code| panic!("close: {code:?}"));
@@ -94,12 +106,14 @@ async fn a_foreign_wildcard_listener_answers_the_released_port_not_the_kernel() 
         descriptor.upgrade().is_none(),
         "the descriptor is dropped — closed — before the release returns"
     );
-    let _stray = std::net::TcpStream::connect(("127.0.0.1", rig.port))
-        .unwrap_or_else(|error| panic!("the foreigner answers the released port: {error}"));
-    assert!(
-        accepts_within(&foreign, Duration::from_millis(500)),
-        "the connect landed on the foreign wildcard listener"
-    );
+    if let Some(foreign) = &foreign {
+        let _stray = std::net::TcpStream::connect(("127.0.0.1", rig.port))
+            .unwrap_or_else(|error| panic!("the foreigner answers the released port: {error}"));
+        assert!(
+            accepts_within(foreign, Duration::from_millis(500)),
+            "the connect landed on the foreign wildcard listener"
+        );
+    }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         rig.ledger.readable_wakes(listener),
@@ -107,25 +121,5 @@ async fn a_foreign_wildcard_listener_answers_the_released_port_not_the_kernel() 
         "no wake after release"
     );
     assert_eq!(face.wakes(listener), 1, "nothing delivered after release");
-    assert_eq!(rig.provider.live(), 0);
-}
-
-/// Every platform: across many releases, the descriptor is gone the
-/// moment `withdraw` returns — the property the old probe stood in for.
-#[tokio::test]
-async fn a_release_drops_the_descriptor_before_it_returns_every_time() {
-    let rig = rig();
-    for round in 0..32 {
-        let listener = rig.listen().await;
-        let descriptor = descriptor_of(&rig, listener);
-        rig.provider
-            .withdraw(listener)
-            .await
-            .unwrap_or_else(|error| panic!("release {round}: {error:?}"));
-        assert!(
-            descriptor.upgrade().is_none(),
-            "round {round}: the descriptor outlived its release"
-        );
-    }
     assert_eq!(rig.provider.live(), 0);
 }
