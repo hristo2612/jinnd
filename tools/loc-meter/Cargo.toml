@@ -1,0 +1,21 @@
+[package]
+name = "loc-meter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The canonical LOC meter (M2-K18): categories decided the way the compiler decides them; refuses on a dirty tree"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Item-level `#[cfg(..)]` is a syntax fact, so the meter reads it with the
+# Rust parser instead of guessing from filenames (M2-K18). span-locations
+# turns item spans into line ranges. All three crates are already in the
+# lockfile through the kernel's own dependencies; the tool is outside the
+# R10 kernel-core count (it lives under tools/ and is metered on its own line).
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+serde_json = "1.0.151"
+syn = { version = "2.0.119", features = ["full", "parsing"] }
