@@ -1,0 +1,30 @@
+[package]
+name = "jinnd-contract-lens"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Dev-only structural lens over the contracts of record (M2-K16): parse it, locate it, never grep it"
+
+[lints]
+workspace = true
+
+# M2-K16 (R10, R12). This crate is TEST SUPPORT: it is only ever a
+# `[dev-dependencies]` entry of a kernel crate (a test in `gates.rs` parses
+# every workspace manifest and refuses any other placement), so it adds ZERO
+# runtime surface and sits outside the kernel-core count under R10's own
+# metric note. ZERO new packages in the lockfile: `wit-parser` and `toml`
+# were already dev-deps of jinnd-wasm/jinnd-daemon (M2-K19, M2-K15
+# rulings), and `syn` already rides in through serde_derive and
+# tokio-macros — with `full` already enabled by the latter.
+[dependencies]
+# The toolchain's own WIT parser: a declaration is observed, never grepped.
+wit-parser = "0.233.0"
+# The crate that defines TOML's grammar; `parse` only — the serde-free
+# `DeTable` document API, no serializer, no derive, no serde.
+toml = { version = "1.1.4", default-features = false, features = ["parse", "std"] }
+# The facade's own definition, read as Rust: the `LedgerEventKind` field
+# lists come out of `crates/jinnd-api/src/ledger.rs` parsed, so a bundle's
+# row shape is compared against what the code knows, never a hand copy.
+syn = { version = "2.0.119", features = ["full"] }

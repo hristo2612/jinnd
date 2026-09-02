@@ -768,6 +768,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jinnd-contract-lens"
+version = "0.0.1"
+dependencies = [
+ "syn 2.0.119",
+ "toml",
+ "wit-parser",
+]
+
+[[package]]
 name = "jinnd-daemon"
 version = "0.0.1"
 dependencies = [

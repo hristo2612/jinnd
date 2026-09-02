@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/jinnd-adapter",
     "crates/jinnd-api",
+    "crates/jinnd-contract-lens",
     "crates/jinnd-context",
     "crates/jinnd-daemon",
     "crates/jinnd-effects",
