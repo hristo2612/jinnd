@@ -60,8 +60,17 @@ fn a_mod_the_walk_cannot_resolve_refuses_the_run_as_the_compiler_would() {
     let fx = Fixture::new();
     fx.append("crates/alpha/src/lib.rs", "mod absent;\n");
     fx.commit("absent");
-    let refusal = fx.measure();
-    assert!(refusal.is_err(), "expected a refusal, got {refusal:#?}");
+    match fx.measure() {
+        Err(MeterError::Unresolved {
+            module,
+            declared_in,
+            ..
+        }) => assert_eq!(
+            (module.as_str(), declared_in.as_str()),
+            ("absent", "crates/alpha/src/lib.rs")
+        ),
+        other => panic!("expected a refusal naming the module, got {other:#?}"),
+    }
     let target = TempDir::new("target").unwrap();
     let check = Command::new("cargo")
         .args(["check", "-q", "--offline", "--manifest-path"])
@@ -83,6 +92,21 @@ fn a_path_attribute_to_a_missing_file_refuses_the_run() {
         "#[path = \"nowhere.rs\"]\nmod elsewhere;\n",
     );
     fx.commit("path");
-    let refusal = fx.measure();
-    assert!(refusal.is_err(), "expected a refusal, got {refusal:#?}");
+    match fx.measure() {
+        Err(MeterError::Unresolved {
+            module,
+            declared_in,
+            reason,
+        }) => {
+            assert_eq!(
+                (module.as_str(), declared_in.as_str()),
+                ("elsewhere", "crates/alpha/src/lib.rs")
+            );
+            assert!(
+                reason.starts_with("crates/alpha/src/nowhere.rs: "),
+                "{reason}"
+            );
+        }
+        other => panic!("expected a refusal naming the module, got {other:#?}"),
+    }
 }

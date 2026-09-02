@@ -8,8 +8,9 @@
 //! package under `crates/` reaches it through `mod` declarations, and an item
 //! whose `#[cfg(..)]` predicate is false in the default non-test build is
 //! removed from the production count before diffing. Markdown is never
-//! production; it has its own line. A dirty working tree is refused, never
-//! footnoted: the meter prints no number it knows a reader could misread.
+//! production; it has its own line. A dirty working tree and a `mod` the walk
+//! cannot follow are refused, never footnoted: the meter prints no number it
+//! knows a reader could misread.
 
 mod cargo;
 mod cfg;
@@ -154,6 +155,12 @@ impl Report {
 pub enum MeterError {
     /// The working tree has uncommitted or untracked paths; the number would not include them.
     Dirty(Vec<String>),
+    /// A `mod` the walk cannot follow; the compiler would refuse the same tree, so the number would be incomplete.
+    Unresolved {
+        module: String,
+        declared_in: String,
+        reason: String,
+    },
     /// A subprocess or parse failed; the message names it.
     Failed(String),
 }
@@ -171,6 +178,14 @@ impl std::fmt::Display for MeterError {
                 }
                 Ok(())
             }
+            MeterError::Unresolved {
+                module,
+                declared_in,
+                reason,
+            } => writeln!(
+                f,
+                "REFUSED: `mod {module};` in {declared_in} names a file the walk cannot read ({reason}); the compiler's view would be incomplete"
+            ),
             MeterError::Failed(msg) => write!(f, "{msg}"),
         }
     }

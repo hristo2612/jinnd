@@ -9,7 +9,7 @@ const USAGE: &str = "usage: loc-meter [--base <ref>] [--head <ref>] [--files]\n\
   --base   integration branch, measured from merge-base(base, head) (default: main)\n\
   --head   commit measured (default: HEAD)\n\
   --files  list every billed row\n\
-exit 0 measured, 2 refused (dirty tree), 1 failed";
+exit 0 measured, 2 refused (dirty tree, unresolved module), 1 failed";
 
 fn main() -> ExitCode {
     let mut base = "main".to_string();
@@ -49,8 +49,8 @@ fn main() -> ExitCode {
             print_report(&report, &base, &head, files);
             ExitCode::SUCCESS
         }
-        Err(MeterError::Dirty(paths)) => {
-            eprint!("loc-meter: {}", MeterError::Dirty(paths));
+        Err(e @ (MeterError::Dirty(_) | MeterError::Unresolved { .. })) => {
+            eprint!("loc-meter: {e}");
             ExitCode::from(2)
         }
         Err(e) => {

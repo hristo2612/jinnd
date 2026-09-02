@@ -20,7 +20,7 @@ pub fn walk(
 ) -> Result<BTreeMap<PathBuf, Ranges>, MeterError> {
     let mut out = BTreeMap::new();
     let walker = Walker { tree, features };
-    walker.file(root, true, &mut out)?;
+    walker.file(root, true, &mut out, None)?;
     Ok(out)
 }
 
@@ -44,13 +44,15 @@ impl Walker<'_> {
         rel: &Path,
         mod_rs_like: bool,
         out: &mut BTreeMap<PathBuf, Ranges>,
+        declared_by: Option<(&Path, &str)>,
     ) -> Result<(), MeterError> {
         if out.contains_key(rel) {
             return Ok(());
         }
         let abs = self.tree.join(rel);
-        let Ok(source) = std::fs::read_to_string(&abs) else {
-            return Ok(());
+        let source = match std::fs::read_to_string(&abs) {
+            Ok(source) => source,
+            Err(e) => return Err(unresolved(declared_by, rel, &e.to_string())),
         };
         let file = syn::parse_file(&source)
             .map_err(|e| MeterError::Failed(format!("parse {}: {e}", rel.display())))?;
@@ -72,11 +74,11 @@ impl Walker<'_> {
             inline: false,
         };
         let mut children = Vec::new();
-        self.items(&file.items, &scope, &mut ranges, &mut children);
+        self.items(&file.items, rel, &scope, &mut ranges, &mut children)?;
         absorb_blank_lines(&source, &mut ranges);
         out.insert(rel.to_path_buf(), ranges);
-        for (child, mod_rs_like) in children {
-            self.file(&child, mod_rs_like, out)?;
+        for (child, mod_rs_like, module) in children {
+            self.file(&child, mod_rs_like, out, Some((rel, &module)))?;
         }
         Ok(())
     }
@@ -84,10 +86,11 @@ impl Walker<'_> {
     fn items(
         &self,
         items: &[Item],
+        rel: &Path,
         scope: &Scope,
         ranges: &mut Ranges,
-        children: &mut Vec<(PathBuf, bool)>,
-    ) {
+        children: &mut Vec<(PathBuf, bool, String)>,
+    ) -> Result<(), MeterError> {
         for item in items {
             if !cfg::compiled(attrs(item), self.features) {
                 ranges.push(lines(item.span()));
@@ -101,9 +104,18 @@ impl Walker<'_> {
                             mod_dir: scope.mod_dir.join(m.ident.to_string()),
                             inline: true,
                         };
-                        self.items(inner, &nested, ranges, children);
+                        self.items(inner, rel, &nested, ranges, children)?;
                     }
-                    None => children.extend(self.resolve(&m.attrs, &m.ident.to_string(), scope)),
+                    None => {
+                        let name = m.ident.to_string();
+                        let (path, mod_rs_like) =
+                            self.resolve(&m.attrs, &name, scope).ok_or_else(|| {
+                                let reason =
+                                    format!("neither `{name}.rs` nor `{name}/mod.rs` exists");
+                                unresolved(Some((rel, &name)), &scope.mod_dir, &reason)
+                            })?;
+                        children.push((path, mod_rs_like, name));
+                    }
                 },
                 Item::Impl(i) => {
                     for member in &i.items {
@@ -136,6 +148,7 @@ impl Walker<'_> {
                 _ => {}
             }
         }
+        Ok(())
     }
 
     /// rustc's rule: `#[path]` is relative to the file's directory outside inline
@@ -156,6 +169,20 @@ impl Walker<'_> {
         }
         let nested = scope.mod_dir.join(name).join("mod.rs");
         self.tree.join(&nested).is_file().then_some((nested, true))
+    }
+}
+
+/// A `mod` the walk cannot follow is a compiler error; the meter's claim is the
+/// compiler's view, so it refuses rather than print a number missing a file.
+/// The crate root itself comes from `cargo metadata` and has no declaring `mod`.
+fn unresolved(declared_by: Option<(&Path, &str)>, target: &Path, reason: &str) -> MeterError {
+    match declared_by {
+        Some((declared_in, module)) => MeterError::Unresolved {
+            module: module.to_string(),
+            declared_in: declared_in.display().to_string(),
+            reason: format!("{}: {reason}", target.display()),
+        },
+        None => MeterError::Failed(format!("read {}: {reason}", target.display())),
     }
 }
 
