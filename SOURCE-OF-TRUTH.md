@@ -262,7 +262,8 @@ within a major version.
   full day on jinnd alone.*
   **Two structural blockers, discovered by the M2 port and recorded 2026-09-01 (see
   Decision Log). Both CLOSED 2026-09-02 — kept here as the record of what M3 needed
-  and where each was delivered.**
+  and where each was delivered. A THIRD, discovered by the harness UI packet and
+  recorded 2026-09-02, is OPEN (item 3).**
   1. **No outbound anything.** `jinn:net` v0.1 has no `request`, no TLS and no
      non-loopback listen, at every pin so far. Slack, Stripe, Linear, GitHub, the
      vendor engine APIs and every webhook are therefore *structurally impossible* in
@@ -284,10 +285,35 @@ within a major version.
      credential once per request before any dispatch, typed 401, provisioning at boot;
      PLA-343). One operator, one credential; no accounts, roles or delegation — the
      same-uid limit is stated in the contract, not papered over.
+  3. **No readiness gating between plugins on the lane plugins actually use.** §3
+     promises that a fiber activates only when every injected provider is Active and
+     that a provider change forces its consumers through unload → reload. The kernel
+     keeps both promises on the typed lane and neither on the R3 string lane — the
+     only lane a Tier A wasm plugin has, so in production it is THE lane. A wasm
+     entry that injects a sibling's contract at activation therefore boots on a coin
+     toss (sibling order is unspecified), rests `Failed` for the daemon's life when it
+     loses, and is never restarted when the sibling is replaced. Harness FINDINGS #7
+     predicted it; UI-1 (PLA-349) hit it in production shape at pin `85d36b4`, four
+     boots out of five, with a transcript (FINDINGS #45, #46), and the provider's own
+     "provided" announcement cannot repair it — the kernel refuses that emit as the
+     wait cycle it is (M2-K10). An instance whose UI transport boots on a coin toss
+     cannot run "a full day on jinnd alone"; the harness workaround (a
+     `jinn:introspect/transitions` subscription and a re-probe in every
+     activation-time consumer) is a plugin polling the kernel's lifecycle by another
+     name and stands only until the kernel makes it unnecessary. **OPEN — carded as
+     M2-K24 (`docs/packets/M2-K24.md`, PLA-350):** a per-entry `injects` declaration
+     for wasm entries carrying the typed lane's semantics to the string lane —
+     activate only once every declared provider is Active; unload → reload when one
+     is replaced (epoch gating, R9); re-arm rather than rest `Failed` when one lands
+     later (ruling 2, 2026-08-25: retry only against a CHANGED environment, and the
+     provider landing is the change). Undeclared entries are unchanged. Harness
+     pin-bump 7 adopts it and retires the workaround. Sequenced before M2-K23.
   The M2 port delivered the SHAPES faithfully; the two capabilities that separate a
   faithful shape from a thing that can run a business followed as seven kernel packets
-  and two harness packets in the two days after. M3 planning starts from an instance
-  that can reach out and can refuse a stranger. §7(b)'s week of duty is still owed
+  and two harness packets in the two days after, and the third blocker surfaced the
+  moment a real UI was composed on the result. M3 planning starts from an instance
+  that can reach out and can refuse a stranger, and waits on one whose plugins can
+  depend on each other without a coin toss. §7(b)'s week of duty is still owed
   (audit 2026-09-04).
 - **M4 — Cutover.** Old gateway retired per the cutover rule. jinnOS work (desktop
   session, mobile ROM) begins only after M4 — as bigger profiles, not new projects.
@@ -303,6 +329,19 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-09-02** — **A third M3 structural blocker is named in §7: no readiness
+  gating between plugins on the string lane (roadmap amendment, recorded by
+  kernel-dev on the COO's dispatch, PLA-350; COO veto window open).** Found by
+  harness packet UI-1 (PLA-349) at pin `85d36b4`, with a transcript (FINDINGS #45,
+  #46) of the shape FINDINGS #7 predicted: a wasm entry injecting a sibling's
+  contract at activation activates on a coin toss and is never re-armed or restarted
+  by the kernel. The provider-announces-itself repair is refused by M2-K10 as the
+  wait cycle it is, which proves readiness is the kernel's fact to publish (§3). The
+  direction is carded, not decided here: M2-K24 (`docs/packets/M2-K24.md`) carries
+  the typed lane's `injects` semantics to the string lane as an additive per-entry
+  declaration; §7's item 3 records the blocker and points at the card. Nothing about
+  M2's acceptance changes — §7(a) is met, §7(b) is still owed.
 
 - **2026-09-01** — **M3's acceptance is not reachable as written; the two blockers are
   named in §7 (Jimbo, roadmap amendment).** Found in a step-back review Hristo asked
