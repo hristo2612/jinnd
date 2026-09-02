@@ -113,6 +113,17 @@ pub fn disagreements(
     text: &str,
     declared: &BTreeMap<String, String>,
 ) -> Vec<Disagreement> {
-    let _ = (path, text, declared);
-    Vec::new()
+    references(text)
+        .into_iter()
+        .filter_map(|reference| {
+            let expected = declared.get(&reference.package)?;
+            (expected != &reference.version).then(|| Disagreement {
+                path: path.to_owned(),
+                line: reference.line,
+                package: reference.package,
+                found: reference.version,
+                declared: expected.clone(),
+            })
+        })
+        .collect()
 }

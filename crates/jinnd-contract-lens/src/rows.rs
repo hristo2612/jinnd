@@ -136,6 +136,24 @@ pub fn disagreements(
     text: &str,
     facade: &BTreeMap<String, Vec<String>>,
 ) -> Vec<Disagreement> {
-    let _ = (path, text, facade);
-    Vec::new()
+    mentions(text)
+        .into_iter()
+        .filter_map(|mention| {
+            let declared = facade.get(&mention.kind);
+            let agrees = declared.is_some_and(|declared| {
+                if mention.open {
+                    declared.starts_with(&mention.fields)
+                } else {
+                    declared == &mention.fields
+                }
+            });
+            (!agrees).then(|| Disagreement {
+                path: path.to_owned(),
+                line: mention.line,
+                kind: mention.kind,
+                found: mention.fields,
+                declared: declared.cloned(),
+            })
+        })
+        .collect()
 }

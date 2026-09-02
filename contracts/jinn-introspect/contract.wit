@@ -80,7 +80,7 @@ interface composition {
   // The daemon's readiness: the boot reconcile has landed, and the
   // profile/artifact watcher is armed (the machine-readable shape of the
   // readiness line, harness #12).
-  record readiness { boot-reconciled: bool, watcher-armed: bool }
+  record readiness-report { boot-reconciled: bool, watcher-armed: bool }
 
   // ONE COMMITTED FIBER TRANSITION, PUSHED (0.4.0). The kernel publishes
   // every transition it commits on the RESERVED topic
@@ -138,7 +138,7 @@ interface composition {
     // transition was committed; absent when no incarnation was installed.
     incarnation: option<u64>,
     // The states, from `entry.state`'s vocabulary.
-    from: string,
+    %from: string,
     to: string,
     // This kernel process's publish count, from 1. Gaps are losses; a
     // first value above 1 is a late join. Never reused, never reordered.
@@ -154,7 +154,7 @@ interface composition {
 
   // Effect class: read. Operation `readiness`, empty payload; answer = the
   // JSON `readiness` record.
-  readiness: func() -> readiness;
+  readiness: func() -> readiness-report;
 
   // Effect class: read. Operation `waits`, empty payload; answer = the
   // JSON list of `wait`, in the order the waits were taken. A crossing
