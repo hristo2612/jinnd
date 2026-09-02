@@ -60,8 +60,12 @@ pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, MeterError> {
 
 /// Uncommitted or untracked paths (ignored paths excluded). Empty means clean.
 pub fn dirty_paths(repo: &Path) -> Result<Vec<String>, MeterError> {
-    let _ = repo;
-    Ok(Vec::new())
+    let raw = run(repo, &["status", "--porcelain=v1", "--untracked-files=all"])?;
+    Ok(String::from_utf8_lossy(&raw)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// Extract `rev` into `dir` from git objects; the working tree is never read.

@@ -47,11 +47,12 @@ fn the_walk_names_exactly_the_files_the_compiler_reads() {
     for entry in std::fs::read_dir(target.path().join("debug/deps")).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "d") {
+            // Sources are written relative to the workspace root; targets are absolute.
             for token in std::fs::read_to_string(&path).unwrap().split_whitespace() {
-                if let Ok(rel) = std::path::Path::new(token).strip_prefix(fx.path()) {
-                    if rel.extension().is_some_and(|e| e == "rs") {
-                        compiler.insert(rel.to_path_buf());
-                    }
+                let token = token.trim_end_matches(':');
+                let rel = std::path::Path::new(token);
+                if rel.is_relative() && rel.extension().is_some_and(|e| e == "rs") {
+                    compiler.insert(rel.to_path_buf());
                 }
             }
         }
