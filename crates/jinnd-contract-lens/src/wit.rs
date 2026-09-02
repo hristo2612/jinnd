@@ -180,7 +180,6 @@ impl Iface<'_> {
     /// does not declare.
     pub fn type_docs(&self, name: &str) -> Docs {
         Docs {
-            item: format!("type {name}"),
             contents: self
                 .type_def(name)
                 .docs
