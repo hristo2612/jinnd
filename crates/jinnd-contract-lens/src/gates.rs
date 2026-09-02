@@ -171,23 +171,77 @@ fn gate_two_fires_on_a_value_for_a_field_and_on_an_unknown_kind() {
     }
 }
 
-/// The prose view sees comments only, so a declaration is invisible to it
-/// and a comment cannot pass for a table (instance five, both directions).
+/// GATE 1 fails CLOSED (round-2 ruling 1a): a token that looks like a
+/// package reference but does not read as one is REPORTED at its line,
+/// never skipped — a skipping reader is the vacuity in a new place.
 #[test]
-fn prose_is_comments_and_a_comment_is_not_a_table() {
-    let toml = Contract::from_text("x.toml", "[equality]\n# a note that mentions [recovery]\n");
-    assert!(toml.prose().states("[recovery]"));
-    assert!(!toml.prose().states("[equality]"));
-    assert!(!toml.metadata().has_table("recovery"));
-    assert!(toml.metadata().has_table("equality"));
+fn gate_one_refuses_a_reference_it_cannot_read() {
+    let declared = BTreeMap::from([("jinn:plugin".to_owned(), "0.10.0".to_owned())]);
+    let fixture = "// jinn:plugin@0.10 — a two-part version\n\
+                   // jinn:plugin@0.10.0-rc1 — trailing junk\n\
+                   // a URL with userinfo: http://user:pw@host/\n\
+                   // jinn:plugin@0.10.0 reads, and agrees\n";
+    let found = refs::disagreements("x.wit", fixture, &declared);
+    assert_eq!(
+        where_found(&found),
+        ["x.wit:1", "x.wit:2", "x.wit:3"],
+        "{found:#?}"
+    );
+}
+
+/// GATE 2 fails CLOSED (round-2 ruling 1a): a `Kind {` that does not read
+/// as a row is REPORTED at its line, never skipped.
+#[test]
+fn gate_two_refuses_a_row_it_cannot_read() {
+    let facade = facade::ledger_event_kinds();
+    let fixture = "// `NetRequested { effect method, host }` — no comma\n\
+                   // `NetRequested { effect, ..., host }` — the tail is not last\n\
+                   // `NetRequested { effect, ... }` reads, and agrees\n\
+                   // `NetRequested { effect, method\n";
+    let found = rows::disagreements("x.md", fixture, &facade);
+    assert_eq!(
+        where_found(&found),
+        ["x.md:1", "x.md:2", "x.md:4"],
+        "{found:#?}"
+    );
+}
+
+/// `path:line` of every reported disagreement, whatever its kind.
+fn where_found<D: std::fmt::Display>(found: &[D]) -> Vec<String> {
+    found
+        .iter()
+        .map(|d| {
+            d.to_string()
+                .split(": ")
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// A phrase binds to ONE named item's doc block (round-2 ruling 1b): an
+/// unrelated comment elsewhere in the file satisfies nothing, a declaration
+/// is never prose, and a comment naming a table is not one (instance five).
+#[test]
+fn a_doc_block_binds_to_its_item_and_a_comment_is_not_a_table() {
     let wit = Contract::from_text(
         "x.wit",
-        "package a:b@0.1.0;\n/// the wait-cycle record\ninterface t { record wait-cycle { on: string } }\n",
-    );
-    assert!(!wit.prose().states("record wait-cycle {"));
-    assert!(wit.prose().states("wait-cycle record"));
-    assert_eq!(
-        wit.wit().interface("t").record_fields("wait-cycle"),
-        ["on: string"]
-    );
+        "package a:b@0.1.0;\n\
+         interface t {\n\
+           /// the wait-cycle record, stated only-here\n\
+           record wait-cycle { on: string }\n\
+           // elsewhere: a plain comment about walk()\n\
+           walk: func() -> wait-cycle;\n\
+         }\n",
+    )
+    .wit();
+    let t = wit.interface("t");
+    assert!(t.type_docs("wait-cycle").states("only-here"));
+    assert!(!t.func_docs("walk").states("only-here"));
+    assert!(t.func_docs("walk").states("about walk()"));
+    assert!(!t.type_docs("wait-cycle").states("record wait-cycle {"));
+    let toml = Contract::from_text("x.toml", "[equality]\n# a note that mentions [recovery]\n");
+    assert!(!toml.metadata().has_table("recovery"));
+    assert!(toml.metadata().has_table("equality"));
 }

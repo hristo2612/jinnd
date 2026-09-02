@@ -144,6 +144,37 @@ impl Iface<'_> {
     }
 }
 
+/// The doc block the parser attached to one named item.
+pub struct Docs {
+    contents: String,
+}
+
+impl Docs {
+    /// PROSE PRESENCE in this one block, nothing more.
+    pub fn states(&self, phrase: &str) -> bool {
+        let _ = phrase;
+        false
+    }
+}
+
+impl Iface<'_> {
+    /// The doc block of function `name`.
+    pub fn func_docs(&self, name: &str) -> Docs {
+        let _ = name;
+        Docs {
+            contents: String::new(),
+        }
+    }
+
+    /// The doc block of type `name`.
+    pub fn type_docs(&self, name: &str) -> Docs {
+        let _ = name;
+        Docs {
+            contents: String::new(),
+        }
+    }
+}
+
 /// A type as WIT spells it, for the forms these contracts use. An
 /// unanticipated form PANICS rather than rendering to something
 /// comparable: a shape nobody expected is a finding, not a pass.
