@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 pub use git::toplevel;
 pub use side::Side;
+use side::Texts;
 
 /// Where a changed line is billed. Exactly one category per line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -225,38 +226,53 @@ fn bill(
         .as_deref()
         .map(|p| new_side.texts(Path::new(p)))
         .transpose()?;
-    let category = match (&change.new, &change.old) {
-        (Some(p), _) => new_side.classify(Path::new(p)),
-        (None, Some(p)) => old_side.classify(Path::new(p)),
-        (None, None) => return Ok(()),
-    };
-    let counted = git::numstat(
-        old.as_ref().map(|t| t.counted.as_str()),
-        new.as_ref().map(|t| t.counted.as_str()),
-    )?;
-    files.push(FileRow {
+    let old_category = change
+        .old
+        .as_deref()
+        .map(|p| old_side.classify(Path::new(p)));
+    let new_category = change
+        .new
+        .as_deref()
+        .map(|p| new_side.classify(Path::new(p)));
+    match (old_category, new_category) {
+        // A path whose two sides sit on different lines (a move across surfaces,
+        // or a file the build stops or starts compiling) leaves one line whole
+        // and enters the other whole: full delete, full add. Only a same-line
+        // change is diffed as content. (M2-K18 ruling 1)
+        (Some(o), Some(n)) if o != n => {
+            rows(o, old.as_ref(), None, change, files)?;
+            rows(n, None, new.as_ref(), change, files)
+        }
+        (_, Some(n)) => rows(n, old.as_ref(), new.as_ref(), change, files),
+        (Some(o), None) => rows(o, old.as_ref(), None, change, files),
+        (None, None) => Ok(()),
+    }
+}
+
+/// The counted row under `category`, plus the companion row carrying the sides' `cfg`-off items.
+fn rows(
+    category: Category,
+    old: Option<&Texts>,
+    new: Option<&Texts>,
+    change: &git::Change,
+    files: &mut Vec<FileRow>,
+) -> Result<(), MeterError> {
+    let row = |category, delta, cfg_off| FileRow {
         category,
-        delta: counted,
+        delta,
         old: change.old.clone(),
         new: change.new.clone(),
-        cfg_off: false,
-    });
-    let old_off = old
-        .as_ref()
-        .map(|t| t.cfg_off.as_str())
-        .filter(|s| !s.is_empty());
-    let new_off = new
-        .as_ref()
-        .map(|t| t.cfg_off.as_str())
-        .filter(|s| !s.is_empty());
+        cfg_off,
+    };
+    let counted = git::numstat(
+        old.map(|t| t.counted.as_str()),
+        new.map(|t| t.counted.as_str()),
+    )?;
+    files.push(row(category, counted, false));
+    let old_off = old.map(|t| t.cfg_off.as_str()).filter(|s| !s.is_empty());
+    let new_off = new.map(|t| t.cfg_off.as_str()).filter(|s| !s.is_empty());
     if old_off.is_some() || new_off.is_some() {
-        files.push(FileRow {
-            category: Category::Tests,
-            delta: git::numstat(old_off, new_off)?,
-            old: change.old.clone(),
-            new: change.new.clone(),
-            cfg_off: true,
-        });
+        files.push(row(Category::Tests, git::numstat(old_off, new_off)?, true));
     }
     Ok(())
 }
