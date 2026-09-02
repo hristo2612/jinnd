@@ -149,7 +149,6 @@ impl Iface<'_> {
 /// `wit_parser::Docs` collected it. Scoped by construction: a phrase found
 /// here was written about THIS item, never somewhere else in the file.
 pub struct Docs {
-    item: String,
     contents: String,
 }
 
@@ -160,11 +159,6 @@ impl Docs {
     /// (a declaration is not a comment, so it is never in here).
     pub fn states(&self, phrase: &str) -> bool {
         self.contents.contains(phrase)
-    }
-
-    /// The item this block belongs to, for messages.
-    pub fn item(&self) -> &str {
-        &self.item
     }
 }
 
@@ -178,7 +172,6 @@ impl Iface<'_> {
             .get(name)
             .unwrap_or_else(|| panic!("the interface declares {name}"));
         Docs {
-            item: format!("func {name}"),
             contents: func.docs.contents.clone().unwrap_or_default(),
         }
     }
