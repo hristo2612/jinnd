@@ -52,3 +52,37 @@ fn a_cross_category_rename_is_a_full_delete_and_a_full_add() {
         "a delete row on the old line, an add row on the new: {report:#?}"
     );
 }
+
+/// A committed `mod absent;` is E0583 to the compiler. The meter claims the
+/// compiler's view, so it refuses before `cargo check` gets to fail.
+#[test]
+fn a_mod_the_walk_cannot_resolve_refuses_the_run_as_the_compiler_would() {
+    let fx = Fixture::new();
+    fx.append("crates/alpha/src/lib.rs", "mod absent;\n");
+    fx.commit("absent");
+    let refusal = fx.measure();
+    assert!(refusal.is_err(), "expected a refusal, got {refusal:#?}");
+    let target = TempDir::new("target").unwrap();
+    let check = Command::new("cargo")
+        .args(["check", "-q", "--offline", "--manifest-path"])
+        .arg(fx.path().join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", target.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(!check.status.success(), "cargo check must fail too");
+    assert!(stderr.contains("E0583"), "{stderr}");
+}
+
+/// The other silent path: `#[path]` names a file the walk cannot read.
+#[test]
+fn a_path_attribute_to_a_missing_file_refuses_the_run() {
+    let fx = Fixture::new();
+    fx.append(
+        "crates/alpha/src/lib.rs",
+        "#[path = \"nowhere.rs\"]\nmod elsewhere;\n",
+    );
+    fx.commit("path");
+    let refusal = fx.measure();
+    assert!(refusal.is_err(), "expected a refusal, got {refusal:#?}");
+}
