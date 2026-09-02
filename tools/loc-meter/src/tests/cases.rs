@@ -226,7 +226,7 @@ fn facade_crates_land_on_their_own_line() {
     assert_eq!(report.total(Category::Facade).net(), 1, "{report:#?}");
     assert_eq!(
         report.total(Category::Contracts).net(),
-        4 + 0,
+        4,
         "member line edit is 1-1, {report:#?}"
     );
 }

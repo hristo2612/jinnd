@@ -72,7 +72,7 @@ impl Walker<'_> {
             inline: false,
         };
         let mut children = Vec::new();
-        self.items(&file.items, &scope, &source, &mut ranges, &mut children);
+        self.items(&file.items, &scope, &mut ranges, &mut children);
         absorb_blank_lines(&source, &mut ranges);
         out.insert(rel.to_path_buf(), ranges);
         for (child, mod_rs_like) in children {
@@ -85,7 +85,6 @@ impl Walker<'_> {
         &self,
         items: &[Item],
         scope: &Scope,
-        source: &str,
         ranges: &mut Ranges,
         children: &mut Vec<(PathBuf, bool)>,
     ) {
@@ -102,7 +101,7 @@ impl Walker<'_> {
                             mod_dir: scope.mod_dir.join(m.ident.to_string()),
                             inline: true,
                         };
-                        self.items(inner, &nested, source, ranges, children);
+                        self.items(inner, &nested, ranges, children);
                     }
                     None => children.extend(self.resolve(&m.attrs, &m.ident.to_string(), scope)),
                 },
