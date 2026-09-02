@@ -25,6 +25,8 @@
 #![forbid(unsafe_code)]
 
 pub mod facade;
+pub mod index;
+pub mod mentions;
 pub mod metadata;
 pub mod refs;
 pub mod rows;
@@ -33,6 +35,8 @@ pub mod wit;
 
 #[cfg(test)]
 mod gates;
+#[cfg(test)]
+mod gates_index;
 #[cfg(test)]
 mod gates_scan;
 
