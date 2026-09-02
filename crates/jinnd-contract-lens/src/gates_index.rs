@@ -142,6 +142,61 @@ fn the_mention_reader_fires_on_the_world_citation_that_shipped() {
     );
 }
 
+/// WORLD-MENTION red-first, round 2 (the verifier's fixture, verbatim): a
+/// stale claim wearing a MALFORMED packet tag is not dated by it. The tag
+/// grammar is exact — `M<d>-K<d+>` or `M<d>-P<d+>`, then end-of-clause —
+/// and an attempt that reads as anything else, or anything but a tag after
+/// a separator, FAILS CLOSED at its line: never a claim, never dated.
+#[test]
+fn malformed_packet_suffix_does_not_exempt_a_stale_world_claim() {
+    let found =
+        mentions::disagreements("fixture.md", "plugin world 0.9.0, M2-K16-extra\n", "0.10.0");
+    assert_eq!(
+        found,
+        vec![mentions::Disagreement::Unreadable {
+            path: "fixture.md".to_owned(),
+            line: 1,
+            token: "0.9.0, M2-K16-extra".to_owned(),
+        }],
+        "a suffix outside the stated packet-tag grammar must not date the claim: {found:#?}"
+    );
+
+    let boundary = "world 0.9.0, M2-K16extra\n\
+                    world 0.9.0 M2-K16_x\n\
+                    world 0.9.0 (M2-X16)\n\
+                    world 0.9.0, see M2-K16\n\
+                    world 0.9.0 M2-K16.1 and more\n\
+                    world 0.9.0 Mode-1 swap\n\
+                    world 0.9.0, M2-K16.\n\
+                    world 0.9.0 M1-P8 and 0.8.0 (M2-K13): dated\n";
+    let unreadable = |line: usize, token: &str| mentions::Disagreement::Unreadable {
+        path: "b.md".to_owned(),
+        line,
+        token: token.to_owned(),
+    };
+    assert_eq!(
+        mentions::disagreements("b.md", boundary, "0.10.0"),
+        vec![
+            unreadable(1, "0.9.0, M2-K16extra"),
+            unreadable(2, "0.9.0 M2-K16_x"),
+            unreadable(3, "0.9.0 (M2-X16"),
+            unreadable(4, "0.9.0, see"),
+            unreadable(5, "0.9.0 M2-K16.1"),
+            mentions::Disagreement::Edition {
+                path: "b.md".to_owned(),
+                line: 6,
+                found: "0.9.0".to_owned(),
+                declared: "0.10.0".to_owned(),
+            },
+        ]
+    );
+    let dated = mentions::candidates(boundary)
+        .into_iter()
+        .filter(|c| matches!(c, mentions::Candidate::Dated { .. }))
+        .count();
+    assert_eq!(dated, 3);
+}
+
 /// WORLD-MENTION grammar: a dated edition is read and never checked, a
 /// package reference is refs.rs's and not a mention, an unanchored line
 /// holds no candidate, and a dotted run that is not `X.Y.Z` FAILS CLOSED.
