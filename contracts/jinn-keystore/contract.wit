@@ -14,7 +14,7 @@ interface secrets {
   // the store's own or the kernel boundary's. No variant carries a value.
   variant keystore-error { not-found, denied(string), failed(string), invalid(string) }
 
-  // effect = read. Ledgered as `KeystoreAccessed { get, key, digest }`.
+  // effect = read. Ledgered as `KeystoreAccessed { operation: get, key, digest }`.
   get: func(key: string) -> result<list<u8>, keystore-error>;
 
   // effect = revertible: inverse obligation = restore the prior value, or

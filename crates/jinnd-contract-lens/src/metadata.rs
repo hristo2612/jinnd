@@ -16,13 +16,18 @@ pub struct Metadata {
 impl Metadata {
     /// Parse a bundle; a malformed document panics here naming the file.
     pub fn parse(path: &str, text: &str) -> Metadata {
-        if let Err(refused) = DeTable::parse(text) {
-            panic!("{path} is well-formed TOML: {refused}");
-        }
-        Metadata {
+        Metadata::try_parse(path, text)
+            .unwrap_or_else(|refused| panic!("{path} is well-formed TOML: {refused}"))
+    }
+
+    /// Parse a bundle, answering the parser's refusal as a value — for
+    /// fixtures that prove a malformed shape is refused.
+    pub fn try_parse(path: &str, text: &str) -> Result<Metadata, String> {
+        DeTable::parse(text).map_err(|refused| refused.to_string())?;
+        Ok(Metadata {
             path: path.to_owned(),
             text: text.to_owned(),
-        }
+        })
     }
 
     fn root(&self) -> toml::Spanned<DeTable<'_>> {
@@ -101,4 +106,44 @@ fn entry<'a, 'i>(table: &'a DeTable<'i>, key: &str) -> Option<&'a DeValue<'i>> {
         .iter()
         .find(|(name, _)| name.get_ref().as_ref() == key)
         .map(|(_, value)| value.get_ref())
+}
+
+/// The pin earns its keep only if it REFUSES, so these are the shapes that
+/// got past a substring and a hand-written reader (M2-K19): the header
+/// that actually shipped, and the empty dotted segment the hand reader
+/// waved through. Only refusal is asserted, never the wording — pinning
+/// another crate's error prose would be one more hand-maintained copy.
+#[cfg(test)]
+mod tests {
+    use super::Metadata;
+
+    #[test]
+    fn the_parser_refuses_the_shapes_that_got_past_a_substring_and_a_hand_reader() {
+        for (shape, bundle) in [
+            (
+                "a trailing dot after a header",
+                "[equality].\nkey = \"v\"\n",
+            ),
+            (
+                "an empty dotted segment",
+                "[recovery..policy]\non-failure = \"refuse-open\"\n",
+            ),
+            ("a key with no `=`", "[a]\nkey \"v\"\n"),
+            ("a bare unquoted value", "[a]\nkey = unquoted\n"),
+            ("trailing junk after a value", "[a]\nkey = \"v\" junk\n"),
+            ("a key set twice", "[a]\nkey = \"v\"\nkey = \"w\"\n"),
+            ("a table declared twice", "[a]\n[a]\n"),
+        ] {
+            assert!(
+                Metadata::try_parse("fixture.toml", bundle).is_err(),
+                "{shape} is refused: {bundle:?}"
+            );
+        }
+        // …and the shape the bundles are actually written in still reads,
+        // as real tables: a header that merely spells the text is not one.
+        let read = Metadata::parse("fixture.toml", "# note\n[a.b]\nk = \"v\"   # why\n");
+        assert_eq!(read.string_at("a.b.k").as_deref(), Some("v"));
+        assert!(read.has_table("a.b") && !read.has_table("note"));
+        assert_eq!(read.keys("a.b"), ["k"]);
+    }
 }

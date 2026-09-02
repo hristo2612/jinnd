@@ -53,7 +53,7 @@ relation = "name-value-map-under-scope"
 policy    = "durable-before-commit-refuse-otherwise"
 reclaim   = "on-completed-revert"
 sealed    = "prior-values-encrypted-at-rest"
-# Lifecycle class (jinn:plugin@0.3.0, M2-K4): put/delete are WORLD
+# Lifecycle class (world 0.3.0, M2-K4): put/delete are WORLD
 # MUTATIONS scoped to the profile entry — retained across suspend and
 # incarnation replacement, withdrawn LIFO only at the entry's dispose.
 lifecycle = "entry-scoped-survives-suspend-withdrawn-on-dispose"

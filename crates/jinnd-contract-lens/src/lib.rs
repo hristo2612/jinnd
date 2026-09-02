@@ -75,6 +75,9 @@ impl Contract {
         &self.path
     }
 
+    /// The raw text — for the gate sweeps in this crate only. Nothing
+    /// outside the lens can reach it, which is the whole point.
+    #[cfg(test)]
     pub(crate) fn text(&self) -> &str {
         &self.text
     }
@@ -95,6 +98,18 @@ impl Contract {
     /// the whole text for Markdown.
     pub fn prose(&self) -> prose::Prose {
         prose::Prose::of(&self.path, &self.text)
+    }
+
+    /// Every ledger row shape the document enumerates (`Kind { a, b }`),
+    /// as structured mentions — gate 2's input.
+    pub fn rows(&self) -> Vec<rows::RowMention> {
+        rows::mentions(&self.text)
+    }
+
+    /// Every `namespace:name@version` reference in the document — gate 1's
+    /// input.
+    pub fn references(&self) -> Vec<refs::Reference> {
+        refs::references(&self.text)
     }
 }
 

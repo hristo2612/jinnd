@@ -70,7 +70,7 @@ sensitivity = "public"
 relation = "live-child-set-under-scope"
 
 [notes]
-# Lifecycle class (jinn:plugin@0.4.0, M2-K6): spawned processes are KERNEL
+# Lifecycle class (world 0.4.0, M2-K6): spawned processes are KERNEL
 # REGISTRATIONS, not world mutations — suspend (daemon shutdown) and
 # incarnation replacement KILL them (a suspended incarnation cannot own a
 # live child), ledgered; the next `activate` re-spawns. Dispose kills them

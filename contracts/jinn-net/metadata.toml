@@ -129,7 +129,7 @@ anchors   = "vendored-public-roots-never-the-platform-store"
 verify    = "always-on-no-off-switch"
 
 [notes]
-# Lifecycle class (jinn:plugin@0.4.0, M2-K6): listeners and connections are
+# Lifecycle class (world 0.4.0, M2-K6): listeners and connections are
 # KERNEL REGISTRATIONS — suspend and incarnation replacement close them
 # (ledgered); the next `activate` re-listens. Dispose closes them in the
 # LIFO trail.

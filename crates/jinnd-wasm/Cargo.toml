@@ -71,25 +71,10 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # test-util: paused-clock tests drive the alarm timers deterministically
 # (M2-K2); dev-only, never a runtime dependency.
 tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
-# The shipped contract bundles (`contracts/*/metadata.toml`) are CONTRACTS
-# OF RECORD, and the pin that they parse belongs to the crate that defines
-# the grammar (M2-K19 round-3 ruling; src/bundles.rs). R10: dev-only, so
-# ZERO runtime surface — the bundles ship as `include_str!` constants and
-# nothing in the kernel's hot path parses TOML — and R10's own metric note
-# excludes `cfg(test)` code from the kernel-core count. "Small and boring"
-# argues FOR it: a hand-written TOML reader is neither, and the two the
-# workspace already tried both shipped a hole. `parse` only: the
-# serde-free `DeTable` document API, no serializer, no derive, no serde.
-toml = { version = "1.1.4", default-features = false, features = ["parse", "std"] }
 wit-component = "0.233.0"
-# The contract of record is asserted by PARSING, never by substring
-# (M2-K15 round-2 ruling; the M2-K19 `toml` precedent for the bundles).
-# A `contains` observes bytes wherever they sit — a version in a doc
-# comment satisfies it while the declaration below says something else —
-# and it cannot see a variant case's payload at all. R10: dev-only, ZERO
-# runtime surface, and ZERO new packages in the lockfile — `wit-parser`
-# 0.233.0 is already in the tree as a public dependency of the
-# `wit-component` dev-dep above, and its types cannot be named without
-# depending on it directly. A hand-written WIT reader is neither small
-# nor boring.
-wit-parser = "0.233.0"
+# Every contract of record is read through the lens (M2-K16): parsed
+# declarations, real TOML tables, comment-only prose — a test never holds
+# the text, so the substring six shipped instances passed on cannot be
+# written. Dev-only (R10): zero runtime surface; the lens owns the parser
+# dependencies (`wit-parser`, `toml`, `syn`) that used to sit here.
+jinnd-contract-lens = { path = "../jinnd-contract-lens" }

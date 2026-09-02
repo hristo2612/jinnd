@@ -782,6 +782,7 @@ version = "0.0.1"
 dependencies = [
  "jinnd-api",
  "jinnd-context",
+ "jinnd-contract-lens",
  "jinnd-fiber",
  "jinnd-ledger",
  "jinnd-loader",
@@ -793,11 +794,9 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
- "toml",
  "tracing",
  "tracing-subscriber",
  "wit-component",
- "wit-parser",
 ]
 
 [[package]]
@@ -898,6 +897,7 @@ dependencies = [
  "getrandom 0.3.4",
  "jinnd-api",
  "jinnd-context",
+ "jinnd-contract-lens",
  "jinnd-effects",
  "jinnd-fiber",
  "jinnd-loader",
@@ -909,12 +909,10 @@ dependencies = [
  "security-framework",
  "tokio",
  "tokio-rustls",
- "toml",
  "tracing",
  "wasmtime",
  "webpki-roots",
  "wit-component",
- "wit-parser",
 ]
 
 [[package]]

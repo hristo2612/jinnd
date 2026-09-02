@@ -36,7 +36,7 @@ applied by the loader, no fiber inverse) are kernel-supplied providers
 reached over the string-keyed handle lane (`services.resolve` +
 `services.call`), granted like any contract and ledgered per call.
 
-## Lifecycle classification (jinn:plugin@0.3.0, M2-K4)
+## Lifecycle classification (world 0.3.0, M2-K4)
 
 A contribution belongs to the profile ENTRY, not to a fiber incarnation or a
 process lifetime. Every revertible operation in a bundle is one of two classes,

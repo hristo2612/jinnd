@@ -22,7 +22,6 @@ use jinnd_daemon::{Daemon, DaemonPaths};
 /// the wire name a plugin author reads in the contract, and checks the
 /// bundle still says it.
 const TOPIC: &str = "jinn:introspect/transitions";
-const BUNDLE: &str = include_str!("../../../contracts/jinn-introspect/contract.wit");
 
 struct Home(PathBuf);
 
@@ -161,7 +160,10 @@ async fn a_granted_listener_witnesses_the_transitions_the_kernel_commits() {
         entry("worker", serde_json::json!(["jinn:fs"]), "plain"),
     ];
     assert!(
-        BUNDLE.contains(TOPIC),
+        jinnd_contract_lens::bundle("jinn-introspect")
+            .wit()
+            .prose()
+            .states(TOPIC),
         "the bundle declares the wire name this test subscribes on"
     );
     let (paths, hash) = paths(&home, &entries);
