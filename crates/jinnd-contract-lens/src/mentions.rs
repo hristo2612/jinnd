@@ -13,9 +13,12 @@
 //! run           := digit-led maximal run of [0-9.] holding two or more dots
 //! version       := digits "." digits "." digits, preceded by none of
 //!                  [A-Za-z0-9-] and followed by none of [A-Za-z0-9-]
-//! tag           := "M" digits "-" [A-Z]+ digits [a-z]?      (M1-P8, M2-K16, M1-P6c)
-//! dated         := version ws* [,;(]? ws* tag
-//! claim         := version, not dated
+//! tag           := "M" digits "-" ("K" | "P") digits          (M1-P8, M2-K16)
+//! end-of-clause := end of line | whitespace | [),;:] | "." (end of line | whitespace)
+//! separator     := ws* [,;(] ws*
+//! dated         := version (separator | ws*) tag end-of-clause
+//! claim         := version followed by neither a separator nor "M" digit
+//! malformed     := version (separator anything | ws* "M" digit anything), not dated
 //! ```
 //!
 //! A run preceded by `@` is a package reference — [`crate::refs`]' domain
@@ -25,9 +28,12 @@
 //! not a fact the code knows; a `claim` names the CURRENT world and must
 //! equal the version `wit/plugin.wit` DECLARES; a run that reads as
 //! neither (`0.10.0-rc1`, `v0.10.0`, `127.0.0.1`) is [`Candidate::Unreadable`],
-//! reported at its line, never skipped. Off an anchored line a bare version
-//! is nobody's claim here; a bundle's current identity is spelled
-//! `jinn:x@X.Y.Z` so that gate 1 reads it.
+//! reported at its line, never skipped. So is a `malformed` candidate: a
+//! tag is read EXACTLY or not at all, and anything but a tag after a
+//! separator reads as nothing — `world 0.9.0, M2-K16-extra` (the round-2
+//! verifier fixture) is reported, never dated by the tag it wears. Off an
+//! anchored line a bare version is nobody's claim here; a bundle's current
+//! identity is spelled `jinn:x@X.Y.Z` so that gate 1 reads it.
 
 /// One bare `X.Y.Z` token on a line, or a run that could not be read as one.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,9 +138,17 @@ pub fn bare_versions(line: &str) -> Vec<Bare> {
                 .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'-');
         let three = run.split('.').count() == 3 && run.split('.').all(|part| !part.is_empty());
         if bounded && three {
-            found.push(Bare::Version {
-                version: run.to_owned(),
-                tag: tag_after(line, at),
+            found.push(match tag_after(line, at) {
+                Ok(tag) => Bare::Version {
+                    version: run.to_owned(),
+                    tag,
+                },
+                Err(end) => {
+                    at = end;
+                    Bare::Unreadable {
+                        token: line[start..end].to_owned(),
+                    }
+                }
             });
             continue;
         }
@@ -152,47 +166,63 @@ pub fn bare_versions(line: &str) -> Vec<Bare> {
     found
 }
 
-/// The packet tag that dates a version ending at `from`, if one follows.
-fn tag_after(line: &str, from: usize) -> Option<String> {
+/// What follows a version ending at `from`: `Ok(None)` when nothing reads
+/// as a tag attempt (a claim), `Ok(Some(tag))` when a tag is read EXACTLY
+/// and followed by end-of-clause, and `Err(end)` for a malformed attempt
+/// — anything but a tag after a separator, or an attempt that does not
+/// read exactly — with the index its token extends to.
+fn tag_after(line: &str, from: usize) -> Result<Option<String>, usize> {
     let bytes = line.as_bytes();
-    let mut at = from;
-    while at < bytes.len() && bytes[at] == b' ' {
-        at += 1;
-    }
-    if at < bytes.len() && matches!(bytes[at], b',' | b';' | b'(') {
-        at += 1;
-    }
-    while at < bytes.len() && bytes[at] == b' ' {
-        at += 1;
-    }
-    let start = at;
-    if bytes.get(at) != Some(&b'M') {
-        return None;
-    }
-    at += 1;
-    let digits = |at: &mut usize| {
-        let from = *at;
-        while *at < bytes.len() && bytes[*at].is_ascii_digit() {
-            *at += 1;
+    let space = |mut at: usize| {
+        while at < bytes.len() && bytes[at] == b' ' {
+            at += 1;
         }
-        *at > from
+        at
     };
-    if !digits(&mut at) || bytes.get(at) != Some(&b'-') {
+    let mut at = space(from);
+    let separated = matches!(bytes.get(at), Some(b',' | b';' | b'('));
+    if separated {
+        at = space(at + 1);
+    }
+    let attempt = bytes.get(at) == Some(&b'M') && bytes.get(at + 1).is_some_and(u8::is_ascii_digit);
+    if !separated && !attempt {
+        return Ok(None);
+    }
+    match exact_tag(bytes, at) {
+        Some(end) => Ok(Some(line[at..end].to_owned())),
+        None => {
+            let clause = |b: &&u8| !matches!(b, b' ' | b'\t' | b')' | b',' | b';' | b':');
+            Err(at + bytes[at..].iter().take_while(clause).count())
+        }
+    }
+}
+
+/// The end of a tag read EXACTLY at `start` — `M` digits `-` (`K` | `P`)
+/// digits — and followed by end-of-clause; `None` for anything else.
+fn exact_tag(bytes: &[u8], start: usize) -> Option<usize> {
+    let digits = |at: usize| {
+        let from = at.min(bytes.len());
+        let end = from
+            + bytes[from..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+        (end > from).then_some(end)
+    };
+    if bytes.get(start) != Some(&b'M') {
         return None;
     }
-    at += 1;
-    let letters = at;
-    while at < bytes.len() && bytes[at].is_ascii_uppercase() {
-        at += 1;
-    }
-    if at == letters || !digits(&mut at) {
+    let at = digits(start + 1)?;
+    if bytes.get(at) != Some(&b'-') || !matches!(bytes.get(at + 1), Some(b'K' | b'P')) {
         return None;
     }
-    if at < bytes.len() && bytes[at].is_ascii_lowercase() {
-        at += 1;
-    }
-    let continued = bytes.get(at).is_some_and(u8::is_ascii_alphanumeric);
-    (!continued).then(|| line[start..at].to_owned())
+    let at = digits(at + 2)?;
+    let ends = match bytes.get(at) {
+        None | Some(b' ' | b'\t' | b')' | b',' | b';' | b':') => true,
+        Some(b'.') => matches!(bytes.get(at + 1), None | Some(b' ' | b'\t')),
+        Some(_) => false,
+    };
+    ends.then_some(at)
 }
 
 /// Every world-mention candidate in `text`, in order, each read or reported.

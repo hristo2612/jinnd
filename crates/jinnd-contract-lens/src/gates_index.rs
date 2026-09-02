@@ -26,8 +26,11 @@ fn the_contract_index_carries_the_derived_block_and_nothing_stale() {
 }
 
 /// INDEX red-first: the hand-kept list that shipped (#44), verbatim — no
-/// derived block at all, so the file cannot be read; and a stray bare
-/// version beside a fresh block is the same copy in a new place.
+/// derived block at all, so the file cannot be read; and a bare version
+/// beside a fresh block is the same copy in a new place: undated it is a
+/// stray, and the shipped `(0.1.0, readiness wake M2-K7)` — a separator
+/// followed by prose, not a tag — reads as nothing under the round-2
+/// grammar and is reported Unreadable, the stricter of the two.
 #[test]
 fn the_index_reader_fires_on_the_hand_kept_list_that_shipped() {
     let shipped = "Bundles: `jinn-fs` (0.2.0; atomic commits M2-K8), `jinn-clock` (0.1.0),\n\
@@ -39,15 +42,24 @@ fn the_index_reader_fires_on_the_hand_kept_list_that_shipped() {
         "{found:#?}"
     );
     let fresh = index::render(&[index::Row::new("jinn-net", "jinn:net", "0.3.0", None)]);
-    let beside = format!("{fresh}\nand `jinn-net` (0.1.0, readiness wake M2-K7) in prose\n");
+    let beside = format!(
+        "{fresh}\nand `jinn-net` (0.1.0, readiness wake M2-K7) in prose\nand `jinn-clock` (0.1.0)\n"
+    );
     let found = index::disagreements(index::PATH, &beside, &fresh);
     assert_eq!(
         found,
-        vec![index::Disagreement::Stray {
-            path: index::PATH.to_owned(),
-            line: 7,
-            version: "0.1.0".to_owned(),
-        }]
+        vec![
+            index::Disagreement::Unreadable {
+                path: index::PATH.to_owned(),
+                line: 7,
+                token: "0.1.0, readiness".to_owned(),
+            },
+            index::Disagreement::Stray {
+                path: index::PATH.to_owned(),
+                line: 8,
+                version: "0.1.0".to_owned(),
+            }
+        ]
     );
 }
 
