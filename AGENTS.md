@@ -40,6 +40,10 @@ It is LAW; this file translates it into direct instructions for you.
   loom` when that crate exists) for any lifecycle concurrency change.
 - **Concurrency changes** to the fiber engine require a loom model test exercising
   the interleaving you claim to handle.
+- **LOC budgets** are declared and read on the canonical meter
+  `tools/loc-meter` (`cargo run -q -p loc-meter -- --base main`): it decides
+  cfg(test)-ness the compiler's way and refuses a dirty tree (M2-K18). Never
+  quote a `git diff | awk` pipeline in a card.
 - **No new dependencies** without justification against R10 in the PR description.
   Preferred set: tokio, tokio-util, serde, serde_json, tracing, rusqlite (ledger),
   wasmtime (host crate only), axum (API crate only), proptest/loom (dev).

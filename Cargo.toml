@@ -15,6 +15,7 @@ members = [
     "crates/jinnd-wasm",
     "tests/demo",
     "tests/invariants",
+    "tools/loc-meter",
 ]
 # Crates are added as M1 work packets land. Planned (per SOURCE-OF-TRUTH §6 budgets):
 #   crates/jinnd-context   — context tree, isolation, intercept
