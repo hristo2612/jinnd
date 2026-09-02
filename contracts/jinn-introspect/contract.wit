@@ -1,6 +1,5 @@
-// jinn:introspect@0.4.0 (M2-K13, harness #40/#41; 0.3.0 M2-K10, #32;
-// 0.2.0 M2-K9, #31; 0.1.0
-// M2-K7, #19) — the read-only composition
+// jinn:introspect@0.5.0 (M2-K16; 0.4.0 M2-K13, harness #40/#41; 0.3.0
+// M2-K10, #32; 0.2.0 M2-K9, #31; 0.1.0 M2-K7, #19) — the read-only composition
 // contract. The kernel supplies it (01 §Mechanical closure); a plugin sees
 // the composition only when its profile entry grants this contract. Every
 // read crosses the broker (grant check → ledger append → dispatch) and is
@@ -8,7 +7,11 @@
 // this path (R1). Reached over `services.resolve("jinn:introspect")` +
 // `services.call(handle, <operation>, [])`; answers are the UTF-8 JSON of
 // the records below, field names as written (kebab-case).
-package jinn:introspect@0.4.0;
+// 0.5.0 (2026-09-02, M2-K16) is the FIRST PARSEABLE edition: 0.4.0 never
+// parsed (`from` is a WIT keyword; `record readiness` collided with the
+// `readiness` operation). The wire operation `readiness` and its answer
+// shape are unchanged; the record is `readiness-report` (README, R12).
+package jinn:introspect@0.5.0;
 
 interface composition {
   // The kernel registrations one live seat holds, by class.
@@ -153,7 +156,7 @@ interface composition {
   entries: func() -> list<entry>;
 
   // Effect class: read. Operation `readiness`, empty payload; answer = the
-  // JSON `readiness` record.
+  // JSON `readiness-report` record.
   readiness: func() -> readiness-report;
 
   // Effect class: read. Operation `waits`, empty payload; answer = the

@@ -176,7 +176,7 @@ impl Lifecycle {
     }
 }
 
-/// The delivered record (`contracts/jinn-introspect`, 0.4.0). Every field
+/// The delivered record (`contracts/jinn-introspect`, 0.5.0). Every field
 /// is one a `jinn:introspect` pull already admits — entry, fiber,
 /// incarnation, and the `state` vocabulary — plus the two the publish
 /// itself owns. `cause` is deliberately ABSENT: the authority demonstration

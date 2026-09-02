@@ -1,4 +1,4 @@
-# jinn:introspect 0.4.0
+# jinn:introspect 0.5.0
 
 The read-only composition contract (M2-K7; harness finding 19). A status
 or health plugin answers `fiber`, `state`, `incarnation`, `unserved`,
@@ -119,6 +119,19 @@ contract, so delivering it would widen the grant. Rather than widen it,
 `cause` is not delivered. A consumer that needs it holds `jinn:ledger`,
 which already admits the whole `FiberTransition` row verbatim, and reads it
 there.
+
+## 0.5.0 (M2-K16)
+
+Re-issued, not additive. 0.4.0 never parsed: `from` is a WIT keyword, and
+`record readiness` shared one interface namespace with the `readiness`
+operation. Nothing had noticed because no consumer bindgens this file (only
+`wit/plugin.wit` is) and the daemon mirrors the shapes by hand — the first
+parser to read it was the contract lens. 0.5.0 is the first parseable
+edition: the record is now `readiness-report` and the field is spelled
+`%from` (its name is still `from`). The wire operation `readiness`, its
+JSON answer, and every other operation and record are unchanged, so a
+holder of 0.4.0 needs no change; the version moves because a rename at an
+unchanged version is not additive (R12).
 
 ## Grant
 

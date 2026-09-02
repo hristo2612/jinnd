@@ -1,9 +1,9 @@
-# Contract-bundle metadata for jinn:introspect@0.4.0 (M2-K13; 0.3.0
-# M2-K10; 0.2.0 M2-K9; 0.1.0 M2-K7)
+# Contract-bundle metadata for jinn:introspect@0.5.0 (M2-K16; 0.4.0 M2-K13;
+# 0.3.0 M2-K10; 0.2.0 M2-K9; 0.1.0 M2-K7)
 
 [contract]
 name    = "jinn:introspect"
-version = "0.4.0"
+version = "0.5.0"
 
 # No scope type: a grant is whole-composition read access (a scoped grant
 # refuses fail-closed, M2-K2 law). Attenuation is by grant or no grant.
