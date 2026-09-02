@@ -1,6 +1,6 @@
 // jinn:keystore@0.1.0 (M2-K8, harness #5 remainder) — the base host-provider
 // secret store. Implemented by the kernel (01 §Mechanical closure); reached
-// as the plugin world's `keystore` import (wit/plugin.wit 0.5.0 carries this
+// as the plugin world's `keystore` import (wit/plugin.wit 0.10.0 carries this
 // interface verbatim). Sensitivity class SECRET (02 §Redaction): a value
 // never lands in the ledger, in an error message, or in plaintext on disk —
 // the ledger records that a secret crossed, its NAME and its digest.

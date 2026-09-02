@@ -60,7 +60,7 @@ the first `put` is a typed `EffectFailed` naming the variables.
 
 Out of scope (the card): rotation policies, remote stores, TLS.
 
-## Wire (wit/plugin.wit 0.5.0)
+## Wire (wit/plugin.wit 0.10.0)
 
 - `get`: payload = key UTF-8; answer = the value bytes.
 - `put`: payload = u32-LE key length + key + value; answer = 8-byte LE

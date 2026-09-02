@@ -5,7 +5,7 @@
 // metadata `lifecycle`): killed and ledgered on suspend and on dispose,
 // never retained — a plugin re-spawns in `activate`. Every host call is
 // non-blocking or bounded (R1). The plugin world's `process` import
-// (wit/plugin.wit, 0.4.0) carries this interface verbatim, with the broker
+// (wit/plugin.wit, 0.10.0) carries this interface verbatim, with the broker
 // wire declared beside each operation; this bundle is the contract of
 // record (R12), with effect classes, scope type, and equality in
 // `metadata.toml`.
