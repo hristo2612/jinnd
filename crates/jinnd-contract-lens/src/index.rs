@@ -31,10 +31,8 @@ use crate::mentions::{Bare, bare_versions};
 pub const PATH: &str = "contracts/README.md";
 
 /// The line that opens the derived block.
-pub const BEGIN: &str = "<!-- contract-index: begin (derived by jinnd-contract-lens from every \
-                         contracts/*/contract.wit and metadata.toml, parsed; never edited by \
-                         hand: a stale copy fails `cargo test -p jinnd-contract-lens index`, \
-                         which prints the fresh block) -->";
+pub const BEGIN: &str =
+    "<!-- contract-index: begin (rendered by jinnd-contract-lens; never edit by hand) -->";
 
 /// The line that closes the derived block.
 pub const END: &str = "<!-- contract-index: end -->";

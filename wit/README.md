@@ -28,7 +28,7 @@ version, designed to outlive the current kernel implementation.
   there, not copies here; so are the operator contracts reached over the
   handle lane (`jinn:introspect`, `jinn:profile`; M2-K7). The `net`
   import's readiness wake (`jinn:net/readable`, M2-K7) is additive prose
-  on the 0.4.0 world: no signature changed.
+  on the 0.4.0 (M2-K7) world: no signature changed.
 
 ## v0.1 binding of grants to imports
 

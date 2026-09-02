@@ -10,11 +10,25 @@ by `docs/constitution/01-capability-contracts.md`.
 Rules (R12): contracts are versioned; never breaking within a major version; designed
 to outlive any particular kernel implementation or host OS.
 
-Bundles: `jinn-fs` (0.2.0; atomic commits M2-K8), `jinn-clock` (0.1.0),
-`jinn-process` (0.1.0), `jinn-net` (0.1.0, readiness wake M2-K7),
-`jinn-ledger` (0.1.0, finalized M2-K7), `jinn-introspect` (0.1.0),
-`jinn-profile` (0.2.0; non-blocking patch and reads M2-K8), `jinn-keystore`
-(0.1.0, M2-K8), `jinn-auth` (0.1.0, M2-K21).
+Bundles, as the parser reads them: the table between the two marker lines is
+RENDERED by `jinnd-contract-lens` from every bundle's `contract.wit` (identity)
+and `metadata.toml` (scope type), and the lens gate refuses a stale, missing,
+or hand-edited copy (M2-K22). Each bundle's own header carries its changelog;
+nothing in the table is typed by hand.
+
+<!-- contract-index: begin (rendered by jinnd-contract-lens; never edit by hand) -->
+| bundle | contract of record | scope type |
+|---|---|---|
+| `contracts/jinn-auth` | `jinn:auth@0.1.0` | none |
+| `contracts/jinn-clock` | `jinn:clock@0.1.0` | rate |
+| `contracts/jinn-fs` | `jinn:fs@0.2.0` | path-prefix |
+| `contracts/jinn-introspect` | `jinn:introspect@0.5.0` | none |
+| `contracts/jinn-keystore` | `jinn:keystore@0.1.0` | key-prefix |
+| `contracts/jinn-ledger` | `jinn:ledger@0.1.0` | none |
+| `contracts/jinn-net` | `jinn:net@0.3.0` | net-policy |
+| `contracts/jinn-process` | `jinn:process@0.1.0` | process-policy |
+| `contracts/jinn-profile` | `jinn:profile@0.2.0` | entry-ids |
+<!-- contract-index: end -->
 
 ## Operation-class attenuation (M2-K8)
 

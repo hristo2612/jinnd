@@ -18,7 +18,10 @@
 //! each, with the grammar in their docs, and they FAIL CLOSED: a candidate
 //! they cannot read is reported, never skipped. The scan in [`scan`] makes
 //! loading a contract file anywhere else fail the build's tests, so the
-//! unfirable shape is unexpressible rather than discouraged.
+//! unfirable shape is unexpressible rather than discouraged. M2-K22 added
+//! the two copies gate 1 could not see: the contract index's version table
+//! is RENDERED from the parsed bundles ([`index`]) and a bare world mention
+//! is read against the world's parsed package ([`mentions`]).
 //!
 //! Dev-only support crate (R10): only ever a `[dev-dependencies]` entry.
 
