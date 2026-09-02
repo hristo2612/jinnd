@@ -30,6 +30,8 @@ pub mod wit;
 
 #[cfg(test)]
 mod gates;
+#[cfg(test)]
+mod gates_scan;
 
 use std::path::{Path, PathBuf};
 
