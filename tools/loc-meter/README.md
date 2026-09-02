@@ -27,6 +27,11 @@ integration tests, fixtures, demo guests), `tools` (Rust under `tools/`),
 file's `cfg`-off items are billed as a companion `[cfg-off items]` row under
 `tests`, so the lines sum to the raw `git diff --numstat`.
 
+A path whose two sides sit on different lines (a move from `tools/` into
+`crates/`, or a file the build stops or starts compiling) is billed as a full
+delete on the old line and a full add on the new; only a same-line change is
+diffed as content, renames included. A move never makes lines disappear.
+
 ## How cfg(test)-ness is decided
 
 Not by filename. `cargo metadata --no-deps` names the target roots; the walk
@@ -47,6 +52,11 @@ Any uncommitted or untracked path (ignored paths excepted) refuses the run and
 names the paths. The number describes commits; a dirty tree is the one state in
 which a reader would take it for the tree, which is how M2-K14 read 929 for a
 real 1065. A number nobody can misread beats a number with a footnote.
+
+A `mod` the walk cannot follow (no `x.rs` or `x/mod.rs`, a `#[path]` to a file
+that is not there, an unreadable file) refuses the run the same way, naming the
+module and the file that declares it. The compiler rejects that tree (E0583);
+a meter claiming the compiler's view has no number to print for it.
 
 ## Recorded re-measure: M2-K14 at `de43d06`
 
