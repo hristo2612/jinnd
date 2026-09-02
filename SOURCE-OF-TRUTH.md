@@ -261,23 +261,34 @@ within a major version.
   one at a time; web UI runs against the kernel API. *Acceptance: an instance runs a
   full day on jinnd alone.*
   **Two structural blockers, discovered by the M2 port and recorded 2026-09-01 (see
-  Decision Log). Neither is a polish item; each makes the acceptance above unreachable
-  as written until it is closed.**
+  Decision Log). Both CLOSED 2026-09-02 — kept here as the record of what M3 needed
+  and where each was delivered.**
   1. **No outbound anything.** `jinn:net` v0.1 has no `request`, no TLS and no
      non-loopback listen, at every pin so far. Slack, Stripe, Linear, GitHub, the
      vendor engine APIs and every webhook are therefore *structurally impossible* in
      the harness today. An instance cannot run "a full day on jinnd alone" while it
      cannot reach anything, so M3 either gets an outbound capability first or its
      acceptance means a day of purely local work — and those are different milestones.
+     **Closed 2026-09-02:** M2-K14 (outbound `request`/`send-request` behind the
+     profile allowlist, declared irreversible, PLA-336) and M2-K15 (rustls TLS with no
+     off switch, typed `untrusted` refusal, PLA-341); harness pin-bump 6 (PLA-344)
+     adopted them at world 0.10.0 / `jinn:net` 0.3.0.
   2. **No authentication or authorization, anywhere.** Loopback plus the port scope
      the `jinn:net` grant carries is the entire boundary; anything on the machine that
      reaches the port is an operator. Acceptable for a soak beside production,
-     unacceptable for a profile that holds production. What shape this takes is a real
-     design choice with real alternatives and it is Hristo's to make, so it is named
-     here and deliberately not carded.
-  The M2 port delivered the SHAPES faithfully. It did not deliver the two capabilities
-  that separate a faithful shape from a thing that can run a business, and M3 should be
-  planned knowing that rather than discovering it in flight.
+     unacceptable for a profile that holds production. Hristo delegated the shape to the
+     COO on 2026-09-01. **Closed 2026-09-02, across the pin:** M2-K21 supplies the
+     AUTHORITY (`jinn:auth@0.1.0` — one `verify`, deny by default, launcher-owned
+     credential re-read per call, every decision an `AuthDecided` row, no bypass;
+     PLA-342) and harness 2.8 supplies the DOOR (`jinn-api-http` verifies the bearer
+     credential once per request before any dispatch, typed 401, provisioning at boot;
+     PLA-343). One operator, one credential; no accounts, roles or delegation — the
+     same-uid limit is stated in the contract, not papered over.
+  The M2 port delivered the SHAPES faithfully; the two capabilities that separate a
+  faithful shape from a thing that can run a business followed as seven kernel packets
+  and two harness packets in the two days after. M3 planning starts from an instance
+  that can reach out and can refuse a stranger. §7(b)'s week of duty is still owed
+  (audit 2026-09-04).
 - **M4 — Cutover.** Old gateway retired per the cutover rule. jinnOS work (desktop
   session, mobile ROM) begins only after M4 — as bigger profiles, not new projects.
 
