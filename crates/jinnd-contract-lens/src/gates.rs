@@ -41,35 +41,19 @@ fn every_bundle_parses_and_its_three_identity_copies_agree() {
 fn every_package_reference_in_the_contracts_names_the_declared_version() {
     let declared = declared_versions();
     let mut swept = 0;
-    let mut unknown = Vec::new();
     let mut found = Vec::new();
     for file in contract_files() {
-        for reference in refs::references(file.text()) {
-            swept += 1;
-            if !declared.contains_key(&reference.package) {
-                unknown.push(format!(
-                    "{}:{}: {}@{}",
-                    file.path(),
-                    reference.line,
-                    reference.package,
-                    reference.version
-                ));
-            }
-        }
+        swept += refs::candidates(file.text()).len();
         found.extend(refs::disagreements(file.path(), file.text(), &declared));
     }
     println!(
-        "gate 1: swept {swept} package references across {} files",
+        "gate 1: swept {swept} package-reference candidates across {} files",
         contract_files().len()
     );
     println!("gate 1: {} disagreements", found.len());
     for disagreement in &found {
         println!("  {disagreement}");
     }
-    assert!(
-        unknown.is_empty(),
-        "references to packages nobody declares: {unknown:#?}"
-    );
     assert!(found.is_empty(), "{found:#?}");
 }
 
@@ -87,7 +71,7 @@ fn gate_one_fires_on_the_title_line_that_shipped() {
     let found = refs::disagreements(fixture.path(), fixture.text(), &declared);
     assert_eq!(
         found,
-        vec![refs::Disagreement {
+        vec![refs::Disagreement::Version {
             path: "wit/plugin.wit".to_owned(),
             line: 1,
             package: "jinn:plugin".to_owned(),
@@ -105,20 +89,22 @@ fn every_row_shape_the_contracts_enumerate_is_the_facades() {
     let mut swept = 0;
     let mut found = Vec::new();
     for file in contract_files() {
-        for mention in rows::mentions(file.text()) {
+        for candidate in rows::candidates(file.text()) {
             swept += 1;
-            println!(
-                "  {}:{}: {} {{ {} }}",
-                file.path(),
-                mention.line,
-                mention.kind,
-                mention.fields.join(", ")
-            );
+            if let rows::Candidate::Read(mention) = candidate {
+                println!(
+                    "  {}:{}: {} {{ {} }}",
+                    file.path(),
+                    mention.line,
+                    mention.kind,
+                    mention.fields.join(", ")
+                );
+            }
         }
         found.extend(rows::disagreements(file.path(), file.text(), &facade));
     }
     println!(
-        "gate 2: swept {swept} row mentions across {} files",
+        "gate 2: swept {swept} row-mention candidates across {} files",
         contract_files().len()
     );
     println!("gate 2: {} disagreements", found.len());
@@ -135,17 +121,22 @@ fn gate_two_fires_on_the_row_shape_that_shipped() {
     let facade = facade::ledger_event_kinds();
     let fixture = "# The row is\n# `NetRequested { method, host, path, status, request_bytes,\n# response_bytes, duration_ms }` — the SHAPE of the call.\n";
     let found = rows::disagreements("contracts/jinn-net/metadata.toml", fixture, &facade);
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].line, 2);
-    assert_eq!(found[0].kind, "NetRequested");
-    assert_eq!(found[0].found[0], "method");
+    let [
+        rows::Disagreement::Shape {
+            line,
+            kind,
+            found: stated,
+            declared: Some(declared),
+            ..
+        },
+    ] = found.as_slice()
+    else {
+        panic!("{found:#?}");
+    };
+    assert_eq!((*line, kind.as_str()), (2, "NetRequested"));
     assert_eq!(
-        found[0]
-            .declared
-            .as_deref()
-            .and_then(|d| d.first().cloned())
-            .as_deref(),
-        Some("effect")
+        (stated[0].as_str(), declared[0].as_str()),
+        ("method", "effect")
     );
 }
 
@@ -158,8 +149,13 @@ fn gate_two_fires_on_a_value_for_a_field_and_on_an_unknown_kind() {
     assert_eq!(rows::disagreements("x.wit", value, &facade).len(), 1);
     let unknown = "// Ledgered as `KeystoreTouched { operation, key, digest }`.\n";
     let found = rows::disagreements("x.wit", unknown, &facade);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].declared, None);
+    assert!(
+        matches!(
+            found.as_slice(),
+            [rows::Disagreement::Shape { declared: None, .. }]
+        ),
+        "{found:#?}"
+    );
     // The spellings the contracts legitimately use all pass: `field: value`,
     // a multi-line mention, and a stated prefix.
     for fine in [

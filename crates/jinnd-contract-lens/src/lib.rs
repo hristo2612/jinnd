@@ -6,15 +6,19 @@
 //! nobody cross-checks, a `contains` over contract text satisfied by a
 //! comment. Attention did not prevent it; this crate is the mechanism.
 //!
-//! A contract file is asserted by PARSING it: WIT through `wit-parser`, the
-//! bundle metadata through `toml`, the facade through `syn`. A test never
-//! sees the text — [`Contract`] exposes no `&str` and no `contains`, only
-//! the parsed views ([`Contract::wit`], [`Contract::metadata`]) and a
-//! [`Prose`](prose::Prose) view that reads COMMENT LINES ONLY, so a
-//! declaration-shaped phrase can never be satisfied by a comment, and a
-//! comment-shaped phrase can never pass for a declaration. The scan in
-//! [`scan`] makes loading a contract file anywhere else fail the build's
-//! tests, so the unfirable shape is unexpressible rather than discouraged.
+//! A contract file is asserted by PARSING it wherever a format exists: WIT
+//! through `wit-parser`, the bundle metadata through `toml`, the facade
+//! through `syn`. A test never sees the text — [`Contract`] exposes no
+//! `&str` and no `contains`, only the parsed views ([`Contract::wit`],
+//! [`Contract::metadata`]); a statement made in prose is asserted against
+//! the doc block the parser attached to ONE named item
+//! ([`wit::Docs`]), never against "any comment in the file". Where no
+//! format exists — version references and row shapes written inside
+//! comments are OUR convention — [`refs`] and [`rows`] are the one reader
+//! each, with the grammar in their docs, and they FAIL CLOSED: a candidate
+//! they cannot read is reported, never skipped. The scan in [`scan`] makes
+//! loading a contract file anywhere else fail the build's tests, so the
+//! unfirable shape is unexpressible rather than discouraged.
 //!
 //! Dev-only support crate (R10): only ever a `[dev-dependencies]` entry.
 
@@ -22,7 +26,6 @@
 
 pub mod facade;
 pub mod metadata;
-pub mod prose;
 pub mod refs;
 pub mod rows;
 pub mod scan;
@@ -96,22 +99,37 @@ impl Contract {
         metadata::Metadata::parse(&self.path, &self.text)
     }
 
-    /// The document's prose — comment lines only for `.wit` and `.toml`,
-    /// the whole text for Markdown.
-    pub fn prose(&self) -> prose::Prose {
-        prose::Prose::of(&self.path, &self.text)
-    }
-
     /// Every ledger row shape the document enumerates (`Kind { a, b }`),
-    /// as structured mentions — gate 2's input.
+    /// read under [`rows`]' grammar. Fails closed: a candidate the reader
+    /// cannot read panics here naming the file and line.
     pub fn rows(&self) -> Vec<rows::RowMention> {
-        rows::mentions(&self.text)
+        rows::candidates(&self.text)
+            .into_iter()
+            .map(|candidate| match candidate {
+                rows::Candidate::Read(mention) => mention,
+                rows::Candidate::Unreadable { line, kind, why } => {
+                    panic!("{}:{line}: {kind} {{ …: {why}", self.path)
+                }
+            })
+            .collect()
     }
 
-    /// Every `namespace:name@version` reference in the document — gate 1's
-    /// input.
+    /// Every `namespace:name@version` reference in the document, read
+    /// under [`refs`]' grammar. Fails closed: a candidate the reader
+    /// cannot read panics here naming the file and line.
     pub fn references(&self) -> Vec<refs::Reference> {
-        refs::references(&self.text)
+        refs::candidates(&self.text)
+            .into_iter()
+            .map(|candidate| match candidate {
+                refs::Candidate::Read(reference) => reference,
+                refs::Candidate::Unreadable { line, token } => {
+                    panic!(
+                        "{}:{line}: `{token}` does not read as a reference",
+                        self.path
+                    )
+                }
+            })
+            .collect()
     }
 }
 

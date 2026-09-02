@@ -162,9 +162,11 @@ async fn a_granted_listener_witnesses_the_transitions_the_kernel_commits() {
     assert!(
         jinnd_contract_lens::bundle("jinn-introspect")
             .wit()
-            .prose()
+            .wit()
+            .interface("composition")
+            .type_docs("transition")
             .states(TOPIC),
-        "the bundle declares the wire name this test subscribes on"
+        "the transition record declares the wire name this test subscribes on"
     );
     let (paths, hash) = paths(&home, &entries);
     let daemon = booted(paths.clone()).await;

@@ -6,8 +6,9 @@
 //! Every contract of record is read through `jinnd_contract_lens`
 //! (M2-K16): declarations come out of the toolchain's own parser, metadata
 //! out of real TOML tables, and a statement made in prose is asserted
-//! against COMMENT LINES ONLY. No test here holds the text, so the
-//! `contains` that six shipped instances passed on cannot be written.
+//! against the doc block the parser attached to ONE named item. No test
+//! here holds the text, so the `contains` that six shipped instances
+//! passed on cannot be written.
 
 use jinnd_contract_lens::{bundle, world};
 
@@ -18,9 +19,13 @@ fn world_is_versioned_for_suspend_semantics() {
     // 0.8.0 (M2-K13): the kernel becomes a publisher on this world's bus;
     // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
     // 0.6.0 (M2-K9) the typed `restarting` one.
-    let world = world();
-    assert_eq!(world.wit().package_id(), "jinn:plugin@0.10.0");
-    assert!(world.prose().states("Suspend ≠ dispose"));
+    let wit = world().wit();
+    assert_eq!(wit.package_id(), "jinn:plugin@0.10.0");
+    assert!(
+        wit.interface("lifecycle")
+            .func_docs("activate")
+            .states("Suspend ≠ dispose")
+    );
 }
 
 /// M2-K9 (R3/R12): the reply-expecting dispatch refusal is a CASE of the
@@ -45,11 +50,15 @@ fn the_world_carries_the_typed_dispatch_refusals() {
         types.record_fields("refused-target"),
         ["entry: string", "incarnation: u64", "topic: string"]
     );
-    assert!(world.prose().states("REPLY-EXPECTING modes"));
+    assert!(
+        wit.interface("events")
+            .func_docs("emit")
+            .states("REPLY-EXPECTING modes")
+    );
     // The ask that replaces discovering a pending transition by stalling,
     // in the SAME vocabulary the refusal uses.
     let introspect = bundle("jinn-introspect").wit().wit();
-    assert_eq!(introspect.package_id(), "jinn:introspect@0.4.0");
+    assert_eq!(introspect.package_id(), "jinn:introspect@0.5.0");
     let composition = introspect.interface("composition");
     assert_eq!(
         composition.enum_cases("unserved"),
@@ -90,7 +99,11 @@ fn the_world_carries_the_typed_wait_cycle() {
     );
     // Every mode is decided, `emit` included: the kernel awaits every
     // delivery end to end, so fire-and-forget is not an escape.
-    assert!(world.prose().states("refused in EVERY mode"));
+    assert!(
+        wit.interface("events")
+            .func_docs("emit")
+            .states("refused in EVERY mode")
+    );
     let introspect = bundle("jinn-introspect").wit().wit();
     let composition = introspect.interface("composition");
     assert_eq!(
@@ -378,18 +391,22 @@ fn the_world_and_the_bundle_declare_both_outbound_one_shots() {
 /// semantics (ordering, loss, replay) in the bundle.
 #[test]
 fn the_world_and_the_bundle_declare_the_lifecycle_publish() {
-    let world = world();
+    let world = world().wit();
+    let events = world.interface("events");
     assert!(
-        world
-            .prose()
+        events
+            .func_docs("emit")
             .states("KERNEL-RESERVED topic is REFUSED here in every mode")
     );
-    assert!(world.prose().states("subscribed under `jinn:introspect`"));
-    let introspect = bundle("jinn-introspect").wit();
-    let transition = introspect
-        .wit()
-        .interface("composition")
-        .record_fields("transition");
+    assert!(
+        events
+            .func_docs("listen")
+            .states("subscribed under `jinn:introspect`")
+    );
+    let introspect = bundle("jinn-introspect").wit().wit();
+    let composition = introspect.interface("composition");
+    let transition = composition.record_fields("transition");
+    let stated_on_transition = composition.type_docs("transition");
     assert_eq!(
         transition,
         [
@@ -410,14 +427,10 @@ fn the_world_and_the_bundle_declare_the_lifecycle_publish() {
         "LATE JOIN AND REPLAY",
         "AUTHORITY",
     ] {
-        assert!(introspect.prose().states(stated), "{stated}");
+        assert!(stated_on_transition.states(stated), "{stated}");
     }
     // The authority demonstration's one failure, stated on the wire: the
     // cause is not delivered, so the grant is not widened.
-    assert!(
-        introspect
-            .prose()
-            .states("`cause` for a transition is DELIBERATELY ABSENT")
-    );
+    assert!(stated_on_transition.states("`cause` for a transition is DELIBERATELY ABSENT"));
     assert!(!transition.iter().any(|field| field.starts_with("cause:")));
 }

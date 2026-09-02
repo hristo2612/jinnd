@@ -144,33 +144,56 @@ impl Iface<'_> {
     }
 }
 
-/// The doc block the parser attached to one named item.
+/// The doc block the parser attached to ONE named item — every comment
+/// run (`//`, `///`, `/* */`) immediately above that declaration, as
+/// `wit_parser::Docs` collected it. Scoped by construction: a phrase found
+/// here was written about THIS item, never somewhere else in the file.
 pub struct Docs {
+    item: String,
     contents: String,
 }
 
 impl Docs {
-    /// PROSE PRESENCE in this one block, nothing more.
+    /// PROSE PRESENCE in this one block, nothing more: `phrase` occurs
+    /// verbatim in the comment run the parser attached to the named item.
+    /// It proves the contract says it THERE; it never proves a declaration
+    /// (a declaration is not a comment, so it is never in here).
     pub fn states(&self, phrase: &str) -> bool {
-        let _ = phrase;
-        false
+        self.contents.contains(phrase)
+    }
+
+    /// The item this block belongs to, for messages.
+    pub fn item(&self) -> &str {
+        &self.item
     }
 }
 
 impl Iface<'_> {
-    /// The doc block of function `name`.
+    /// The doc block of function `name`; panics naming a function the
+    /// interface does not declare.
     pub fn func_docs(&self, name: &str) -> Docs {
-        let _ = name;
+        let func = self
+            .iface
+            .functions
+            .get(name)
+            .unwrap_or_else(|| panic!("the interface declares {name}"));
         Docs {
-            contents: String::new(),
+            item: format!("func {name}"),
+            contents: func.docs.contents.clone().unwrap_or_default(),
         }
     }
 
-    /// The doc block of type `name`.
+    /// The doc block of type `name`; panics naming a type the interface
+    /// does not declare.
     pub fn type_docs(&self, name: &str) -> Docs {
-        let _ = name;
         Docs {
-            contents: String::new(),
+            item: format!("type {name}"),
+            contents: self
+                .type_def(name)
+                .docs
+                .contents
+                .clone()
+                .unwrap_or_default(),
         }
     }
 }
