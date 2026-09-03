@@ -263,7 +263,8 @@ within a major version.
   **Two structural blockers, discovered by the M2 port and recorded 2026-09-01 (see
   Decision Log). Both CLOSED 2026-09-02 — kept here as the record of what M3 needed
   and where each was delivered. A THIRD, discovered by the harness UI packet and
-  recorded 2026-09-02, is OPEN (item 3).**
+  recorded 2026-09-02, LANDED 2026-09-03 (item 3). A FOURTH, discovered by the
+  harness extension-tier packet and recorded 2026-09-03, is OPEN (item 4).**
   1. **No outbound anything.** `jinn:net` v0.1 has no `request`, no TLS and no
      non-loopback listen, at every pin so far. Slack, Stripe, Linear, GitHub, the
      vendor engine APIs and every webhook are therefore *structurally impossible* in
@@ -308,13 +309,38 @@ within a major version.
      later (ruling 2, 2026-08-25: retry only against a CHANGED environment, and the
      provider landing is the change). Undeclared entries are unchanged. Harness
      pin-bump 7 adopts it and retires the workaround. Sequenced before M2-K23.
+     **Landed 2026-09-03:** M2-K24 merged (implementation at `e263fd8`, the
+     verifier's invariants lane at `a53a352`); harness pin-bump 7 adopted it and
+     retired the workaround. Recorded by kernel-dev on the PLA-355 dispatch; the
+     item's CLOSED marking is the COO's to confirm.
+  4. **A listener's delivery spends the EMITTER's clock, and an instance the kernel
+     ends on a deadline leaves its fiber `Active` on the record.** At every pin so
+     far a guest call is one `settle(deadline)` and `events.emit` awaits every
+     delivery INSIDE the emitter's call, so a listener that never returns kills the
+     emitter's instance at the 5 s guest deadline — the transport, in the harness's
+     case — and the kernel records no transition for either: the dead instance's
+     fiber rests `Active`, its `jinn:net` listener keeps accepting for an instance
+     that cannot answer, and the operator API is down until the daemon restarts
+     (harness FINDINGS #48, UI-2 proof 7 at pin `a53a352`, with a transcript). R11
+     is broken in both halves — the wrong fiber died, and no fiber was recorded
+     failing — and an instance whose operator API a single looping extension can
+     take down for good cannot run "a full day on jinnd alone" once extensions are
+     machine-written (§2, Law 5). **OPEN — carded as M2-K25
+     (`docs/packets/M2-K25.md`, PLA-355):** the emitter's clock is paused for the
+     whole walk and every delivery is bounded on the LISTENER's side — by a
+     per-delivery fuel budget declared at `listen` (deterministic, R9) or by the
+     guest deadline — and any instance the kernel ends after activation fails its
+     OWN fiber on the record (`Failed`, its own error row, its kernel registrations
+     released), resting there per R9 until a declared input moves (M2-K24 (c)).
+     Sequenced first of the two cards from UI-2 round 1, before M2-K26 and M2-K23.
   The M2 port delivered the SHAPES faithfully; the two capabilities that separate a
   faithful shape from a thing that can run a business followed as seven kernel packets
   and two harness packets in the two days after, and the third blocker surfaced the
-  moment a real UI was composed on the result. M3 planning starts from an instance
-  that can reach out and can refuse a stranger, and waits on one whose plugins can
-  depend on each other without a coin toss. §7(b)'s week of duty is still owed
-  (audit 2026-09-04).
+  moment a real UI was composed on the result; the fourth surfaced the moment a
+  machine-written extension was composed on top of that UI. M3 planning starts from
+  an instance that can reach out and can refuse a stranger, whose plugins can depend
+  on each other without a coin toss, and waits on one whose walks are bounded by the
+  listener that spends them. §7(b)'s week of duty is still owed (audit 2026-09-04).
 - **M4 — Cutover.** Old gateway retired per the cutover rule. jinnOS work (desktop
   session, mobile ROM) begins only after M4 — as bigger profiles, not new projects.
 
@@ -329,6 +355,22 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-09-03** — **A fourth M3 structural blocker is named in §7: a listener's
+  delivery spends the emitter's clock, and a dead instance is not a failed fiber
+  (roadmap amendment, recorded by kernel-dev on the COO's dispatch, PLA-355; COO
+  veto window open).** Found by harness packet UI-2 (PLA-353) at pin `a53a352`,
+  proof 7, with a transcript (FINDINGS #48): a `while (true) {}` extension on a
+  `before-send` waterfall killed the TRANSPORT's instance at the guest deadline,
+  the transport's fiber stayed `Active` on the record, its port kept accepting for
+  a dead instance, and the operator API was gone until a daemon restart. The
+  direction is carded, not decided here: M2-K25 (`docs/packets/M2-K25.md`) pauses
+  the emitter's clock for the walk, bounds every delivery on the listener's side
+  with a fuel budget declared at `listen`, and makes any post-activation instance
+  death fail its own fiber on the record (one additive `TransitionCause`, the
+  fiber engine's one new input, loom owed). §7's item 4 records the blocker and
+  points at the card; item 3 is marked landed the same day. Nothing about M2's
+  acceptance changes — §7(a) is met, §7(b) is still owed.
 
 - **2026-09-02** — **A third M3 structural blocker is named in §7: no readiness
   gating between plugins on the string lane (roadmap amendment, recorded by
