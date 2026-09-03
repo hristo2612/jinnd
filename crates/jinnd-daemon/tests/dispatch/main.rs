@@ -34,7 +34,51 @@ use harness::{booted, entry, events, home, json, paths, wait_for};
 /// its patched config — the refusal never cost the restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
-    let home = home("restarting");
+    // PROBE (scratch): the shape twenty times per run in concurrent pairs,
+    // to catch the race; the summary is reported through a final panic so
+    // the harness prints it.
+    let mut summary = Vec::new();
+    for pair in 0..20 {
+        let started = Instant::now();
+        let (left, right) = (format!("restarting{pair}a"), format!("restarting{pair}b"));
+        let (a, b) = tokio::join!(
+            tokio::spawn(async move { run_once(&left).await }),
+            tokio::spawn(async move { run_once(&right).await })
+        );
+        summary.push(format!(
+            "pair {pair} in {:?}: {} | {}",
+            started.elapsed(),
+            a.unwrap_or_else(|panic| format!("PANICKED {panic:?}")),
+            b.unwrap_or_else(|panic| format!("PANICKED {panic:?}"))
+        ));
+    }
+    panic!("PROBE SUMMARY\n{}", summary.join("\n"));
+}
+
+/// PROBE: the round's evidence, printed at once so pairs do not interleave.
+async fn dump(name: &str, daemon: &jinnd_daemon::Daemon, paths: &jinnd_daemon::DaemonPaths) {
+    let mut out = format!("PROBE DUMP {name} BEGIN\n");
+    for record in events(daemon).await {
+        let line = format!("{record:?}");
+        if !line.contains("jinn:clock") && !line.contains("AuthDecided") {
+            out.push_str(&format!("  {line}\n"));
+        }
+    }
+    for file in ["consumer.log", "notify.log", "notify.err", "notify.out"] {
+        let bytes = std::fs::read(paths.data.join(file)).unwrap_or_default();
+        out.push_str(&format!(
+            "  data {file} ({} bytes): {:?}\n",
+            bytes.len(),
+            String::from_utf8_lossy(&bytes[..bytes.len().min(300)])
+        ));
+    }
+    out.push_str(&format!("PROBE DUMP {name} END\n"));
+    eprintln!("{out}");
+}
+
+async fn run_once(name: &str) -> String {
+    let started = Instant::now();
+    let home = home(name);
     let paths = paths(
         &home,
         vec![
@@ -73,7 +117,42 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
 
     // The kernel's answer to the emitting guest: the TYPED refusal, naming
     // the target — never a stall, never an empty successful walk.
-    let outcome = wait_for(&paths.data.join("notify.out"), |bytes| !bytes.is_empty()).await;
+    let outcome = match tokio::time::timeout(
+        Duration::from_secs(30),
+        wait_for(&paths.data.join("notify.out"), |bytes| !bytes.is_empty()),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            dump(name, &daemon, &paths).await;
+            // PROBE (scratch branch only): dump what the daemon knows.
+            for name in ["provider", "consumer", "trigger"] {
+                eprintln!("PROBE fiber {name}: {:?}", daemon.entry_fiber(name));
+            }
+            for record in events(&daemon).await {
+                let line = format!("{record:?}");
+                if !line.contains("jinn:clock") {
+                    eprintln!("PROBE row {line}");
+                }
+            }
+            for file in std::fs::read_dir(&paths.data)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let path = file.path();
+                let bytes = std::fs::read(&path).unwrap_or_default();
+                eprintln!(
+                    "PROBE data {} ({} bytes): {}",
+                    path.display(),
+                    bytes.len(),
+                    String::from_utf8_lossy(&bytes[..bytes.len().min(400)])
+                );
+            }
+            panic!("PROBE: notify.out never landed");
+        }
+    };
     let body = String::from_utf8_lossy(&outcome[1.min(outcome.len())..]).into_owned();
     assert_eq!(
         outcome.first(),
@@ -99,6 +178,7 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
         "and the incarnation being replaced: {refusal}"
     );
 
+    dump(name, &daemon, &paths).await;
     // Nothing landed in the doomed incarnation: the handler never ran.
     let log = std::fs::read(paths.data.join("consumer.log")).unwrap_or_default();
     assert!(
@@ -215,4 +295,18 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+    let rows = events(&daemon).await;
+    let transitions = rows
+        .iter()
+        .filter(|row| format!("{row:?}").contains("FiberTransition"))
+        .count();
+    let errors = rows
+        .iter()
+        .filter(|row| format!("{row:?}").contains("ErrorRecorded"))
+        .count();
+    let log = std::fs::read(paths.data.join("notify.log")).unwrap_or_default();
+    format!(
+        "{name}: {:?}, notify.log={log:?}, transitions={transitions}, errors={errors}",
+        started.elapsed()
+    )
 }
