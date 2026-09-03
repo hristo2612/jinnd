@@ -9,6 +9,9 @@ use tokio::time::timeout;
 
 use crate::bindings::lifecycle;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn trapped(trap: &wasmtime::Error) -> KernelError {
     KernelError {
         code: ErrorCode::PluginFailed,
