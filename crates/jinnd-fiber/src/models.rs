@@ -21,6 +21,7 @@ use jinnd_api::{
 use crate::plan::Aim;
 use crate::steering::SteeringCell;
 
+mod fault;
 mod suspend;
 
 pub(super) fn aim(revision: u64) -> Aim {
