@@ -73,7 +73,37 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
 
     // The kernel's answer to the emitting guest: the TYPED refusal, naming
     // the target — never a stall, never an empty successful walk.
-    let outcome = wait_for(&paths.data.join("notify.out"), |bytes| !bytes.is_empty()).await;
+    let outcome = match tokio::time::timeout(
+        Duration::from_secs(30),
+        wait_for(&paths.data.join("notify.out"), |bytes| !bytes.is_empty()),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            // PROBE (scratch branch only): dump what the daemon knows.
+            for name in ["provider", "consumer", "trigger"] {
+                eprintln!("PROBE fiber {name}: {:?}", daemon.entry_fiber(name));
+            }
+            for record in events(&daemon).await {
+                let line = format!("{record:?}");
+                if !line.contains("jinn:clock") {
+                    eprintln!("PROBE row {line}");
+                }
+            }
+            for file in std::fs::read_dir(&paths.data).into_iter().flatten().flatten() {
+                let path = file.path();
+                let bytes = std::fs::read(&path).unwrap_or_default();
+                eprintln!(
+                    "PROBE data {} ({} bytes): {}",
+                    path.display(),
+                    bytes.len(),
+                    String::from_utf8_lossy(&bytes[..bytes.len().min(400)])
+                );
+            }
+            panic!("PROBE: notify.out never landed");
+        }
+    };
     let body = String::from_utf8_lossy(&outcome[1.min(outcome.len())..]).into_owned();
     assert_eq!(
         outcome.first(),
