@@ -39,10 +39,10 @@ fn emitting(id: &str, mode: &str) -> serde_json::Value {
 
 fn trace(records: &[jinnd_api::LedgerRecord], entry: &str) -> Option<(u32, u32)> {
     records.iter().find_map(|record| {
-        if !record
+        if record
             .entry
             .as_ref()
-            .is_some_and(|candidate| candidate.0 == entry)
+            .is_none_or(|candidate| candidate.0 != entry)
         {
             return None;
         }
@@ -324,8 +324,8 @@ async fn unbudgeted_case(
     reload(&daemon, &test_home, &walked, &hash).await;
     settle(&daemon).await;
     let answer = (
-        state(&daemon, "listener").unwrap(),
-        state(&daemon, "emitter").unwrap(),
+        state(&daemon, "listener").unwrap_or_else(|| panic!("listener has a state")),
+        state(&daemon, "emitter").unwrap_or_else(|| panic!("emitter has a state")),
         events(&daemon).await,
     );
     daemon
