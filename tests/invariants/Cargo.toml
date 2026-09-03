@@ -14,6 +14,8 @@ workspace = true
 jinnd-adapter = { path = "../../crates/jinnd-adapter" }
 jinnd-api = { path = "../../crates/jinnd-api" }
 jinnd-daemon = { path = "../../crates/jinnd-daemon" }
+jinnd-effects = { path = "../../crates/jinnd-effects" }
+jinnd-fiber = { path = "../../crates/jinnd-fiber" }
 jinnd-wasm = { path = "../../crates/jinnd-wasm" }
 proptest = "1.11.0"
 serde_json = "1.0"
@@ -103,3 +105,11 @@ path = "hazard_registry.rs"
 [[test]]
 name = "string_lane_injects"
 path = "string_lane_injects/main.rs"
+
+[[test]]
+name = "m2_k25_delivery"
+path = "m2_k25_delivery.rs"
+
+[[test]]
+name = "m2_k25_fault"
+path = "m2_k25_fault.rs"
