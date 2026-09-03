@@ -1045,6 +1045,20 @@ impl Guest for Fixture {
                 effects::register("caller effect", 1).map_err(fault)?;
                 Ok(())
             }
+            // M2-K24 (harness #45): a sibling's contract injected AT
+            // ACTIVATION over the string lane. `inject-counter` reads the
+            // counter and fails if no provider answers — the coin-toss
+            // shape; `inject-counter-bad` fails on its OWN account against
+            // a live provider (an operation it does not have), the (c)
+            // shape a repaired provider re-arms.
+            "inject-counter" | "inject-counter-bad" => {
+                let handle = services::resolve(COUNTER_CONTRACT).map_err(fault)?;
+                let operation = if mode == "inject-counter" { "get" } else { "nope" };
+                let answer = services::call(handle, operation, b"").map_err(fault)?;
+                *STASH.lock().unwrap() = answer;
+                effects::register("inject effect", 1).map_err(fault)?;
+                Ok(())
+            }
             "ungranted" => match services::resolve(SECRET_CONTRACT) {
                 Err(_) => Ok(()),
                 Ok(_) => Err(GuestFault::Failed(
