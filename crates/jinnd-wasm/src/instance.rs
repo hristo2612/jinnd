@@ -81,24 +81,25 @@ pub(crate) fn spawn(
     pre: PluginPre<HostState>,
     seat: Seat,
 ) -> InstanceHandle {
-    let deadline = seat.deadline;
-    let (handle, deaths, aborts, rx) = pair(deadline);
+    let (handle, deaths, aborts, rx) = pair(seat.deadline);
     let face = peer_face(&handle);
-    tokio::spawn(run(engine, pre, seat, face, deaths, aborts, rx));
+    let horizon = handle.horizon.clone();
+    tokio::spawn(run(engine, pre, seat, face, horizon, deaths, aborts, rx));
     handle
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     engine: wasmtime::Engine,
     pre: PluginPre<HostState>,
     seat: Seat,
     face: Arc<crate::handle::InstancePeer>,
+    horizon: DeadlineControl,
     deaths: watch::Sender<Option<KernelError>>,
     aborts: watch::Receiver<Option<KernelError>>,
     mut rx: mpsc::Receiver<Command>,
 ) {
     let deadline = seat.deadline;
-    let horizon = DeadlineControl::new();
     let mut store = Store::new(
         &engine,
         HostState {

@@ -572,7 +572,7 @@ async fn a_listener_that_emits_a_nested_walk_is_not_charged_as_the_emitter() {
         .emit(
             9,
             EVENT_TOPIC,
-            jinnd_api::DispatchMode::Emit,
+            jinnd_api::DispatchMode::Serial,
             &jinnd_wasm::Selector::All,
             b"ping".to_vec(),
             Some(FiberId(9)),

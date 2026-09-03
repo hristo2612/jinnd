@@ -9,9 +9,9 @@ use jinnd_api::KernelError;
 use std::num::NonZeroU64;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::timeout;
 
 use crate::peer::PeerId;
+use crate::settle::{DeadlineControl, within};
 
 mod command;
 mod face;
@@ -141,6 +141,10 @@ pub struct InstanceHandle {
     pub(crate) deaths: tokio::sync::watch::Receiver<Option<KernelError>>,
     pub(crate) abort: tokio::sync::watch::Sender<Option<KernelError>>,
     pub(crate) deadline: Duration,
+    /// The instance's ONE guest-call clock (M2-K25(a)): the supervisor's
+    /// per-entry horizon and the caller-side delivery horizon both run on
+    /// it, so a walk the instance parks on pauses both at once.
+    pub(crate) horizon: DeadlineControl,
 }
 
 impl InstanceHandle {
@@ -237,7 +241,7 @@ impl InstanceHandle {
             },
             rx,
         );
-        match timeout(self.deadline, delivery).await {
+        match within(self.deadline, &self.horizon, delivery).await {
             Ok(answer) => answer?,
             Err(_) => {
                 let error = crate::settle::hung();

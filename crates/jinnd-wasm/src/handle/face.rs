@@ -9,6 +9,7 @@ use jinnd_api::{KernelError, KernelFuture};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::peer::{Peer, PeerId};
+use crate::settle::DeadlineControl;
 use crate::topics::EventTarget;
 
 use super::{Command, InstanceHandle};
@@ -90,6 +91,7 @@ pub(crate) fn pair(
             deaths,
             abort,
             deadline,
+            horizon: DeadlineControl::new(),
         },
         death_tx,
         aborts,
