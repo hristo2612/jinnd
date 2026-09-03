@@ -12,7 +12,7 @@ use jinnd_wasm::{LaneCore, LoadedComponent, WasmBody, wasm_lane_declaring};
 
 use crate::daemon::Daemon;
 use crate::seat::{seat_config, seat_declaration};
-use crate::support::{SharedFibers, Tracked, error, lock};
+use crate::support::{SharedFibers, error, lock, tracked};
 
 /// The daemon's lane over one wasm package (the lifted generic lane, M2-K1):
 /// seats and their `injects` declarations (M2-K24) decode from the
@@ -26,16 +26,7 @@ fn lane(
 ) -> PackageLane {
     let track = move |body: Arc<WasmBody>, signal| {
         let entry = body.entry().clone();
-        let fiber = Arc::new(Fiber::spawn(body, signal));
-        lock(&fibers).insert(
-            fiber.id(),
-            Tracked {
-                fiber: Arc::clone(&fiber),
-                entry,
-                recorded: 0,
-            },
-        );
-        fiber
+        tracked(&fibers, entry, || Arc::new(Fiber::spawn(body, signal)))
     };
     wasm_lane_declaring::<serde_json::Value, _, _>(
         core,
