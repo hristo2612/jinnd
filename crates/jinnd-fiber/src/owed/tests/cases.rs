@@ -105,6 +105,7 @@ fn a_disposed_fiber_has_served_its_disposal() {
         let asked = Desired {
             disposing: request.0,
             suspending: request.1,
+            faulted: false,
             ..desired(aim(0, 0))
         };
         assert_eq!(owed(&disposed, &asked), None);
@@ -123,6 +124,7 @@ fn a_disposal_outranks_a_suspension_and_neither_is_a_restart() {
     };
     let suspending = Desired {
         suspending: true,
+        faulted: false,
         ..desired(aim(0, 0))
     };
     assert_eq!(owed(&live, &suspending), Some(Owed::Suspension));

@@ -15,7 +15,7 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{ErrorCode, FiberState, TransitionCause};
-use jinnd_fiber::{FaultSink, Fiber, ReadinessSource};
+use jinnd_fiber::{FaultSink, Fiber};
 use support::{Gate, Trace, body, epoch, failure, gated_undo, path, ready, undo};
 
 type Held = Arc<Mutex<Option<FaultSink>>>;
@@ -94,8 +94,14 @@ async fn a_fault_after_activation_fails_the_fiber_on_the_record() {
         Some(fiber.id()),
         "the death is attributed to the fiber that died"
     );
-    assert!(fiber.effects().is_empty(), "exactly its contribution withdrew");
-    assert!(fiber.resting(), "it rests Failed: nothing is scheduled (R9)");
+    assert!(
+        fiber.effects().is_empty(),
+        "exactly its contribution withdrew"
+    );
+    assert!(
+        fiber.resting(),
+        "it rests Failed: nothing is scheduled (R9)"
+    );
 }
 
 /// R9 with M2-K24 (c): the failed fiber is not retried against an
@@ -125,10 +131,22 @@ async fn a_faulted_fiber_is_not_retried_until_its_environment_moves() {
         "a stale fault never acts"
     );
     fiber.quiesce().await;
-    assert_eq!(fiber.state(), FiberState::Active, "the successor is untouched");
+    assert_eq!(
+        fiber.state(),
+        FiberState::Active,
+        "the successor is untouched"
+    );
     let record = fiber.record();
-    assert_eq!(record.failures.len(), 2, "recorded all the same (no lost fault)");
-    assert_eq!(record.transitions.len(), 6, "no transition for the stale notice");
+    assert_eq!(
+        record.failures.len(),
+        2,
+        "recorded all the same (no lost fault)"
+    );
+    assert_eq!(
+        record.transitions.len(),
+        6,
+        "no transition for the stale notice"
+    );
 }
 
 /// A fault reported while a disposal's withdrawal is in flight: exactly
@@ -166,6 +184,28 @@ async fn a_fault_during_an_in_flight_disposal_lands_exactly_once() {
     );
     assert_eq!(trace.count("undo:seat"), 1, "one withdrawal, not two");
     assert_eq!(record.failures.len(), 1, "the fault is on the record");
+}
+
+/// A notice that arrives after disposal is stale terminal input: it is
+/// recorded, but cannot lower rest after the supervisor has exited (I3).
+#[tokio::test]
+async fn a_fault_after_disposal_cannot_wake_the_terminal_fiber() {
+    let trace = Trace::new();
+    let held: Held = Arc::default();
+    let (fiber, _source) = ready(faultable(&trace, &held, None));
+    fiber.quiesce().await;
+    let dead = sink(&held);
+
+    fiber.dispose().await;
+    assert_eq!(fiber.state(), FiberState::Disposed);
+    assert!(fiber.resting());
+    assert!(!dead.fault(failure("late death after disposal")));
+    assert!(fiber.resting(), "terminal input cannot strand quiescence");
+    assert_eq!(
+        fiber.record().failures.len(),
+        1,
+        "the fact is still recorded"
+    );
 }
 
 /// A fault reported while the fiber is `Unloading` for a config restart:

@@ -18,16 +18,18 @@ use jinnd_api::{FiberState, TransitionCause};
 use crate::plan::{Committed, Step, plan};
 use crate::steering::SteeringCell;
 
-use super::aim;
+use super::{aim, dep};
 
 /// A cell whose incarnation `revision` is LIVE: launched, landed, active.
 fn live(cell: &SteeringCell, revision: u64) -> u64 {
-    cell.launch(aim(revision));
+    let launched = cell.desired().aim;
+    assert_eq!(launched.revision, revision);
+    cell.launch(launched.clone());
     let incarnation = cell.incarnation();
     cell.land();
     cell.commit(|committed| {
         committed.state = FiberState::Active;
-        committed.active_for = Some(aim(revision));
+        committed.active_for = Some(launched);
     });
     incarnation
 }
@@ -97,6 +99,20 @@ fn a_disposal_outranks_a_racing_fault() {
     });
 }
 
+/// Once disposal has landed, the old incarnation's notice is terminally
+/// stale: it is not a new target and cannot lower rest after supervisor exit.
+#[test]
+fn a_fault_after_disposal_never_acts() {
+    loom::model(|| {
+        let cell = SteeringCell::new(None);
+        let incarnation = live(&cell, 0);
+        cell.dispose();
+        cell.commit(|committed| committed.state = FiberState::Disposed);
+        assert!(!cell.fault(incarnation));
+        assert_eq!(plan(&committed(&cell), &cell.desired()), None);
+    });
+}
+
 /// A fault carrying an EARLIER incarnation's stamp never dooms the
 /// successor: whether it lands before or after the successor's launch,
 /// the cell holds no pending fault once both have run.
@@ -106,6 +122,7 @@ fn a_stale_fault_never_acts_on_the_next_incarnation() {
         let cell = Arc::new(SteeringCell::new(None));
         let stale = live(&cell, 0);
         cell.commit(|committed| *committed = committed.unloaded());
+        cell.restart(TransitionCause::ConfigChanged);
         let launcher = Arc::clone(&cell);
         let launching = thread::spawn(move || launcher.launch(aim(1)));
 
@@ -136,7 +153,7 @@ fn a_stale_fault_never_acts_on_the_next_incarnation() {
 #[test]
 fn a_fault_during_an_in_flight_unload_is_reconciled_by_the_landing() {
     loom::model(|| {
-        let cell = Arc::new(SteeringCell::new(None));
+        let cell = Arc::new(SteeringCell::new(dep(1)));
         let incarnation = live(&cell, 0);
         cell.restart(TransitionCause::ConfigChanged);
         cell.commit(|committed| committed.state = FiberState::Unloading);
@@ -150,12 +167,14 @@ fn a_fault_during_an_in_flight_unload_is_reconciled_by_the_landing() {
         );
         // The landing: the supervisor commits the clean unload.
         cell.commit(|committed| *committed = committed.unloaded());
+        cell.land();
 
         faulting.join().unwrap_or_else(|_| unreachable!());
+        let desired = cell.desired();
         assert_eq!(
             plan(&committed(&cell), &cell.desired()),
             Some(Step::Load {
-                aim: aim(1),
+                aim: desired.aim,
                 cause: TransitionCause::ConfigChanged
             }),
             "the restart is served, never a second unload"

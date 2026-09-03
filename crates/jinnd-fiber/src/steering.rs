@@ -10,7 +10,7 @@
 //! `await` or a call into plugin code. That is the whole discipline; the loom models
 //! at the bottom of this file are what keep it honest.
 
-use jinnd_api::{Epoch, Owed, TransitionCause};
+use jinnd_api::{Epoch, FiberState, Owed, TransitionCause};
 
 use crate::plan::{Aim, Committed, Desired};
 use crate::sync::Mutex;
@@ -42,6 +42,10 @@ struct Inner {
     /// `resting` (the round-3 law): a settle presenting a stale stamp is
     /// refused, so rest and target can never be observed out of sync.
     moved: u64,
+    /// The incarnation stamp (M2-K25): bumped by every launch of an
+    /// activation. A fault names the incarnation that reported it, so a
+    /// notice from an earlier one is recorded and never acts on the next.
+    launches: u64,
 }
 
 impl Inner {
@@ -62,12 +66,14 @@ impl SteeringCell {
                     cause: TransitionCause::InitialLoad,
                     disposing: false,
                     suspending: false,
+                    faulted: false,
                 },
                 committed: Committed::new(),
                 in_flight: None,
                 // A fresh fiber still owes its first reconciliation pass.
                 resting: false,
                 moved: 0,
+                launches: 0,
             }),
         }
     }
@@ -174,7 +180,9 @@ impl SteeringCell {
         });
     }
 
-    /// Records that a transition for `aim` is in flight.
+    /// Records that a transition for `aim` is in flight: a NEW incarnation
+    /// (M2-K25) — the stamp moves, and a fault the previous one left
+    /// pending is dropped, its landing having reconciled it.
     ///
     /// # Panics
     ///
@@ -187,7 +195,35 @@ impl SteeringCell {
                 "a fiber may have at most one transition in flight"
             );
             inner.in_flight = Some(aim);
+            inner.launches = inner.launches.wrapping_add(1);
+            inner.desired.faulted = false;
         });
+    }
+
+    /// The stamp of the incarnation launched last (M2-K25): what a
+    /// [`crate::FaultSink`] is minted with, so its fault names one
+    /// incarnation.
+    pub(crate) fn incarnation(&self) -> u64 {
+        self.with(|inner| inner.launches)
+    }
+
+    /// The fiber engine's ONE post-activation input (M2-K25): the live
+    /// instance behind incarnation `incarnation` died. Acts — lowers rest
+    /// with the write, like every target — only for the CURRENT
+    /// incarnation; a stale notice answers `false` and changes nothing,
+    /// so a death can never doom a successor (R9, R11).
+    pub(crate) fn fault(&self, incarnation: u64) -> bool {
+        self.with(|inner| {
+            if inner.launches != incarnation
+                || inner.desired.faulted
+                || inner.committed.state == FiberState::Disposed
+            {
+                return false;
+            }
+            inner.desired.faulted = true;
+            inner.stir();
+            true
+        })
     }
 
     /// Records that the in-flight transition landed.

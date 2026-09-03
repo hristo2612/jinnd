@@ -39,6 +39,17 @@ impl Cell {
         });
     }
 
+    /// The live activation's instance died (M2-K25): `Failed` under the
+    /// aim it served, committed before its cleanup runs, so it is not
+    /// retried against an environment that has not moved (R9).
+    pub(super) fn faulted(&self, dead: Option<Aim>) {
+        self.shared.steering.commit(|committed| {
+            committed.state = FiberState::Failed;
+            committed.active_for = None;
+            committed.failed_under = dead;
+        });
+    }
+
     /// A clean unload: no live activation, and the fiber is ready for
     /// whatever the next round plans.
     /// Written through [`Committed::unloaded`], which is also what

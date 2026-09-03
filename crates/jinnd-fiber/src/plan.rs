@@ -27,6 +27,11 @@ pub(crate) struct Desired {
     /// Suspension requested (M2-K4): the cell stops, the entry persists.
     /// Sticky like disposal, and outranked by it.
     pub suspending: bool,
+    /// The live incarnation reported its own death (M2-K25): the body
+    /// asks, in effect, to be failed. Sticky for the incarnation — the
+    /// next launch clears it — and outranked by disposal and suspension,
+    /// which end or retain the entry's contribution as they would anyway.
+    pub faulted: bool,
 }
 
 /// What has landed, as opposed to what is wanted.
@@ -99,6 +104,13 @@ pub(crate) fn plan(committed: &Committed, desired: &Desired) -> Option<Step> {
             } else if desired.suspending {
                 Some(Step::Unload {
                     cause: TransitionCause::Suspend,
+                })
+            } else if desired.faulted {
+                // The incarnation is dead (M2-K25): it fails under its own
+                // cause, whatever else the target asks — the record says
+                // why it died; the next round serves the target.
+                Some(Step::Unload {
+                    cause: TransitionCause::BodyFaulted,
                 })
             } else if committed.active_for.as_ref() == Some(&desired.aim) {
                 None

@@ -6,7 +6,7 @@ use jinnd_api::{Epoch, ErrorCode, FiberId, KernelError};
 use jinnd_effects::{EffectScope, ReplayReport};
 use tokio_util::sync::CancellationToken;
 
-use crate::body::{FiberBody, Setup};
+use crate::body::{FaultSink, FiberBody, Setup};
 use crate::contain::contained;
 
 /// Runs one activation behind panic containment (R11).
@@ -16,8 +16,9 @@ pub(super) async fn activate<'a>(
     fiber: FiberId,
     epoch: &'a Epoch,
     cancel: CancellationToken,
+    faults: FaultSink,
 ) -> Result<(), KernelError> {
-    let setup = Setup::new(fiber, epoch, scope, cancel);
+    let setup = Setup::new(fiber, epoch, scope, cancel, faults);
     contained(fiber, move || body.activate(setup)).await
 }
 

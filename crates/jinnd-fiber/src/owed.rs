@@ -76,6 +76,7 @@ fn serves(committed: &Committed, desired: &Desired) -> bool {
         FiberState::Active => {
             !desired.disposing
                 && !desired.suspending
+                && !desired.faulted
                 && committed.active_for.as_ref() == Some(&desired.aim)
         }
         FiberState::Pending | FiberState::Loading | FiberState::Failed | FiberState::Unloading => {
@@ -132,11 +133,13 @@ fn reload_scheduled(committed: &Committed, desired: &Desired) -> bool {
     }
 }
 
-/// An unload that ENDS this fiber's service rather than replacing it.
+/// An unload that ENDS this fiber's service rather than replacing it. A
+/// fault's unload lands `Failed` (M2-K25), which R9 never reloads from
+/// under the same aim — so it promises no replacement either.
 const fn terminal(cause: &TransitionCause) -> bool {
     matches!(
         cause,
-        TransitionCause::ExplicitDispose | TransitionCause::Suspend
+        TransitionCause::ExplicitDispose | TransitionCause::Suspend | TransitionCause::BodyFaulted
     )
 }
 

@@ -20,7 +20,7 @@ use jinnd_api::{FiberState, Transition, TransitionCause};
 use jinnd_effects::{EffectScope, ReplayReport};
 use tokio_util::sync::CancellationToken;
 
-use crate::body::FiberBody;
+use crate::body::{FaultSink, FiberBody};
 use crate::landing::land;
 use crate::plan::{Aim, Step, plan};
 use crate::readiness::ReadinessSignal;
@@ -138,7 +138,16 @@ impl Cell {
                 scope,
                 ..
             } = self;
-            let work = activate(body.as_ref(), scope, shared.id, &epoch, cancel.clone());
+            // Minted AFTER the launch, so it names this incarnation (M2-K25).
+            let faults = FaultSink::new(Arc::clone(shared));
+            let work = activate(
+                body.as_ref(),
+                scope,
+                shared.id,
+                &epoch,
+                cancel.clone(),
+                faults,
+            );
             land(work, signal.as_mut(), shared, &cancel).await
         };
         self.shared.steering.land();
@@ -181,6 +190,9 @@ impl Cell {
     /// decided before any inverse runs; a disposal arriving meanwhile lands
     /// afterwards as a `Finish` over what the suspension left.
     async fn unload(&mut self, cause: TransitionCause) {
+        if cause == TransitionCause::BodyFaulted {
+            return self.fault_unload().await;
+        }
         self.publish(FiberState::Unloading, cause.clone());
         let full = cause == TransitionCause::ExplicitDispose;
         let report = self.withdraw(full).await;
@@ -195,6 +207,21 @@ impl Cell {
             self.unload_failed(&desired.aim);
             self.publish(FiberState::Failed, cause);
         }
+    }
+
+    /// The live incarnation died (M2-K25): the doom is COMMITTED BEFORE
+    /// the cleanup (the M2-K9 round-4 ordering law — a reader mid-cleanup
+    /// already sees `Failed`, never a replacement R9 will not schedule),
+    /// then the activation's whole contribution withdraws — guest inverses
+    /// answer as they can, the residue is in the replay report — and the
+    /// fiber rests `Failed` under the aim the dead activation served, so
+    /// it is not retried until that aim moves (R9, R11).
+    async fn fault_unload(&mut self) {
+        let dead = self.shared.steering.observed().0.active_for;
+        self.faulted(dead);
+        self.publish(FiberState::Unloading, TransitionCause::BodyFaulted);
+        self.withdraw(true).await;
+        self.publish(FiberState::Failed, TransitionCause::BodyFaulted);
     }
 
     /// Disposes (or suspends) a fiber that holds no live activation.

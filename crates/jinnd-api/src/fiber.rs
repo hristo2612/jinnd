@@ -54,6 +54,12 @@ pub enum TransitionCause {
     /// for the entry, nothing is withdrawn (M2-K4; decision log 2026-08-28;
     /// authorized suspend-vs-dispose facade delta).
     Suspend,
+    /// The fiber's live instance died AFTER activation — a guest the
+    /// kernel ended at its call deadline, on a trap, or on an exhausted
+    /// delivery budget (M2-K25): the fiber fails its OWN cell and nothing
+    /// else (R11), on the record (Law 2), withdrawing exactly what it
+    /// applied (I1), and rests `Failed` until a declared input moves (R9).
+    BodyFaulted,
 }
 
 /// One committed transition recorded for observation and the ledger.

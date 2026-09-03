@@ -51,5 +51,6 @@ fn desired(aim: Aim) -> Desired {
         cause: TransitionCause::InitialLoad,
         disposing: false,
         suspending: false,
+        faulted: false,
     }
 }
