@@ -41,10 +41,39 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
     for pair in 0..10 {
         let started = Instant::now();
         let (left, right) = (format!("restarting{pair}a"), format!("restarting{pair}b"));
-        let (a, b) = tokio::join!(run_once(&left), run_once(&right));
-        summary.push(format!("pair {pair} in {:?}: {a} | {b}", started.elapsed()));
+        let (a, b) = tokio::join!(
+            tokio::spawn(async move { run_once(&left).await }),
+            tokio::spawn(async move { run_once(&right).await })
+        );
+        summary.push(format!(
+            "pair {pair} in {:?}: {} | {}",
+            started.elapsed(),
+            a.unwrap_or_else(|panic| format!("PANICKED {panic:?}")),
+            b.unwrap_or_else(|panic| format!("PANICKED {panic:?}"))
+        ));
     }
     panic!("PROBE SUMMARY\n{}", summary.join("\n"));
+}
+
+/// PROBE: the round's evidence, printed at once so pairs do not interleave.
+async fn dump(name: &str, daemon: &jinnd_daemon::Daemon, paths: &jinnd_daemon::DaemonPaths) {
+    let mut out = format!("PROBE DUMP {name} BEGIN\n");
+    for record in events(daemon).await {
+        let line = format!("{record:?}");
+        if !line.contains("jinn:clock") && !line.contains("AuthDecided") {
+            out.push_str(&format!("  {line}\n"));
+        }
+    }
+    for file in ["consumer.log", "notify.log", "notify.err", "notify.out"] {
+        let bytes = std::fs::read(paths.data.join(file)).unwrap_or_default();
+        out.push_str(&format!(
+            "  data {file} ({} bytes): {:?}\n",
+            bytes.len(),
+            String::from_utf8_lossy(&bytes[..bytes.len().min(300)])
+        ));
+    }
+    out.push_str(&format!("PROBE DUMP {name} END\n"));
+    eprintln!("{out}");
 }
 
 async fn run_once(name: &str) -> String {
@@ -96,6 +125,7 @@ async fn run_once(name: &str) -> String {
     {
         Ok(outcome) => outcome,
         Err(_) => {
+            dump(name, &daemon, &paths).await;
             // PROBE (scratch branch only): dump what the daemon knows.
             for name in ["provider", "consumer", "trigger"] {
                 eprintln!("PROBE fiber {name}: {:?}", daemon.entry_fiber(name));
@@ -148,6 +178,7 @@ async fn run_once(name: &str) -> String {
         "and the incarnation being replaced: {refusal}"
     );
 
+    dump(name, &daemon, &paths).await;
     // Nothing landed in the doomed incarnation: the handler never ran.
     let log = std::fs::read(paths.data.join("consumer.log")).unwrap_or_default();
     assert!(
