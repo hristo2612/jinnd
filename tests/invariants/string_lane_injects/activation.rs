@@ -43,10 +43,9 @@ async fn a_declared_consumer_rests_pending_until_every_declared_provider_is_acti
     assert_eq!(calls(&records, "consumer", "get"), 1);
     assert!(!failed(&records, "consumer"));
     assert!(errors(&records, "consumer").is_empty());
-    assert!(
-        active_sequence(&records, "provider") < active_sequence(&records, "consumer"),
-        "the provider's Active row precedes the consumer's"
-    );
+    // Cross-fiber transition rows are committed in sync-batch order, not
+    // causality order. `witness_gate` is the causal proof: it observes the
+    // provider's Loading window and requires zero consumer loads there.
     daemon
         .shutdown()
         .await
