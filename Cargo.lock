@@ -844,8 +844,12 @@ version = "0.0.1"
 dependencies = [
  "jinnd-adapter",
  "jinnd-api",
+ "jinnd-daemon",
+ "jinnd-wasm",
  "proptest",
+ "serde_json",
  "tokio",
+ "wit-component",
 ]
 
 [[package]]

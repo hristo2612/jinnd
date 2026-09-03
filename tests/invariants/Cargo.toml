@@ -13,8 +13,12 @@ workspace = true
 [dependencies]
 jinnd-adapter = { path = "../../crates/jinnd-adapter" }
 jinnd-api = { path = "../../crates/jinnd-api" }
+jinnd-daemon = { path = "../../crates/jinnd-daemon" }
+jinnd-wasm = { path = "../../crates/jinnd-wasm" }
 proptest = "1.11.0"
-tokio = { version = "1.47.1", features = ["macros", "rt", "time"] }
+serde_json = "1.0"
+tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+wit-component = "0.233.0"
 
 [[test]]
 name = "cordis_fiber"
@@ -95,3 +99,7 @@ path = "hazard_absence.rs"
 [[test]]
 name = "hazard_registry"
 path = "hazard_registry.rs"
+
+[[test]]
+name = "string_lane_injects"
+path = "string_lane_injects/main.rs"
