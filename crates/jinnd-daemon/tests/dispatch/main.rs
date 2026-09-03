@@ -91,7 +91,11 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
                     eprintln!("PROBE row {line}");
                 }
             }
-            for file in std::fs::read_dir(&paths.data).into_iter().flatten().flatten() {
+            for file in std::fs::read_dir(&paths.data)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let path = file.path();
                 let bytes = std::fs::read(&path).unwrap_or_default();
                 eprintln!(
