@@ -55,10 +55,10 @@ async fn old_consumer_handle_is_refused_after_provider_replacement() {
     broker
         .provide(second, COUNTER, Arc::new(Answer(b"new")))
         .unwrap_or_else(|error| panic!("replacement provision: {error:?}"));
-    let refused = broker
-        .call(consumer, retained, "get", Vec::new())
-        .await
-        .expect_err("the old consumer handle is never retargeted");
+    let refused = match broker.call(consumer, retained, "get", Vec::new()).await {
+        Err(refused) => refused,
+        Ok(answer) => panic!("the old consumer handle was retargeted: {answer:?}"),
+    };
     assert_eq!(refused.code, ErrorCode::EffectFailed);
     assert!(refused.message.contains("stale handle"));
     assert!(
