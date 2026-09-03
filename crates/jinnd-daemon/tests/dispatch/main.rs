@@ -38,7 +38,7 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
     // to catch the race; the summary is reported through a final panic so
     // the harness prints it.
     let mut summary = Vec::new();
-    for pair in 0..10 {
+    for pair in 0..20 {
         let started = Instant::now();
         let (left, right) = (format!("restarting{pair}a"), format!("restarting{pair}b"));
         let (a, b) = tokio::join!(
