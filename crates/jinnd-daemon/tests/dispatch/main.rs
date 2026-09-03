@@ -34,7 +34,16 @@ use harness::{booted, entry, events, home, json, paths, wait_for};
 /// its patched config — the refusal never cost the restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
-    let home = home("restarting");
+    // PROBE (scratch): the shape eight times per run, to catch the race.
+    for round in 0..8 {
+        let started = Instant::now();
+        run_once(&format!("restarting{round}")).await;
+        eprintln!("PROBE round {round} ok in {:?}", started.elapsed());
+    }
+}
+
+async fn run_once(name: &str) {
+    let home = home(name);
     let paths = paths(
         &home,
         vec![
