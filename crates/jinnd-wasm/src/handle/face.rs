@@ -72,14 +72,15 @@ impl EventTarget for InstancePeer {
     }
 }
 
+/// The death notice's two ends: the supervisor retains the terminal error
+/// on the sender when the instance dies after activation (M2-K25); the
+/// handle watches the receiver. The same shape carries the lane's abort.
+pub(crate) type NoticeTx = watch::Sender<Option<KernelError>>;
+pub(crate) type NoticeRx = watch::Receiver<Option<KernelError>>;
+
 pub(crate) fn pair(
     deadline: std::time::Duration,
-) -> (
-    InstanceHandle,
-    watch::Sender<Option<KernelError>>,
-    watch::Receiver<Option<KernelError>>,
-    mpsc::Receiver<Command>,
-) {
+) -> (InstanceHandle, NoticeTx, NoticeRx, mpsc::Receiver<Command>) {
     let (tx, rx) = mpsc::channel(16);
     let (death_tx, deaths) = watch::channel(None);
     let (abort, aborts) = watch::channel(None);
