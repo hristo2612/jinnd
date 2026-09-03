@@ -72,7 +72,7 @@ pub use hostkeystore::{
 pub use hostnet::{HostNet, READABLE_TOPIC};
 pub use hostprocess::HostProcess;
 pub use instance::Seat;
-pub use lane::{Grant, LaneCore, SeatSpec, WasmBody, wasm_lane};
+pub use lane::{Declaration, Grant, LaneCore, SeatSpec, WasmBody, wasm_lane, wasm_lane_declaring};
 pub use lane_swap::swap_pinned;
 pub use peer::{HandleId, LedgerSink, Peer, PeerId};
 pub use selector::{NoRealms, RealmOracle, Selector};

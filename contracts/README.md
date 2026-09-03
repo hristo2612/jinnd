@@ -22,7 +22,7 @@ nothing in the table is typed by hand.
 | `contracts/jinn-auth` | `jinn:auth@0.1.0` | none |
 | `contracts/jinn-clock` | `jinn:clock@0.1.0` | rate |
 | `contracts/jinn-fs` | `jinn:fs@0.2.0` | path-prefix |
-| `contracts/jinn-introspect` | `jinn:introspect@0.5.0` | none |
+| `contracts/jinn-introspect` | `jinn:introspect@0.6.0` | none |
 | `contracts/jinn-keystore` | `jinn:keystore@0.1.0` | key-prefix |
 | `contracts/jinn-ledger` | `jinn:ledger@0.1.0` | none |
 | `contracts/jinn-net` | `jinn:net@0.3.0` | net-policy |

@@ -7,8 +7,10 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{EntryId, FiberId, KernelError};
+use jinnd_api::{EntryId, FiberId, FiberState, KernelError};
+use tokio::sync::watch;
 
+use super::injects::Gate;
 use crate::alarms::Alarms;
 use crate::broker::Broker;
 use crate::handle::HostRecord;
@@ -57,6 +59,16 @@ pub struct LaneCore {
     /// for the entry's true dispose to withdraw LIFO after the live seat's
     /// own trail — the journal belongs to the ENTRY, never to a fiber.
     pub(super) journals: Mutex<HashMap<EntryId, Vec<HostRecord>>>,
+    /// Every spawned wasm fiber's committed state (M2-K24), keyed by
+    /// fiber: what a declared consumer's gate reads to know its provider
+    /// is `Active`. A row leaves with the fiber's cell.
+    pub(super) states: Mutex<HashMap<FiberId, watch::Receiver<FiberState>>>,
+    /// The lane's transition edge (M2-K24): moved on every tracked fiber's
+    /// state change — a gate's second edge beside the broker's provisions.
+    pub(super) transitions: watch::Sender<u64>,
+    /// Per entry, its string-lane gate (M2-K24): what it declares and what
+    /// it finds unmet, for `jinn:introspect` (Law 2).
+    pub(crate) gates: Mutex<HashMap<EntryId, Arc<Gate>>>,
 }
 
 impl LaneCore {
@@ -79,7 +91,49 @@ impl LaneCore {
             swap: SwapCore::default(),
             next_slot: AtomicU64::new(0),
             journals: Mutex::new(HashMap::new()),
+            states: Mutex::new(HashMap::new()),
+            transitions: watch::Sender::new(0),
+            gates: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// A tracked fiber's last committed state, when the lane spawned it.
+    pub(crate) fn state_of(&self, fiber: FiberId) -> Option<FiberState> {
+        lock(&self.states).get(&fiber).map(|state| *state.borrow())
+    }
+
+    /// Follows a spawned fiber's states for the gates (M2-K24): one
+    /// forwarder task per fiber on the current runtime (R1), moving the
+    /// lane's transition edge on every change and ending — its row with
+    /// it — when the fiber's cell is gone. The edge moves once at
+    /// subscription too, so a gate computed before this fiber was visible
+    /// re-reads it.
+    pub(crate) fn track_states(
+        self: &Arc<Self>,
+        fiber: FiberId,
+        mut states: watch::Receiver<FiberState>,
+    ) {
+        lock(&self.states).insert(fiber, states.clone());
+        self.transitions.send_modify(|edge| *edge += 1);
+        let lane = Arc::clone(self);
+        tokio::spawn(async move {
+            while states.changed().await.is_ok() {
+                lane.transitions.send_modify(|edge| *edge += 1);
+            }
+            lock(&lane.states).remove(&fiber);
+            lane.transitions.send_modify(|edge| *edge += 1);
+        });
+    }
+
+    /// The declared contracts one entry's gate currently finds unmet, as
+    /// `jinn:introspect` reports them (M2-K24, 0.6.0) — `None` for an
+    /// entry the lane does not host. The declaration itself is the
+    /// document of record's to report, never the gate's (round-1 ruling
+    /// 4). A snapshot under brief locks; no guest is called.
+    #[must_use]
+    pub fn unmet(&self, entry: &EntryId) -> Option<Vec<String>> {
+        let gate = Arc::clone(lock(&self.gates).get(entry)?);
+        Some(gate.unmet())
     }
 
     /// One entry's live seat as `jinn:introspect` reports it (M2-K7): the

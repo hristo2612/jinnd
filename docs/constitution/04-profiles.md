@@ -25,10 +25,13 @@ vars:                       # the ONLY expression inputs (see Expressions)
 entries:
   - id: a1b2c3              # stable CONFIG identity — the reconcile key
     name: jinn:todos        # plugin identity (manifest name, 05)
-    config: { ... }         # serde-validated against the plugin's schema
-    grants:
-      - jinn:ledger@1
-      - { contract: jinn:fs@1, scope: "${vars.notes-dir}" }
+    config:                 # the entry's seat document (the decoder's shape)
+      grants:
+        - jinn:ledger@1
+        - { contract: jinn:fs@1, scope: "${vars.notes-dir}" }
+      injects:              # string-lane contracts injected at activation (M2-K24): a gate, never a grant
+        - jinn:ui-bundle
+      data: { ... }         # the plugin's own payload, serde-validated against its schema
     disabled: false
     entries: [ ... ]        # children: nesting = the fiber tree; grants attenuate (01)
     isolate: { db: tenant-a }
@@ -48,6 +51,19 @@ Rules:
   2026-08-25 from "always a complete unload/reload": the ratified sentence
   contradicted the kernel, the verifier-green suite, and the reference
   implementation — see SOURCE-OF-TRUTH decision log.)*
+- **`injects` gates; `grants` authorize.** A wasm entry may declare, beside its
+  grants in `config` (`config.injects` beside `config.grants`, exactly where the
+  seat decoder reads them), the string-lane contracts it injects at activation — a
+  bare contract name or `{ contract }`, in declaration order; absent means none, and
+  a present `injects` that is no list (`null` included) is a per-entry fault. The
+  kernel activates
+  the entry only once every declared provider is `Active`, reloads it when one is
+  replaced, and re-arms it from `Failed` when one lands later — the typed lane's
+  epoch gating on the string lane (SOURCE-OF-TRUTH §3). A declaration never widens
+  what the entry may call: a declared contract the entry holds no grant for, or an
+  element that is no declaration (a scope or ops key, an object naming no contract),
+  is a per-entry fault refused on the record at admission (R11). *(Added 2026-09-03,
+  M2-K24; a 0.x MINOR of the seat config schema, R12.)*
 - **Layering:** `extends` composes documents (base → overlay, id-merged). A device's
   effective profile = its layer stack; small-brain/big-brain is one overlay entry
   swapping a provider.
@@ -70,7 +86,10 @@ Rules:
   transitively affected** — through provider generation changes, grant changes, realm
   or intercept changes, or parent-context changes. A provider generation change fully
   unloads and reloads every consumer (epoch gating, SOURCE-OF-TRUTH §3); "my entry
-  didn't change" never exempts a consumer whose provider did.
+  didn't change" never exempts a consumer whose provider did. A string-lane
+  declaration (`injects`) is an epoch input exactly as a typed injection is: an edit
+  to it restarts the entry by reconcile, and a declared provider's generation change
+  reaches the consumer the same way (M2-K24).
 - Reconciliation maintains **committed vs target views** per fiber (the paper's
   calculus): a leaving provider stops admitting new consumers *before* its inverses
   run, while committed consumers keep their existing handle until their teardown

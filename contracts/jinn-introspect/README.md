@@ -1,9 +1,9 @@
-# jinn:introspect 0.5.0
+# jinn:introspect 0.6.0
 
 The read-only composition contract (M2-K7; harness finding 19). A status
 or health plugin answers `fiber`, `state`, `incarnation`, `unserved`,
-`provisions`, `registrations`, and `readiness` from the kernel's own
-knowledge instead of probing.
+`injects`, `unmet`, `provisions`, `registrations`, and `readiness` from
+the kernel's own knowledge instead of probing.
 
 ## 0.2.0 (M2-K9, harness finding 31)
 
@@ -132,6 +132,35 @@ edition: the record is now `readiness-report` and the field is spelled
 JSON answer, and every other operation and record are unchanged, so a
 holder of 0.4.0 needs no change; the version moves because a rename at an
 unchanged version is not additive (R12).
+
+## 0.6.0 (M2-K24, harness findings 7, 45 and 46)
+
+Additive: `entry` gains `injects` and `unmet`. A wasm entry may declare,
+beside its grants, the string-lane contracts it injects at activation
+(`config.injects`, constitution 04 §Format). The kernel then keeps §3's
+promises on the string lane exactly as on the typed one: the entry's fiber
+rests `pending` until every declared provider is `active` — a provision
+landing while the provider is still `loading` is not readiness — reloads
+under `DependencyChanged` when a declared provider is replaced, and
+re-arms from `failed` when one moves (and never before; R9). `injects`
+reports that declaration as the document of record states it, in order —
+a disabled entry's included, since it is the document's fact and not a
+live gate's; `unmet` names which declared contracts the entry's gate
+currently finds unmet (empty for an entry that is not seated), so an
+operator reading a `pending` entry learns WHY from the record instead of
+inferring it — the K9/K10 precedent that a refusal is observable (Law 2).
+
+Two entries that declare each other rest `pending` for the daemon's life
+and each shows the other's contract in `unmet`: the recorded limit (the
+string lane has no static cycle chart, because a wasm entry declares what
+it injects, not what it provides), cleanly inactive per I3. A declared
+contract the entry holds no grant for is a per-entry fault refused on the
+record at admission — the entry rests `failed`, never `pending` on it —
+and an entry that declares nothing reports two empty lists and behaves
+exactly as before.
+
+No existing operation changes shape; the `transition` delivery is
+unchanged.
 
 ## Grant
 

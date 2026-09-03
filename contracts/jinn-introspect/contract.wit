@@ -1,6 +1,6 @@
-// jinn:introspect@0.5.0 (M2-K16; 0.4.0 M2-K13, harness #40/#41; 0.3.0
-// M2-K10, #32; 0.2.0 M2-K9, #31; 0.1.0 M2-K7, #19) — the read-only composition
-// contract. The kernel supplies it (01 §Mechanical closure); a plugin sees
+// jinn:introspect@0.6.0 (M2-K24, harness #7/#45/#46; 0.5.0 M2-K16; 0.4.0
+// M2-K13, harness #40/#41; 0.3.0 M2-K10, #32; 0.2.0 M2-K9, #31; 0.1.0 M2-K7,
+// #19) — the read-only composition contract. The kernel supplies it (01 §Mechanical closure); a plugin sees
 // the composition only when its profile entry grants this contract. Every
 // read crosses the broker (grant check → ledger append → dispatch) and is
 // answered from a SNAPSHOT of kernel-owned state — no guest is called on
@@ -11,7 +11,10 @@
 // parsed (`from` is a WIT keyword; `record readiness` collided with the
 // `readiness` operation). The wire operation `readiness` and its answer
 // shape are unchanged; the record is `readiness-report` (README, R12).
-package jinn:introspect@0.5.0;
+// 0.6.0 (2026-09-03, M2-K24) is additive: `entry` gains `injects` and
+// `unmet`, so an operator reading a `pending` entry is told WHY it has not
+// activated instead of inferring it (Law 2).
+package jinn:introspect@0.6.0;
 
 interface composition {
   // The kernel registrations one live seat holds, by class.
@@ -50,12 +53,32 @@ interface composition {
     stalled,
   }
 
+  // `injects` (0.6.0) is the entry's string-lane dependency declaration:
+  // the contracts its profile entry declares it injects at activation, in
+  // declaration order, exactly as the document of record writes them (a
+  // disabled entry's included) — empty for an entry that declares
+  // nothing. A declared consumer's fiber rests `pending` until
+  // every declared provider is `active`, reloads when one is replaced,
+  // and re-arms from `failed` when one moves (the typed lane's epoch
+  // gating, carried to the string lane; SOURCE-OF-TRUTH §3).
+  // `unmet` (0.6.0) names which declared contracts the kernel's gate
+  // currently finds unmet — no live provider, or a provider not yet
+  // `active` — in declaration order; empty when every declared provider
+  // is `active`, and always empty for an entry that declares nothing. A
+  // `pending` entry with a non-empty `unmet` is waiting on exactly those,
+  // and two entries that declare each other show each other's contract
+  // here for the daemon's life: the recorded limit, cleanly inactive (I3).
+  // A declaration the entry holds no grant for is not unmet: it is a
+  // per-entry fault refused on the record at admission, and the entry
+  // rests `failed` with the refusal in its ledger row.
   record entry {
     id: string,
     fiber: option<u64>,
     state: option<string>,
     incarnation: option<u64>,
     unserved: option<unserved>,
+    injects: list<string>,
+    unmet: list<string>,
     provisions: list<string>,
     registrations: registrations,
   }

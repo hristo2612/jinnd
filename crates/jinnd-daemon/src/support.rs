@@ -61,6 +61,31 @@ pub(crate) struct Tracked {
     pub(crate) recorded: usize,
 }
 
+/// Spawns one fiber through `spawn` and records it under `entry` for the
+/// transition bridge and the sink's entry attribution — in ONE critical
+/// section (M2-K24 round 3; Law 2, M2-K7). The supervisor starts inside
+/// `spawn` and may run the body on another worker before this returns;
+/// the map lock is taken FIRST, so a row that body appends waits on the
+/// insert through the sink's own lookup instead of landing fiber-only.
+/// `spawn` runs no plugin code — it only starts the task (R1).
+pub(crate) fn tracked(
+    fibers: &SharedFibers,
+    entry: EntryId,
+    spawn: impl FnOnce() -> Arc<Fiber>,
+) -> Arc<Fiber> {
+    let mut fibers = lock(fibers);
+    let fiber = spawn();
+    fibers.insert(
+        fiber.id(),
+        Tracked {
+            fiber: Arc::clone(&fiber),
+            entry,
+            recorded: 0,
+        },
+    );
+    fiber
+}
+
 /// Emits every committed fiber transition the ledger has not yet seen
 /// (R6: transitions are ledger events; ordered, unreceipted lane), each
 /// attributed to its entry — and hands the same transition to the
@@ -96,5 +121,81 @@ pub(crate) fn sync_transitions(
         for (entry, transition) in &committed {
             publisher.offer(entry, transition);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use jinnd_api::{FiberState, KernelFuture, LedgerQuery};
+    use jinnd_fiber::{FiberBody, ReadinessSource, Setup};
+
+    use super::*;
+
+    /// A body whose first act is an attributable row appended with only
+    /// its fiber — the shape of the lane's admission refusal (M2-K24).
+    struct Probe(Arc<dyn LedgerSink>);
+
+    impl FiberBody for Probe {
+        fn activate<'a>(&'a self, setup: Setup<'a>) -> KernelFuture<'a, ()> {
+            Box::pin(async move {
+                self.0.append(
+                    LedgerEventKind::ErrorRecorded {
+                        error: error(ErrorCode::EffectFailed, "probe refused".to_owned()),
+                    },
+                    Some(setup.fiber()),
+                );
+                Ok(())
+            })
+        }
+    }
+
+    /// The ordering the Linux gate hit (M2-K24 round 3), FORCED rather
+    /// than waited for: the supervisor starts inside `spawn` and the body
+    /// runs on another worker before the tracker has returned — the spawn
+    /// step dawdles to make that certain. The row must still name the
+    /// entry: the attribution insert happens-before the body's first
+    /// append, or Law 2 has a fiber-only row (M2-K7).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_row_the_body_appends_before_the_tracker_returns_names_its_entry() {
+        let ledger =
+            jinnd_ledger::Ledger::open_in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let fibers: SharedFibers = Arc::new(Mutex::new(HashMap::new()));
+        let sink: Arc<dyn LedgerSink> = Arc::new(Sink {
+            ledger: ledger.clone(),
+            fibers: Arc::clone(&fibers),
+        });
+        let body: Arc<dyn FiberBody> = Arc::new(Probe(Arc::clone(&sink)));
+        let source = ReadinessSource::independent();
+        let signal = source.signal();
+        let fiber = tracked(&fibers, EntryId("probe".to_owned()), move || {
+            let fiber = Arc::new(Fiber::spawn(body, signal));
+            std::thread::sleep(Duration::from_millis(100));
+            fiber
+        });
+        let mut states = fiber.states();
+        while *states.borrow() != FiberState::Active {
+            states
+                .changed()
+                .await
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        let records = ledger
+            .events(LedgerQuery::default())
+            .await
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        let rows: Vec<&jinnd_api::LedgerRecord> = records
+            .iter()
+            .filter(|record| matches!(record.kind, LedgerEventKind::ErrorRecorded { .. }))
+            .collect();
+        assert_eq!(rows.len(), 1, "one row: {records:?}");
+        assert_eq!(rows[0].fiber, Some(fiber.id()));
+        assert_eq!(
+            rows[0].entry,
+            Some(EntryId("probe".to_owned())),
+            "the row names its entry, never fiber-only (Law 2, M2-K7)"
+        );
     }
 }
