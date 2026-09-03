@@ -6,6 +6,7 @@
 //! contained to this one fiber (R11): the supervisor replies, drops the
 //! store, and is gone (R7 instant dispose, I1).
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -80,9 +81,10 @@ pub(crate) fn spawn(
     pre: PluginPre<HostState>,
     seat: Seat,
 ) -> InstanceHandle {
-    let (handle, deaths, rx) = pair();
+    let deadline = seat.deadline;
+    let (handle, deaths, aborts, rx) = pair(deadline);
     let face = peer_face(&handle);
-    tokio::spawn(run(engine, pre, seat, face, deaths, rx));
+    tokio::spawn(run(engine, pre, seat, face, deaths, aborts, rx));
     handle
 }
 
@@ -92,6 +94,7 @@ async fn run(
     seat: Seat,
     face: Arc<crate::handle::InstancePeer>,
     deaths: watch::Sender<Option<KernelError>>,
+    aborts: watch::Receiver<Option<KernelError>>,
     mut rx: mpsc::Receiver<Command>,
 ) {
     let deadline = seat.deadline;
@@ -124,7 +127,7 @@ async fn run(
             return;
         }
     };
-    serve(&mut store, &plugin, deadline, &deaths, &mut rx).await;
+    serve(&mut store, &plugin, deadline, &deaths, aborts, &mut rx).await;
     // The store drops here: the instance's memory, tables, and in-flight
     // state vanish together (R7 instant dispose; I1 — exactly its
     // contribution, because everything it contributed lives behind effects
@@ -136,12 +139,30 @@ async fn serve(
     plugin: &Plugin,
     deadline: Duration,
     deaths: &watch::Sender<Option<KernelError>>,
+    mut aborts: watch::Receiver<Option<KernelError>>,
     rx: &mut mpsc::Receiver<Command>,
 ) {
     let guest = plugin.jinn_plugin_lifecycle();
     let mut sealed = false;
     let mut active = false;
-    while let Some(command) = rx.recv().await {
+    loop {
+        let command = tokio::select! {
+            biased;
+            changed = aborts.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                if let Some(error) = aborts.borrow_and_update().clone() {
+                    die(store, deaths, active, error);
+                    return;
+                }
+                continue;
+            }
+            command = rx.recv() => match command {
+                Some(command) => command,
+                None => return,
+            },
+        };
         // A sealed instance runs no guest entry (M2-K4): the seat's journal
         // is closed, so nothing may register into it or escape it. A
         // CLOSING seat refuses at the door too (M2-K5 #16): the entry that
@@ -180,12 +201,16 @@ async fn serve(
             }
             Command::Activate { config, reply } => {
                 let horizon = store.data().horizon.clone();
-                let settled = settle(
-                    deadline,
-                    &horizon,
-                    guest.call_activate(&mut *store, &config),
+                let settled = interrupted(
+                    &mut aborts,
+                    settle(
+                        deadline,
+                        &horizon,
+                        guest.call_activate(&mut *store, &config),
+                    ),
                 )
-                .await;
+                .await
+                .unwrap_or_else(Settled::Dead);
                 let outcome = std::mem::take(&mut store.data_mut().outcome);
                 match settled {
                     Settled::Ok(()) => {
@@ -201,17 +226,28 @@ async fn serve(
             }
             Command::Check { consumer, reply } => {
                 let horizon = store.data().horizon.clone();
-                match within(deadline, &horizon, guest.call_check(&mut *store, consumer)).await {
-                    Ok(Ok(vital)) => drop(reply.send(vital)),
-                    Ok(Err(trap)) => {
+                match interrupted(
+                    &mut aborts,
+                    within(deadline, &horizon, guest.call_check(&mut *store, consumer)),
+                )
+                .await
+                {
+                    Ok(Ok(Ok(vital))) => drop(reply.send(vital)),
+                    Ok(Ok(Err(trap))) => {
                         commit_late(store);
                         die(store, deaths, active, trapped(&trap));
                         let _ = reply.send(false);
                         return;
                     }
-                    Err(_) => {
+                    Ok(Err(_)) => {
                         commit_late(store);
                         die(store, deaths, active, hung());
+                        let _ = reply.send(false);
+                        return;
+                    }
+                    Err(error) => {
+                        commit_late(store);
+                        die(store, deaths, active, error);
                         let _ = reply.send(false);
                         return;
                     }
@@ -219,7 +255,12 @@ async fn serve(
             }
             Command::Undo { token, reply } => {
                 let horizon = store.data().horizon.clone();
-                let settled = settle(deadline, &horizon, guest.call_undo(&mut *store, token)).await;
+                let settled = interrupted(
+                    &mut aborts,
+                    settle(deadline, &horizon, guest.call_undo(&mut *store, token)),
+                )
+                .await
+                .unwrap_or_else(Settled::Dead);
                 commit_late(store);
                 match settled {
                     Settled::Ok(()) => drop(reply.send(Ok(()))),
@@ -241,7 +282,9 @@ async fn serve(
                 let horizon = store.data().horizon.clone();
                 let call =
                     guest.call_handle_call(&mut *store, caller, &contract, &operation, &payload);
-                let settled = settle(deadline, &horizon, call).await;
+                let settled = interrupted(&mut aborts, settle(deadline, &horizon, call))
+                    .await
+                    .unwrap_or_else(Settled::Dead);
                 commit_late(store);
                 match settled {
                     Settled::Ok(answer) => drop(reply.send(Ok(answer))),
@@ -265,7 +308,12 @@ async fn serve(
                     let _ = store.set_fuel(budget.get());
                 }
                 let call = guest.call_handle_event(&mut *store, token, &topic, &payload);
-                let settled = settle_delivery(deadline, &horizon, budget.is_some(), call).await;
+                let settled = interrupted(
+                    &mut aborts,
+                    settle_delivery(deadline, &horizon, budget.is_some(), call),
+                )
+                .await
+                .unwrap_or_else(Settled::Dead);
                 let _ = store.set_fuel(u64::MAX);
                 commit_late(store);
                 match settled {
@@ -280,17 +328,28 @@ async fn serve(
             }
             Command::Snapshot { reply } => {
                 let horizon = store.data().horizon.clone();
-                match within(deadline, &horizon, guest.call_snapshot(&mut *store)).await {
-                    Ok(Ok(blob)) => drop(reply.send(Ok(blob))),
-                    Ok(Err(trap)) => {
+                match interrupted(
+                    &mut aborts,
+                    within(deadline, &horizon, guest.call_snapshot(&mut *store)),
+                )
+                .await
+                {
+                    Ok(Ok(Ok(blob))) => drop(reply.send(Ok(blob))),
+                    Ok(Ok(Err(trap))) => {
                         commit_late(store);
                         let error = die(store, deaths, active, trapped(&trap));
                         let _ = reply.send(Err(error));
                         return;
                     }
-                    Err(_) => {
+                    Ok(Err(_)) => {
                         commit_late(store);
                         let error = die(store, deaths, active, hung());
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                    Err(error) => {
+                        commit_late(store);
+                        let error = die(store, deaths, active, error);
                         let _ = reply.send(Err(error));
                         return;
                     }
@@ -298,20 +357,39 @@ async fn serve(
             }
             Command::Restore { blob, reply } => {
                 let horizon = store.data().horizon.clone();
-                let settled =
-                    settle(deadline, &horizon, guest.call_restore(&mut *store, &blob)).await;
+                let settled = interrupted(
+                    &mut aborts,
+                    settle(deadline, &horizon, guest.call_restore(&mut *store, &blob)),
+                )
+                .await
+                .unwrap_or_else(Settled::Dead);
                 commit_late(store);
+                let late = std::mem::take(&mut store.data_mut().outcome);
                 match settled {
-                    Settled::Ok(()) => drop(reply.send(Ok(()))),
-                    Settled::Fault(error) => drop(reply.send(Err(error))),
+                    Settled::Ok(()) => drop(reply.send((Ok(()), late))),
+                    Settled::Fault(error) => drop(reply.send((Err(error), late))),
                     Settled::Dead(error) => {
                         let error = die(store, deaths, active, error);
-                        let _ = reply.send(Err(error));
+                        let _ = reply.send((Err(error), late));
                         return;
                     }
                 }
             }
         }
+    }
+}
+
+async fn interrupted<T>(
+    aborts: &mut watch::Receiver<Option<KernelError>>,
+    work: impl Future<Output = T>,
+) -> Result<T, KernelError> {
+    if let Some(error) = aborts.borrow_and_update().clone() {
+        return Err(error);
+    }
+    tokio::select! {
+        biased;
+        _ = aborts.changed() => Err(aborts.borrow_and_update().clone().unwrap_or_else(hung)),
+        value = work => Ok(value),
     }
 }
 

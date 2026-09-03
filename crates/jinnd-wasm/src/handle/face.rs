@@ -68,32 +68,32 @@ impl EventTarget for InstancePeer {
     ) -> KernelFuture<'static, Vec<u8>> {
         let handle = self.handle.clone();
         let topic = topic.to_owned();
-        Box::pin(async move {
-            let (reply, rx) = oneshot::channel();
-            handle
-                .send(
-                    Command::Deliver {
-                        token,
-                        topic,
-                        payload,
-                        budget,
-                        reply,
-                    },
-                    rx,
-                )
-                .await?
-        })
+        Box::pin(async move { handle.deliver_within(token, &topic, payload, budget).await })
     }
 }
 
-pub(crate) fn pair() -> (
+pub(crate) fn pair(
+    deadline: std::time::Duration,
+) -> (
     InstanceHandle,
     watch::Sender<Option<KernelError>>,
+    watch::Receiver<Option<KernelError>>,
     mpsc::Receiver<Command>,
 ) {
     let (tx, rx) = mpsc::channel(16);
     let (death_tx, deaths) = watch::channel(None);
-    (InstanceHandle { tx, deaths }, death_tx, rx)
+    let (abort, aborts) = watch::channel(None);
+    (
+        InstanceHandle {
+            tx,
+            deaths,
+            abort,
+            deadline,
+        },
+        death_tx,
+        aborts,
+        rx,
+    )
 }
 
 /// The instance's own transport face, handed to the broker on `provide` and

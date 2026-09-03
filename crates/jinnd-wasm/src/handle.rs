@@ -7,7 +7,9 @@
 
 use jinnd_api::KernelError;
 use std::num::NonZeroU64;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
 
 use crate::peer::PeerId;
 
@@ -137,6 +139,8 @@ pub struct AlarmRecord {
 pub struct InstanceHandle {
     pub(crate) tx: mpsc::Sender<Command>,
     pub(crate) deaths: tokio::sync::watch::Receiver<Option<KernelError>>,
+    pub(crate) abort: tokio::sync::watch::Sender<Option<KernelError>>,
+    pub(crate) deadline: Duration,
 }
 
 impl InstanceHandle {
@@ -223,7 +227,7 @@ impl InstanceHandle {
         budget: Option<NonZeroU64>,
     ) -> Result<Vec<u8>, KernelError> {
         let (reply, rx) = oneshot::channel();
-        self.send(
+        let delivery = self.send(
             Command::Deliver {
                 token,
                 topic: topic.to_owned(),
@@ -232,8 +236,15 @@ impl InstanceHandle {
                 reply,
             },
             rx,
-        )
-        .await?
+        );
+        match timeout(self.deadline, delivery).await {
+            Ok(answer) => answer?,
+            Err(_) => {
+                let error = crate::settle::hung();
+                self.abort.send_replace(Some(error.clone()));
+                Err(error)
+            }
+        }
     }
 
     /// One state-handoff snapshot (R8 Mode 1).
@@ -245,8 +256,17 @@ impl InstanceHandle {
     /// Offers the predecessor's snapshot (R8 Mode 1). Refusal fails the
     /// swap's health gate.
     pub async fn restore(&self, blob: Vec<u8>) -> Result<(), KernelError> {
+        self.restore_with_outcome(blob).await.0
+    }
+
+    pub(crate) async fn restore_with_outcome(
+        &self,
+        blob: Vec<u8>,
+    ) -> (Result<(), KernelError>, ActivationOutcome) {
         let (reply, rx) = oneshot::channel();
-        self.send(Command::Restore { blob, reply }, rx).await?
+        self.send(Command::Restore { blob, reply }, rx)
+            .await
+            .unwrap_or_else(|error| (Err(error), ActivationOutcome::default()))
     }
 
     /// Seals the instance ahead of its retirement or suspension (M2-K4,

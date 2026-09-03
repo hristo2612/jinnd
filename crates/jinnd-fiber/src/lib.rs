@@ -73,7 +73,7 @@ mod teardown;
 mod uid;
 
 #[cfg(not(feature = "loom"))]
-pub use body::{FaultSink, FiberBody, Setup};
+pub use body::{FaultSink, FiberBody, Setup, TransitionObserver};
 #[cfg(not(feature = "loom"))]
 pub use current::current_fiber;
 #[cfg(not(feature = "loom"))]

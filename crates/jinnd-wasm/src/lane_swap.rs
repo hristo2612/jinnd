@@ -135,9 +135,13 @@ impl SwapSlots for LaneSlots {
                     staging: true,
                 },
             );
-            let (outcome, contributed) = staged.activate(config).await;
+            let (outcome, mut contributed) = staged.activate(config).await;
             let healthy = match outcome {
-                Ok(()) => staged.restore(handoff).await,
+                Ok(()) => {
+                    let (restored, mut late) = staged.restore_with_outcome(handoff).await;
+                    contributed.registrations.append(&mut late.registrations);
+                    restored
+                }
                 Err(refused) => Err(refused),
             };
             if let Err(refused) = healthy {

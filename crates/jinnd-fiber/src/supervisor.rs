@@ -220,8 +220,8 @@ impl Cell {
         let dead = self.shared.steering.observed().0.active_for;
         self.faulted(dead);
         self.publish(FiberState::Unloading, TransitionCause::BodyFaulted);
-        self.withdraw(true).await;
         self.publish(FiberState::Failed, TransitionCause::BodyFaulted);
+        self.withdraw(true).await;
     }
 
     /// Disposes (or suspends) a fiber that holds no live activation.

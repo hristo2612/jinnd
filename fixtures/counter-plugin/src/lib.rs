@@ -1427,6 +1427,10 @@ impl Guest for Fixture {
             }
             "get" if *MODE.lock().unwrap() == "settings-provider" => Ok(b"v1".to_vec()),
             "get" => Ok(COUNTER.load(Ordering::SeqCst).to_le_bytes().to_vec()),
+            "stall" => {
+                dawdle(170)?;
+                Ok(Vec::new())
+            }
             // The two-hop shape (M2-K8 #26): from inside this handler the
             // provider patches its OWNER, whose restarted `activate` will
             // call `get` on this very instance.

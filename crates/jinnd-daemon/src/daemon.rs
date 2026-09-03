@@ -47,7 +47,7 @@ fn storage(refused: jinnd_ledger::LedgerError) -> KernelError {
 /// The daemon-assembled kernel.
 pub struct Daemon {
     pub(crate) paths: DaemonPaths,
-    ledger: Ledger,
+    pub(crate) ledger: Ledger,
     revert: RevertLane,
     pub(crate) loader: Arc<Loader>,
     pub(crate) lane: Arc<LaneCore>,

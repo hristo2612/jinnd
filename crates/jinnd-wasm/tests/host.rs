@@ -565,6 +565,55 @@ async fn an_unbudgeted_listener_keeps_the_guest_deadline_bound() {
 }
 
 #[tokio::test]
+async fn a_queued_delivery_starts_its_listener_horizon_at_selection() {
+    let rig = rig();
+    jinnd_wasm::HostClock::register(&rig.broker)
+        .unwrap_or_else(|error| panic!("clock provider: {error:?}"));
+    let (peer, seat) = rig.seat(1, Duration::from_millis(200));
+    rig.broker.grant(peer, EVENT_TOPIC);
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    let listener = rig.host.instantiate(&rig.component, seat);
+    listener
+        .activate(b"listener-slow".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("listener activation: {error:?}"));
+
+    let busy = {
+        let listener = listener.clone();
+        tokio::spawn(async move {
+            listener
+                .contract_call(2, COUNTER, "stall", Vec::new())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let started = std::time::Instant::now();
+    let report = rig
+        .topics
+        .emit(
+            2,
+            EVENT_TOPIC,
+            jinnd_api::DispatchMode::Serial,
+            &jinnd_wasm::Selector::All,
+            Vec::new(),
+            Some(FiberId(2)),
+            &NoRealms,
+        )
+        .await;
+    assert!(
+        busy.await
+            .unwrap_or_else(|error| panic!("busy call: {error}"))
+            .is_ok()
+    );
+    assert_eq!(report.failures.len(), 1, "the queued delivery expires");
+    assert!(
+        started.elapsed() < Duration::from_millis(260),
+        "queue delay cannot extend the listener horizon"
+    );
+}
+
+#[tokio::test]
 async fn a_zero_delivery_budget_is_refused_on_record_without_registration() {
     let rig = rig();
     let (peer, listener) = rig.spawn(1);

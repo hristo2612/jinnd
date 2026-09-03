@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use jinnd_api::{EffectId, Epoch, FiberId, KernelError, KernelFuture};
+use jinnd_api::{EffectId, Epoch, FiberId, KernelError, KernelFuture, Transition};
 use jinnd_effects::{Disposer, EffectScope};
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +17,12 @@ pub trait FiberBody: Send + Sync + 'static {
     /// Applies this plugin's contribution, registering an inverse for each part of
     /// it through `setup` (R5).
     fn activate<'a>(&'a self, setup: Setup<'a>) -> KernelFuture<'a, ()>;
+}
+
+/// Receives each transition synchronously after it enters the fiber record
+/// and before the supervisor starts work under that state (Law 2).
+pub trait TransitionObserver: Send + Sync + 'static {
+    fn committed(&self, transition: &Transition);
 }
 
 /// The activation's handle on its own fiber.

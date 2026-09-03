@@ -42,7 +42,7 @@ pub(crate) enum Command {
     },
     Restore {
         blob: Vec<u8>,
-        reply: oneshot::Sender<Result<(), KernelError>>,
+        reply: oneshot::Sender<(Result<(), KernelError>, ActivationOutcome)>,
     },
     /// Seals the instance (M2-K4): answered once every guest entry already
     /// in flight has returned; afterwards no activation, call, or delivery
