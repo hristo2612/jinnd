@@ -8,7 +8,7 @@ use jinnd_api::{FiberId, FiberState};
 use super::{Declaration, Gate, compute, covered};
 use crate::broker::Broker;
 use crate::broker_tests::CapturedLedger;
-use crate::grants::Grant;
+use crate::grants::{Grant, ScopeValue};
 
 fn grant(contract: &str) -> Grant {
     Grant {
@@ -66,6 +66,29 @@ fn the_gate_waits_on_granted_declarations_in_order() {
         gate.admission(&[]).len(),
         1,
         "a malformed element is a fault"
+    );
+}
+
+/// Round-1 ruling 2: the gate waits only on declarations an ADMITTED
+/// grant covers. A grant the admission judgment refuses (a scope on a
+/// contract that declares no scope type) covers nothing: the entry is
+/// left to activation, where admission faults it on the record, instead
+/// of resting `Pending` forever on authority it does not hold.
+#[test]
+fn the_gate_ignores_a_declaration_whose_grant_admission_refuses() {
+    let refused = Grant {
+        contract: "jinn:ledger".to_owned(),
+        scope: Some(ScopeValue::Path("nope".to_owned())),
+        ops: None,
+    };
+    let gate = Gate::new(&declaration(&["jinn:ledger"]), &[refused.clone()]);
+    assert!(gate.gated().is_empty(), "a refused grant gates nothing");
+    let gate = Gate::new(&declaration(&["jinn:ledger"]), &[grant("jinn:ledger")]);
+    assert_eq!(gate.gated(), ["jinn:ledger"]);
+    gate.restate(&declaration(&["jinn:ledger"]), &[refused]);
+    assert!(
+        gate.gated().is_empty(),
+        "a restated refused grant gates nothing"
     );
 }
 

@@ -77,10 +77,6 @@ mod tests {
             seat_declaration(&serde_json::json!({})),
             Declaration::default()
         );
-        assert_eq!(
-            seat_declaration(&serde_json::json!({ "injects": null })),
-            Declaration::default()
-        );
     }
 
     /// A malformed element — not a string, an object naming no
@@ -95,8 +91,12 @@ mod tests {
         let declaration = seat_declaration(&value);
         assert_eq!(declaration.contracts, ["jinn:ok"]);
         assert_eq!(declaration.faults.len(), 3, "{:?}", declaration.faults);
-        let not_a_list = seat_declaration(&serde_json::json!({ "injects": "jinn:fs" }));
-        assert!(not_a_list.contracts.is_empty());
-        assert_eq!(not_a_list.faults.len(), 1);
+        // A present non-list faults, `null` included (round-1 ruling 3):
+        // absent means the empty list; written means it must be a list.
+        for written in [serde_json::json!("jinn:fs"), serde_json::Value::Null] {
+            let not_a_list = seat_declaration(&serde_json::json!({ "injects": written }));
+            assert!(not_a_list.contracts.is_empty());
+            assert_eq!(not_a_list.faults.len(), 1, "{written} is no list");
+        }
     }
 }

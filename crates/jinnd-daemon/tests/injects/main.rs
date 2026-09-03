@@ -12,6 +12,7 @@
 //! `jinn:introspect` (Laws 1/2, I1/I3/I4, R1, R9, R10, R11, R12).
 
 mod activation;
+mod admission;
 mod harness;
 mod ledger;
 mod replacement;

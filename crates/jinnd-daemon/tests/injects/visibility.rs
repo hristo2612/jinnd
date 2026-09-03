@@ -4,7 +4,7 @@
 
 use jinnd_api::FiberState;
 
-use crate::harness::{booted, entry, home, paths, reload, settle, state, wait_json};
+use crate::harness::{booted, declared, entry, home, paths, reload, settle, state, wait_json};
 use crate::ledger::{COUNTER, events, failed, loads};
 
 const SETTINGS: &str = "jinn:test/settings";
@@ -87,6 +87,42 @@ async fn mutually_declared_entries_rest_pending_and_say_so() {
     let viewer = read("viewer");
     assert_eq!(viewer["injects"], serde_json::json!([]));
     assert_eq!(viewer["unmet"], serde_json::json!([]));
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("{error:?}"));
+}
+
+/// Ruling 4 (round 1): an entry read carries the DECLARED list from the
+/// document of record, independent of any live gate — a disabled entry,
+/// which the lane never seats, still reports what it declares, with
+/// nothing unmet (it is not waiting on anything).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_disabled_entry_reports_its_declared_injects_from_the_document() {
+    let home = home("disabled-declares");
+    let mut parked = declared("parked", "inject-counter");
+    parked["disabled"] = serde_json::Value::Bool(true);
+    let entries = [
+        parked,
+        entry(
+            "viewer",
+            serde_json::json!(["jinn:introspect", "jinn:fs", "jinn:clock"]),
+            serde_json::json!([]),
+            "introspect",
+        ),
+    ];
+    let (paths, _) = paths(&home, &entries);
+    let data = paths.data.clone();
+    let daemon = booted(paths).await;
+    let entries = wait_json(&data.join("introspect-entries.json")).await;
+    let parked = entries
+        .as_array()
+        .and_then(|entries| entries.iter().find(|entry| entry["id"] == "parked"))
+        .cloned()
+        .unwrap_or_else(|| panic!("parked is listed: {entries}"));
+    assert_eq!(parked["state"], serde_json::Value::Null, "never seated");
+    assert_eq!(parked["injects"], serde_json::json!([COUNTER]));
+    assert_eq!(parked["unmet"], serde_json::json!([]));
     daemon
         .shutdown()
         .await
