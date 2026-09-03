@@ -14,11 +14,20 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::{ErrorCode, FiberState, TransitionCause};
-use jinnd_fiber::{FaultSink, Fiber};
+use jinnd_api::{ErrorCode, FiberState, Transition, TransitionCause};
+use jinnd_fiber::{FaultSink, Fiber, TransitionObserver};
 use support::{Gate, Trace, body, epoch, failure, gated_undo, path, ready, undo};
 
 type Held = Arc<Mutex<Option<FaultSink>>>;
+
+#[derive(Debug)]
+struct Observe(Trace);
+
+impl TransitionObserver for Observe {
+    fn committed(&self, transition: &Transition) {
+        self.0.push(format!("transition:{:?}", transition.to));
+    }
+}
 
 /// A body that registers one inverse and hands its fault sink out, so the
 /// test can report the incarnation's death from outside — the way the
@@ -102,6 +111,32 @@ async fn a_fault_after_activation_fails_the_fiber_on_the_record() {
         fiber.resting(),
         "it rests Failed: nothing is scheduled (R9)"
     );
+}
+
+#[tokio::test]
+async fn a_fault_commits_its_failed_observation_before_cleanup_begins() {
+    let trace = Trace::new();
+    let held: Held = Arc::default();
+    let source = jinnd_fiber::ReadinessSource::independent();
+    let fiber = Fiber::spawn_observed(
+        faultable(&trace, &held, None),
+        source.signal(),
+        Arc::new(Observe(trace.clone())),
+    );
+    fiber.quiesce().await;
+    sink(&held).fault(failure("guest trapped"));
+    fiber.quiesce().await;
+
+    let entries = trace.entries();
+    let failed = entries
+        .iter()
+        .position(|entry| entry == "transition:Failed")
+        .unwrap_or_else(|| panic!("missing failed observation: {entries:?}"));
+    let cleanup = entries
+        .iter()
+        .position(|entry| entry == "undo:seat")
+        .unwrap_or_else(|| panic!("missing cleanup: {entries:?}"));
+    assert!(failed < cleanup, "doom must precede cleanup: {entries:?}");
 }
 
 /// R9 with M2-K24 (c): the failed fiber is not retried against an
