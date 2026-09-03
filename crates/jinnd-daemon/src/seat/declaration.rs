@@ -10,13 +10,14 @@ use jinnd_wasm::Declaration;
 /// means the empty list. As with grants the decoder READS shapes: an
 /// element it cannot read as a declaration — not a string, an object
 /// naming no `contract`, one carrying a scope or ops key (a declaration
-/// gates; it carries no authority), or an `injects` that is no list — is
+/// gates; it carries no authority), or an `injects` that is present but
+/// no list (`null` included; absent is the only empty spelling) — is
 /// carried as a fault for the lane's admission point to refuse ON THE
 /// RECORD (R11, fail closed), never dropped.
 pub(crate) fn seat_declaration(value: &serde_json::Value) -> Declaration {
     let mut declaration = Declaration::default();
     match value.get("injects") {
-        None | Some(serde_json::Value::Null) => {}
+        None => {}
         Some(serde_json::Value::Array(items)) => {
             for item in items {
                 match declared(item) {

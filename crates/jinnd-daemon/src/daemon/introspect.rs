@@ -15,6 +15,7 @@ use jinnd_wasm::{Broker, INTROSPECT_CONTRACT, LaneCore, Peer, PeerId, RestartOra
 
 use super::Readiness;
 use super::wire::{json, unknown};
+use crate::seat::seat_declaration;
 
 /// The provider: the loader (entries, fibers, states), the lane (seats),
 /// and the readiness flags.
@@ -63,16 +64,24 @@ impl HostIntrospect {
     }
 
     /// The bundle's `entry` record per committed profile entry, in
-    /// document order.
+    /// document order. What an entry DECLARES it injects (M2-K24, 0.6.0)
+    /// is read from the document of record — a disabled entry, which the
+    /// lane never seats, reports its declaration too (round-1 ruling 4).
     fn entries(&self) -> serde_json::Value {
-        let ids: Vec<EntryId> = self
+        let declared: Vec<(EntryId, Vec<String>)> = self
             .loader
             .persisted::<serde_json::Value>()
-            .map(|profile| profile.entries.into_iter().map(|entry| entry.id).collect())
+            .map(|profile| {
+                profile
+                    .entries
+                    .into_iter()
+                    .map(|entry| (entry.id, seat_declaration(&entry.config).contracts))
+                    .collect()
+            })
             .unwrap_or_default();
-        let entries: Vec<serde_json::Value> = ids
+        let entries: Vec<serde_json::Value> = declared
             .into_iter()
-            .map(|id| {
+            .map(|(id, injects)| {
                 let fiber = self.loader.entry_fiber(&id);
                 let state = fiber
                     .and_then(|fiber| self.loader.fiber_state(fiber))
@@ -84,10 +93,10 @@ impl HostIntrospect {
                         (Some(incarnation), Some(seat))
                     });
                 let seat = seat.unwrap_or_default();
-                // M2-K24 (0.6.0): what the entry declares it injects on
-                // the string lane, and which of those its gate finds
-                // unmet — WHY a `pending` entry has not activated.
-                let (injects, unmet) = self.lane.declaration(&id).unwrap_or_default();
+                // M2-K24 (0.6.0): which declared contracts the entry's
+                // live gate finds unmet — WHY a `pending` entry has not
+                // activated; empty for an entry the lane does not seat.
+                let unmet = self.lane.unmet(&id).unwrap_or_default();
                 // M2-K9: what this entry's live incarnation already owes,
                 // named exactly as a refused dispatch would name it — the
                 // ask that replaces discovering it by stalling.

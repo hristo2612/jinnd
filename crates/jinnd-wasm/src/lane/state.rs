@@ -125,14 +125,15 @@ impl LaneCore {
         });
     }
 
-    /// One entry's string-lane declaration as `jinn:introspect` reports
-    /// it (M2-K24, 0.6.0): the contracts it declares, in order, and the
-    /// ones its gate currently finds unmet — `None` for an entry the lane
-    /// does not host. A snapshot under brief locks; no guest is called.
+    /// The declared contracts one entry's gate currently finds unmet, as
+    /// `jinn:introspect` reports them (M2-K24, 0.6.0) — `None` for an
+    /// entry the lane does not host. The declaration itself is the
+    /// document of record's to report, never the gate's (round-1 ruling
+    /// 4). A snapshot under brief locks; no guest is called.
     #[must_use]
-    pub fn declaration(&self, entry: &EntryId) -> Option<(Vec<String>, Vec<String>)> {
+    pub fn unmet(&self, entry: &EntryId) -> Option<Vec<String>> {
         let gate = Arc::clone(lock(&self.gates).get(entry)?);
-        Some((gate.declaration().contracts, gate.unmet()))
+        Some(gate.unmet())
     }
 
     /// One entry's live seat as `jinn:introspect` reports it (M2-K7): the

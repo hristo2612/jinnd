@@ -143,10 +143,12 @@ rests `pending` until every declared provider is `active` — a provision
 landing while the provider is still `loading` is not readiness — reloads
 under `DependencyChanged` when a declared provider is replaced, and
 re-arms from `failed` when one moves (and never before; R9). `injects`
-reports that declaration, in order; `unmet` names which declared
-contracts the gate currently finds unmet, so an operator reading a
-`pending` entry learns WHY from the record instead of inferring it — the
-K9/K10 precedent that a refusal is observable (Law 2).
+reports that declaration as the document of record states it, in order —
+a disabled entry's included, since it is the document's fact and not a
+live gate's; `unmet` names which declared contracts the entry's gate
+currently finds unmet (empty for an entry that is not seated), so an
+operator reading a `pending` entry learns WHY from the record instead of
+inferring it — the K9/K10 precedent that a refusal is observable (Law 2).
 
 Two entries that declare each other rest `pending` for the daemon's life
 and each shows the other's contract in `unmet`: the recorded limit (the

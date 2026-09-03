@@ -33,7 +33,7 @@ use tokio::sync::watch;
 
 use crate::broker::Broker;
 use crate::broker_state::refusal;
-use crate::grants::Grant;
+use crate::grants::{Grant, admission};
 
 use super::lock;
 
@@ -66,10 +66,10 @@ impl ServiceContract for StringLane {
 /// names a real one.
 const KERNEL_PROVIDER: FiberId = FiberId(0);
 
-/// One entry's gate: what it declares, which of those a grant covers by
-/// name (what the gate waits on — an ungranted declaration is left to
-/// admission to refuse on the record), and what the gate last found
-/// unmet, for `jinn:introspect` (Law 2).
+/// One entry's gate: what it declares, which of those an ADMITTED grant
+/// covers by name (what the gate waits on — an ungranted or refused
+/// declaration is left to admission to refuse on the record), and what
+/// the gate last found unmet, for `jinn:introspect` (Law 2).
 pub(crate) struct Gate {
     declared: Mutex<Declaration>,
     gated: Mutex<Vec<String>>,
@@ -136,12 +136,17 @@ impl Gate {
     }
 }
 
-/// The declared contracts a grant covers by NAME, in declaration order.
+/// The declared contracts an ADMITTED grant covers by NAME, in declaration
+/// order — the same fail-closed judgment activation applies (round-1
+/// ruling 2, R11): a grant admission refuses covers nothing, so the entry
+/// reaches activation and faults there on the record instead of resting
+/// `Pending` on authority it does not hold.
 fn covered(declaration: &Declaration, grants: &[Grant]) -> Vec<String> {
+    let (admitted, _refused) = admission(grants);
     declaration
         .contracts
         .iter()
-        .filter(|contract| grants.iter().any(|grant| grant.contract == **contract))
+        .filter(|contract| admitted.iter().any(|grant| grant.contract == **contract))
         .cloned()
         .collect()
 }

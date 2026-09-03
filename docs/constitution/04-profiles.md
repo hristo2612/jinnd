@@ -25,12 +25,13 @@ vars:                       # the ONLY expression inputs (see Expressions)
 entries:
   - id: a1b2c3              # stable CONFIG identity — the reconcile key
     name: jinn:todos        # plugin identity (manifest name, 05)
-    config: { ... }         # serde-validated against the plugin's schema
-    grants:
-      - jinn:ledger@1
-      - { contract: jinn:fs@1, scope: "${vars.notes-dir}" }
-    injects:                # string-lane contracts injected at activation (M2-K24): a gate, never a grant
-      - jinn:ui-bundle
+    config:                 # the entry's seat document (the decoder's shape)
+      grants:
+        - jinn:ledger@1
+        - { contract: jinn:fs@1, scope: "${vars.notes-dir}" }
+      injects:              # string-lane contracts injected at activation (M2-K24): a gate, never a grant
+        - jinn:ui-bundle
+      data: { ... }         # the plugin's own payload, serde-validated against its schema
     disabled: false
     entries: [ ... ]        # children: nesting = the fiber tree; grants attenuate (01)
     isolate: { db: tenant-a }
@@ -51,8 +52,11 @@ Rules:
   contradicted the kernel, the verifier-green suite, and the reference
   implementation — see SOURCE-OF-TRUTH decision log.)*
 - **`injects` gates; `grants` authorize.** A wasm entry may declare, beside its
-  grants, the string-lane contracts it injects at activation — a bare contract name
-  or `{ contract }`, in declaration order; absent means none. The kernel activates
+  grants in `config` (`config.injects` beside `config.grants`, exactly where the
+  seat decoder reads them), the string-lane contracts it injects at activation — a
+  bare contract name or `{ contract }`, in declaration order; absent means none, and
+  a present `injects` that is no list (`null` included) is a per-entry fault. The
+  kernel activates
   the entry only once every declared provider is `Active`, reloads it when one is
   replaced, and re-arms it from `Failed` when one lands later — the typed lane's
   epoch gating on the string lane (SOURCE-OF-TRUTH §3). A declaration never widens
