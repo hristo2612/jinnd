@@ -18,9 +18,19 @@ use jinnd_api::{DispatchMode, FiberState, LedgerEventKind};
 use ledger::{COUNTER, errors, events, loads, transitions};
 
 const TOPIC: &str = "jinn:test/topic";
+const CLOCK: &str = "jinn:clock";
 
 fn bus_entry(id: &str, mode: &str) -> serde_json::Value {
     entry(id, serde_json::json!([TOPIC]), serde_json::json!([]), mode)
+}
+
+fn clocked_bus_entry(id: &str, mode: &str) -> serde_json::Value {
+    entry(
+        id,
+        serde_json::json!([TOPIC, CLOCK]),
+        serde_json::json!([]),
+        mode,
+    )
 }
 
 fn emitting(id: &str, mode: &str) -> serde_json::Value {
@@ -47,6 +57,35 @@ fn trace(records: &[jinnd_api::LedgerRecord], entry: &str) -> Option<(u32, u32)>
             _ => None,
         }
     })
+}
+
+fn trace_timestamp(records: &[jinnd_api::LedgerRecord], entry: &str) -> u64 {
+    records
+        .iter()
+        .find(|record| {
+            record
+                .entry
+                .as_ref()
+                .is_some_and(|candidate| candidate.0 == entry)
+                && matches!(record.kind, LedgerEventKind::DispatchTrace { .. })
+        })
+        .map(|record| record.timestamp)
+        .unwrap_or_else(|| panic!("{entry} has a dispatch trace: {records:?}"))
+}
+
+fn failed_timestamp(records: &[jinnd_api::LedgerRecord], entry: &str) -> u64 {
+    records
+        .iter()
+        .find(|record| {
+            record
+                .entry
+                .as_ref()
+                .is_some_and(|candidate| candidate.0 == entry)
+                && matches!(&record.kind, LedgerEventKind::FiberTransition(transition)
+                    if transition.to == FiberState::Failed)
+        })
+        .map(|record| record.timestamp)
+        .unwrap_or_else(|| panic!("{entry} has a Failed row: {records:?}"))
 }
 
 fn failed_sequence(records: &[jinnd_api::LedgerRecord], entry: &str) -> u64 {
@@ -184,23 +223,27 @@ async fn a_delivery_over_its_declared_fuel_budget_ends_deterministically() {
 async fn the_emitter_is_charged_nothing_for_a_walk() {
     let test_home = home("m2-k25-emitter-clock");
     let mut initial: Vec<_> = (0..43)
-        .map(|index| bus_entry(&format!("slow-{index}"), "listener-slow"))
+        .map(|index| clocked_bus_entry(&format!("slow-{index}"), "listener-slow"))
         .collect();
     let (daemon_paths, hash) = paths(&test_home, &initial);
     let daemon = booted(daemon_paths).await;
     initial.push(emitting("emitter", "emitter-after-walk-spin"));
     reload(&daemon, &test_home, &initial, &hash).await;
-    let records = events(&daemon).await;
+    let walk_records = events(&daemon).await;
     assert_eq!(
-        trace(&records, "emitter"),
+        trace(&walk_records, "emitter"),
         Some((43, 0)),
-        "the >5s walk completed: {records:?}"
+        "the >5s walk completed: {walk_records:?}"
     );
     until_state(&daemon, "emitter", FiberState::Failed).await;
+    let records = events(&daemon).await;
     assert!(
-        errors(&events(&daemon).await, "emitter")
-            .iter()
-            .any(|message| message.contains("deadline"))
+        errors(&records, "emitter").is_empty(),
+        "activation-time death has no post-activation error row: {records:?}"
+    );
+    assert!(
+        failed_timestamp(&records, "emitter") - trace_timestamp(&records, "emitter") >= 4_500,
+        "the emitter's deadline resumed after the walk: {records:?}"
     );
     for index in 0..43 {
         assert_eq!(
@@ -270,11 +313,14 @@ async fn unbudgeted_case(
     mode: &str,
 ) -> (FiberState, FiberState, Vec<jinnd_api::LedgerRecord>) {
     let test_home = home(name);
-    let initial = [bus_entry("listener", mode)];
+    let initial = [clocked_bus_entry("listener", mode)];
     let (daemon_paths, hash) = paths(&test_home, &initial);
     let daemon = booted(daemon_paths).await;
     until_state(&daemon, "listener", FiberState::Active).await;
-    let walked = [bus_entry("listener", mode), emitting("emitter", "emitter")];
+    let walked = [
+        clocked_bus_entry("listener", mode),
+        emitting("emitter", "emitter"),
+    ];
     reload(&daemon, &test_home, &walked, &hash).await;
     settle(&daemon).await;
     let answer = (
