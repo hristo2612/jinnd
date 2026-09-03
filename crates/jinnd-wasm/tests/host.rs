@@ -107,6 +107,7 @@ impl Rig {
 
 const COUNTER: &str = "jinn:test/counter";
 const EVENT_TOPIC: &str = "jinn:test/topic";
+const NESTED_TOPIC: &str = "jinn:test/nested";
 
 #[tokio::test]
 async fn wrong_hash_refuses_to_load_and_the_refusal_is_recorded() {
@@ -534,6 +535,60 @@ async fn a_walk_parks_the_emitter_while_the_listener_spends_its_deadline() {
     assert!(
         elapsed >= Duration::from_millis(100),
         "the listener walk returned after only {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_listener_that_emits_a_nested_walk_is_not_charged_as_the_emitter() {
+    let rig = rig();
+    jinnd_wasm::HostClock::register(&rig.broker)
+        .unwrap_or_else(|error| panic!("clock provider: {error:?}"));
+    // Two nested listeners, each delivery well under its own 300 ms bound;
+    // the nested walk sums to ~240 ms.
+    for fiber in [1, 2] {
+        let (peer, seat) = rig.seat(fiber, Duration::from_millis(300));
+        rig.broker.grant(peer, NESTED_TOPIC);
+        rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+        let nested = rig.host.instantiate(&rig.component, seat);
+        nested
+            .activate(b"nested-listener-slow".to_vec())
+            .await
+            .0
+            .unwrap_or_else(|error| panic!("nested listener activation: {error:?}"));
+    }
+    // The middle listener's own bound is SHORTER than the walk it parks on:
+    // card (a) says its clock does not run while it is the emitter.
+    let (peer, seat) = rig.seat(3, Duration::from_millis(150));
+    rig.broker.grant(peer, EVENT_TOPIC);
+    let middle = rig.host.instantiate(&rig.component, seat);
+    middle
+        .activate(b"nested-emitter".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("middle listener activation: {error:?}"));
+
+    let report = rig
+        .topics
+        .emit(
+            9,
+            EVENT_TOPIC,
+            jinnd_api::DispatchMode::Emit,
+            &jinnd_wasm::Selector::All,
+            b"ping".to_vec(),
+            Some(FiberId(9)),
+            &NoRealms,
+        )
+        .await;
+    assert!(
+        report.failures.is_empty(),
+        "the middle listener was charged for the nested walk: {:?}",
+        report.failures
+    );
+    assert_eq!(report.outputs, vec![b"ping".to_vec()]);
+    assert!(
+        middle.deaths().borrow().is_none(),
+        "the middle listener died: {:?}",
+        middle.deaths().borrow()
     );
 }
 

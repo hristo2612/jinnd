@@ -37,6 +37,9 @@ const SECRET_CONTRACT: &str = "jinn:test/secret";
 /// The topic `listener` mode subscribes to (granted) and `eavesdrop` mode is
 /// refused (ungranted).
 const TOPIC: &str = "jinn:test/topic";
+/// The topic a `nested-emitter` listener walks from INSIDE a delivery
+/// (M2-K25(a), round 2): the nested walk parks the middle listener's clock.
+const NESTED_TOPIC: &str = "jinn:test/nested";
 /// Where `jinn:clock` wakes arrive (wit/plugin.wit `interface clock`).
 const WAKE_TOPIC: &str = "jinn:clock/alarm";
 /// Where `jinn:net` readiness wakes arrive (M2-K7; the token is the handle).
@@ -294,6 +297,16 @@ fn net_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
         "net-wake" => {
             let listener = net::listen(&format!("127.0.0.1:{arg}")).map_err(net_fault)?;
             LISTENER.store(listener, Ordering::SeqCst);
+            Ok(())
+        }
+        // Round-2 control (card case 4): a kernel registration, a guest
+        // effect, and a topic listener whose delivery never returns — the
+        // death must release the port and answer the inverse `gone`.
+        "net-listener-spin" => {
+            let listener = net::listen(&format!("127.0.0.1:{arg}")).map_err(net_fault)?;
+            LISTENER.store(listener, Ordering::SeqCst);
+            effects::register("fixture effect", 1).map_err(fault)?;
+            jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
             Ok(())
         }
         "net-refused" => match net::listen(arg) {
@@ -1077,9 +1090,31 @@ impl Guest for Fixture {
                 jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
                 Ok(())
             }
-            "listener-slow" | "listener-spin" => {
+            "listener-slow" | "listener-spin" | "listener-delay" | "nested-emitter" => {
                 jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
                 Ok(())
+            }
+            "nested-listener-slow" => {
+                jinn::plugin::events::listen(NESTED_TOPIC, 7).map_err(fault)?;
+                Ok(())
+            }
+            // Round-2 control: a live registration first, then a zero budget
+            // on the same topic — the refusal must leave the first standing.
+            "listener-zero-with-existing" => {
+                jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
+                match jinn::plugin::events::listen_within(
+                    TOPIC,
+                    8,
+                    jinn::plugin::types::DeliveryBudget { fuel: 0 },
+                ) {
+                    Err(jinn::plugin::types::KernelError::Invalid(_)) => Ok(()),
+                    Err(error) => Err(GuestFault::Failed(format!(
+                        "zero budget returned the wrong refusal: {error:?}"
+                    ))),
+                    Ok(_) => Err(GuestFault::Failed(
+                        "a zero delivery budget was accepted".into(),
+                    )),
+                }
             }
             "listener-budget" => {
                 jinn::plugin::events::listen_within(
@@ -1253,6 +1288,21 @@ impl Guest for Fixture {
                 .map_err(fault)?;
                 Ok(())
             }
+            // Round-2 control (card case 3): the walk completes on the
+            // listeners' clocks, then the emitter's OWN clock resumes and
+            // its post-walk spin dies at the guest deadline.
+            "emitter-after-walk-spin" => {
+                jinn::plugin::events::emit(
+                    TOPIC,
+                    jinn::plugin::types::DispatchMode::Emit,
+                    &jinn::plugin::types::Selector::All,
+                    b"ping",
+                )
+                .map_err(fault)?;
+                loop {
+                    std::hint::black_box(());
+                }
+            }
             other => {
                 effects::register("fixture effect", 1).map_err(fault)?;
                 if other == "provider" || other == "picky" {
@@ -1301,12 +1351,36 @@ impl Guest for Fixture {
         // committed when the delivery landed — the in-handler half of the
         // ordering proof (a delivery may never precede its ledger row).
         if topic == TOPIC {
-            match MODE.lock().unwrap().as_str() {
+            let mode = MODE.lock().unwrap().clone();
+            let (mode, arg) = mode.split_once(':').unwrap_or((mode.as_str(), ""));
+            match mode {
                 "listener-slow" => dawdle(120)?,
-                "listener-spin" | "listener-budget" => loop {
+                "listener-spin" | "listener-budget" | "net-listener-spin" => loop {
                     std::hint::black_box(());
                 },
+                // Round-2 control (card case 5): a delivery of a declared
+                // length under the deadline alone.
+                "listener-delay" => dawdle(arg.parse().map_err(|_| {
+                    GuestFault::Failed(format!("listener-delay wants <ms>, got {arg:?}"))
+                })?)?,
+                // A listener that is itself an emitter (M2-K25(a), nested
+                // walk): its own clock must park for the walk it runs here.
+                "nested-emitter" => {
+                    jinn::plugin::events::emit(
+                        NESTED_TOPIC,
+                        jinn::plugin::types::DispatchMode::Serial,
+                        &jinn::plugin::types::Selector::All,
+                        &payload,
+                    )
+                    .map_err(fault)?;
+                }
                 _ => {}
+            }
+            return Ok(payload);
+        }
+        if topic == NESTED_TOPIC {
+            if MODE.lock().unwrap().as_str() == "nested-listener-slow" {
+                dawdle(120)?;
             }
             return Ok(payload);
         }
