@@ -16,11 +16,11 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use jinnd_api::{FiberState, Transition, TransitionCause};
-use jinnd_effects::{EffectScope, ReplayReport};
+use jinnd_api::{FiberState, TransitionCause};
+use jinnd_effects::EffectScope;
 use tokio_util::sync::CancellationToken;
 
-use crate::body::FiberBody;
+use crate::body::{FaultSink, FiberBody};
 use crate::landing::land;
 use crate::plan::{Aim, Step, plan};
 use crate::readiness::ReadinessSignal;
@@ -28,6 +28,7 @@ use crate::shared::Shared;
 
 mod contained;
 mod landed;
+mod publish;
 
 use contained::{activate, unclean};
 
@@ -138,7 +139,16 @@ impl Cell {
                 scope,
                 ..
             } = self;
-            let work = activate(body.as_ref(), scope, shared.id, &epoch, cancel.clone());
+            // Minted AFTER the launch, so it names this incarnation (M2-K25).
+            let faults = FaultSink::new(Arc::clone(shared));
+            let work = activate(
+                body.as_ref(),
+                scope,
+                shared.id,
+                &epoch,
+                cancel.clone(),
+                faults,
+            );
             land(work, signal.as_mut(), shared, &cancel).await
         };
         self.shared.steering.land();
@@ -181,6 +191,9 @@ impl Cell {
     /// decided before any inverse runs; a disposal arriving meanwhile lands
     /// afterwards as a `Finish` over what the suspension left.
     async fn unload(&mut self, cause: TransitionCause) {
+        if cause == TransitionCause::BodyFaulted {
+            return self.fault_unload().await;
+        }
         self.publish(FiberState::Unloading, cause.clone());
         let full = cause == TransitionCause::ExplicitDispose;
         let report = self.withdraw(full).await;
@@ -197,6 +210,21 @@ impl Cell {
         }
     }
 
+    /// The live incarnation died (M2-K25): the doom is COMMITTED BEFORE
+    /// the cleanup (the M2-K9 round-4 ordering law — a reader mid-cleanup
+    /// already sees `Failed`, never a replacement R9 will not schedule),
+    /// then the activation's whole contribution withdraws — guest inverses
+    /// answer as they can, the residue is in the replay report — and the
+    /// fiber rests `Failed` under the aim the dead activation served, so
+    /// it is not retried until that aim moves (R9, R11).
+    async fn fault_unload(&mut self) {
+        let dead = self.shared.steering.observed().0.active_for;
+        self.faulted(dead);
+        self.publish(FiberState::Unloading, TransitionCause::BodyFaulted);
+        self.publish(FiberState::Failed, TransitionCause::BodyFaulted);
+        self.withdraw(true).await;
+    }
+
     /// Disposes (or suspends) a fiber that holds no live activation.
     async fn finish(&mut self) {
         let cause = if self.shared.steering.desired().disposing {
@@ -208,69 +236,5 @@ impl Cell {
             .withdraw(cause == TransitionCause::ExplicitDispose)
             .await;
         self.disposal_landed(&report, cause);
-    }
-
-    /// Drains this activation's scope, replays it, and starts the next one
-    /// from an empty tree.
-    ///
-    /// The drain pass runs every draining effect's phase — a dying provider
-    /// waits out its dependents — to completion BEFORE any inverse replays
-    /// (I2, paper Alg 5): dependents unloading during the drain still call
-    /// the dying service and observe its contribution whole. The replay runs
-    /// inside the teardown context marker: plugin-owned inverses execute on
-    /// this fiber's task, and anything they call can consult
-    /// [`crate::in_teardown`] to refuse work that must not wait on a
-    /// teardown in flight (R1, M1-P6b). The task-agnostic half is the
-    /// withdrawal cell, raised for exactly the drain-and-replay span: work an
-    /// inverse spawns onto another task escapes the marker but happens-after
-    /// the raise, so [`crate::Fiber::withdrawing`] still answers it truthfully.
-    ///
-    /// `full` selects the withdrawal proper — every inverse runs — over the
-    /// suspend replay (M2-K4): suspendable effects run their suspend path,
-    /// every other effect its inverse, world mutations retained.
-    async fn withdraw(&mut self, full: bool) -> ReplayReport {
-        let cancel = CancellationToken::new();
-        let report = {
-            let Cell {
-                shared,
-                signal,
-                scope,
-                ..
-            } = self;
-            let _span = shared.withdrawal.begin();
-            let work = async {
-                scope.drain().await;
-                if full {
-                    scope.replay().await
-                } else {
-                    scope.suspend().await
-                }
-            };
-            crate::teardown::marked(land(work, signal.as_mut(), shared, &cancel)).await
-        };
-        self.scope = EffectScope::new();
-        self.shared.replayed(report.clone());
-        self.publish_effects();
-        report
-    }
-
-    fn publish(&self, to: FiberState, cause: TransitionCause) {
-        let from = *self.shared.state.borrow();
-        if from == to {
-            return;
-        }
-        // Recorded before it is published, so an observer woken by the state change
-        // never reads a history that is missing the transition it just saw.
-        self.shared.transitioned(Transition {
-            fiber: self.shared.id,
-            from,
-            to,
-            cause,
-        });
-        self.shared.state.send_replace(to);
-    }
-
-    fn publish_effects(&self) {
-        self.shared.published(self.scope.tree());
     }
 }

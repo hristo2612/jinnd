@@ -14,17 +14,66 @@ use jinnd_contract_lens::{bundle, world};
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
+    // 0.11.0 (M2-K25): listener-owned delivery budgets and clocks;
     // 0.10.0 (M2-K15): `net-error` gains `untrusted`;
     // 0.9.0 (M2-K14): `net.request` is provided and reshaped;
     // 0.8.0 (M2-K13): the kernel becomes a publisher on this world's bus;
     // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
     // 0.6.0 (M2-K9) the typed `restarting` one.
     let wit = world().wit();
-    assert_eq!(wit.package_id(), "jinn:plugin@0.10.0");
+    assert_eq!(wit.package_id(), "jinn:plugin@0.11.0");
     assert!(
         wit.interface("lifecycle")
             .func_docs("activate")
             .states("Suspend ≠ dispose")
+    );
+}
+
+/// M2-K25 (R3/R12): the parser, not a text search, pins the additive
+/// budget record/function and the clock/death semantics on their owners.
+#[test]
+fn the_world_declares_listener_owned_delivery_budgets() {
+    let wit = world().wit();
+    let types = wit.interface("types");
+    let events = wit.interface("events");
+    assert_eq!(types.record_fields("delivery-budget"), ["fuel: u64"]);
+    assert_eq!(
+        events.signature("listen"),
+        "listen: func(topic: string, token: u64) -> result<effect-id, kernel-error>"
+    );
+    assert_eq!(
+        events.signature("listen-within"),
+        "listen-within: func(topic: string, token: u64, budget: delivery-budget) -> result<u64, kernel-error>"
+    );
+    assert!(
+        types
+            .type_docs("delivery-budget")
+            .states("deterministic per-delivery containment bound")
+    );
+    assert!(
+        types
+            .type_docs("delivery-budget")
+            .states("outer horizon while a host call burns no fuel")
+    );
+    assert!(
+        types
+            .variant_case_docs("kernel-error", "invalid")
+            .states("zero `delivery-budget.fuel`")
+    );
+    assert!(
+        events
+            .func_docs("emit")
+            .states("emitter's guest deadline DOES NOT RUN")
+    );
+    assert!(
+        events
+            .func_docs("listen-within")
+            .states("Zero is refused as")
+    );
+    assert!(
+        wit.interface("lifecycle")
+            .func_docs("handle-event")
+            .states("exhaustion ends this instance")
     );
 }
 

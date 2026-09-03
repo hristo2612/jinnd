@@ -126,6 +126,24 @@ impl Iface<'_> {
         }
     }
 
+    /// The doc block of one named variant case, scoped to that case rather
+    /// than the variant type around it.
+    pub fn variant_case_docs(&self, name: &str, case: &str) -> Docs {
+        match &self.type_def(name).kind {
+            TypeDefKind::Variant(variant) => {
+                let case = variant
+                    .cases
+                    .iter()
+                    .find(|candidate| candidate.name == case)
+                    .unwrap_or_else(|| panic!("variant {name} declares case {case}"));
+                Docs {
+                    contents: case.docs.contents.clone().unwrap_or_default(),
+                }
+            }
+            other => panic!("{name} is a variant, not {other:?}"),
+        }
+    }
+
     /// An enum's cases, in declaration order.
     pub fn enum_cases(&self, name: &str) -> Vec<String> {
         match &self.type_def(name).kind {

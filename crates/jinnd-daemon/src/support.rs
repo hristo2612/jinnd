@@ -58,7 +58,7 @@ pub(crate) struct Tracked {
     /// The profile entry the fiber hosts (the ledger's entry attribution).
     pub(crate) entry: EntryId,
     /// Transitions already emitted to the ledger.
-    pub(crate) recorded: usize,
+    pub(crate) recorded: Option<usize>,
 }
 
 /// Spawns one fiber through `spawn` and records it under `entry` for the
@@ -71,6 +71,7 @@ pub(crate) struct Tracked {
 pub(crate) fn tracked(
     fibers: &SharedFibers,
     entry: EntryId,
+    recorded: Option<usize>,
     spawn: impl FnOnce() -> Arc<Fiber>,
 ) -> Arc<Fiber> {
     let mut fibers = lock(fibers);
@@ -80,7 +81,7 @@ pub(crate) fn tracked(
         Tracked {
             fiber: Arc::clone(&fiber),
             entry,
-            recorded: 0,
+            recorded,
         },
     );
     fiber
@@ -105,8 +106,11 @@ pub(crate) fn sync_transitions(
     {
         let mut fibers = lock(fibers);
         for tracked in fibers.values_mut() {
+            let Some(recorded) = tracked.recorded.as_mut() else {
+                continue;
+            };
             let transitions = tracked.fiber.record().transitions;
-            for transition in transitions.iter().skip(tracked.recorded) {
+            for transition in transitions.iter().skip(*recorded) {
                 ledger.record(
                     LedgerEventKind::FiberTransition(transition.clone()),
                     Some(tracked.entry.clone()),
@@ -114,7 +118,7 @@ pub(crate) fn sync_transitions(
                 );
                 committed.push((tracked.entry.clone(), transition.clone()));
             }
-            tracked.recorded = transitions.len();
+            *recorded = transitions.len();
         }
     }
     if let Some(publisher) = publisher {
@@ -170,7 +174,7 @@ mod tests {
         let body: Arc<dyn FiberBody> = Arc::new(Probe(Arc::clone(&sink)));
         let source = ReadinessSource::independent();
         let signal = source.signal();
-        let fiber = tracked(&fibers, EntryId("probe".to_owned()), move || {
+        let fiber = tracked(&fibers, EntryId("probe".to_owned()), Some(0), move || {
             let fiber = Arc::new(Fiber::spawn(body, signal));
             std::thread::sleep(Duration::from_millis(100));
             fiber

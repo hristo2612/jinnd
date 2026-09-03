@@ -18,6 +18,7 @@ use jinnd_api::{EntryId, ErrorCode, FiberId, KernelError, KernelFuture, LedgerEv
 use super::{EventTarget, RestartOracle, Unserved};
 use crate::peer::LedgerSink;
 
+mod budget;
 mod cycle_restart;
 mod dispositions;
 mod race;
@@ -48,7 +49,13 @@ impl RecordingSink {
 struct Answer(Vec<u8>);
 
 impl EventTarget for Answer {
-    fn deliver(&self, _: u64, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        _: u64,
+        _: &str,
+        _: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         let answer = self.0.clone();
         Box::pin(async move { Ok(answer) })
     }
@@ -57,7 +64,13 @@ impl EventTarget for Answer {
 struct Failing;
 
 impl EventTarget for Failing {
-    fn deliver(&self, _: u64, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        _: u64,
+        _: &str,
+        _: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         Box::pin(async {
             Err(KernelError {
                 code: ErrorCode::ListenerFailed,
@@ -74,7 +87,13 @@ impl EventTarget for Failing {
 struct Counted(AtomicUsize);
 
 impl EventTarget for Counted {
-    fn deliver(&self, _: u64, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        _: u64,
+        _: &str,
+        _: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(b"served".to_vec()) })
     }

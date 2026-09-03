@@ -1,8 +1,12 @@
 //! What a plugin body is, from the fiber's side.
 
-use jinnd_api::{EffectId, Epoch, FiberId, KernelError, KernelFuture};
+use std::sync::Arc;
+
+use jinnd_api::{EffectId, Epoch, FiberId, KernelError, KernelFuture, Transition};
 use jinnd_effects::{Disposer, EffectScope};
 use tokio_util::sync::CancellationToken;
+
+use crate::shared::Shared;
 
 /// One plugin's activation, run once per activation of the fiber that owns it.
 ///
@@ -13,6 +17,12 @@ pub trait FiberBody: Send + Sync + 'static {
     /// Applies this plugin's contribution, registering an inverse for each part of
     /// it through `setup` (R5).
     fn activate<'a>(&'a self, setup: Setup<'a>) -> KernelFuture<'a, ()>;
+}
+
+/// Receives each transition synchronously after it enters the fiber record
+/// and before the supervisor starts work under that state (Law 2).
+pub trait TransitionObserver: Send + Sync + 'static {
+    fn committed(&self, transition: &Transition);
 }
 
 /// The activation's handle on its own fiber.
@@ -26,6 +36,7 @@ pub struct Setup<'a> {
     epoch: &'a Epoch,
     effects: &'a mut EffectScope,
     cancel: CancellationToken,
+    faults: FaultSink,
 }
 
 impl<'a> Setup<'a> {
@@ -34,13 +45,26 @@ impl<'a> Setup<'a> {
         epoch: &'a Epoch,
         effects: &'a mut EffectScope,
         cancel: CancellationToken,
+        faults: FaultSink,
     ) -> Self {
         Self {
             fiber,
             epoch,
             effects,
             cancel,
+            faults,
         }
+    }
+
+    /// The channel this activation reports its OWN death through
+    /// (M2-K25): a body whose live instance the kernel ends after
+    /// activation — a deadline, a trap, an exhausted delivery budget —
+    /// hands the error here, and the fiber fails itself on the record.
+    /// Cloneable and `'static`: a watcher task keeps it past the
+    /// activation's return.
+    #[must_use]
+    pub fn faults(&self) -> FaultSink {
+        self.faults.clone()
     }
 
     /// The fiber being activated.
@@ -140,5 +164,45 @@ impl<'a> Setup<'a> {
         disposer: Disposer,
     ) -> Result<EffectId, KernelError> {
         self.effects.register_child(parent, label, disposer)
+    }
+}
+
+/// One incarnation's fault channel — the fiber engine's ONE
+/// post-activation input (M2-K25). Minted per activation, so a fault
+/// names the incarnation that reported it: the fiber plans
+/// `Active → Unloading → Failed` under [`TransitionCause::BodyFaulted`]
+/// for the live one, and records without acting a notice from an
+/// incarnation that has already gone (R9 — a death never dooms the
+/// successor; R11 — it dooms nothing but its own cell).
+///
+/// [`TransitionCause::BodyFaulted`]: jinnd_api::TransitionCause::BodyFaulted
+#[derive(Clone, Debug)]
+pub struct FaultSink {
+    shared: Arc<Shared>,
+    incarnation: u64,
+}
+
+impl FaultSink {
+    pub(crate) fn new(shared: Arc<Shared>) -> Self {
+        let incarnation = shared.steering.incarnation();
+        Self {
+            shared,
+            incarnation,
+        }
+    }
+
+    /// Reports the death. The error lands on the fiber's record under the
+    /// fiber's attribution whatever happens next (no lost fault); the
+    /// fiber is doomed only when this is the LIVE incarnation, which the
+    /// answer says. Never blocks, never awaits, never touches plugin code
+    /// (R1): a target write and a wake, like every other input.
+    pub fn fault(&self, mut error: KernelError) -> bool {
+        error.fiber.get_or_insert(self.shared.id);
+        self.shared.fail(error);
+        let acts = self.shared.steering.fault(self.incarnation);
+        if acts {
+            self.shared.wake.notify_one();
+        }
+        acts
     }
 }

@@ -2,12 +2,14 @@
 //! [`EventTarget`], plus the channel `pair` constructor. Split from
 //! `handle.rs` by responsibility (R10 file hygiene).
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use jinnd_api::KernelFuture;
-use tokio::sync::{mpsc, oneshot};
+use jinnd_api::{KernelError, KernelFuture};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::peer::{Peer, PeerId};
+use crate::settle::DeadlineControl;
 use crate::topics::EventTarget;
 
 use super::{Command, InstanceHandle};
@@ -58,29 +60,43 @@ impl Peer for InstancePeer {
 }
 
 impl EventTarget for InstancePeer {
-    fn deliver(&self, token: u64, topic: &str, payload: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        token: u64,
+        topic: &str,
+        payload: Vec<u8>,
+        budget: Option<NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         let handle = self.handle.clone();
         let topic = topic.to_owned();
-        Box::pin(async move {
-            let (reply, rx) = oneshot::channel();
-            handle
-                .send(
-                    Command::Deliver {
-                        token,
-                        topic,
-                        payload,
-                        reply,
-                    },
-                    rx,
-                )
-                .await?
-        })
+        Box::pin(async move { handle.deliver_within(token, &topic, payload, budget).await })
     }
 }
 
-pub(crate) fn pair() -> (InstanceHandle, mpsc::Receiver<Command>) {
+/// The death notice's two ends: the supervisor retains the terminal error
+/// on the sender when the instance dies after activation (M2-K25); the
+/// handle watches the receiver. The same shape carries the lane's abort.
+pub(crate) type NoticeTx = watch::Sender<Option<KernelError>>;
+pub(crate) type NoticeRx = watch::Receiver<Option<KernelError>>;
+
+pub(crate) fn pair(
+    deadline: std::time::Duration,
+) -> (InstanceHandle, NoticeTx, NoticeRx, mpsc::Receiver<Command>) {
     let (tx, rx) = mpsc::channel(16);
-    (InstanceHandle { tx }, rx)
+    let (death_tx, deaths) = watch::channel(None);
+    let (abort, aborts) = watch::channel(None);
+    (
+        InstanceHandle {
+            tx,
+            deaths,
+            abort,
+            deadline,
+            horizon: DeadlineControl::new(),
+        },
+        death_tx,
+        aborts,
+        rx,
+    )
 }
 
 /// The instance's own transport face, handed to the broker on `provide` and

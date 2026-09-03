@@ -31,6 +31,7 @@ pub(crate) struct Staged {
     peer: PeerId,
     fiber: FiberId,
     context: u64,
+    faults: jinnd_fiber::FaultSink,
 }
 
 /// Withdraws a staged-but-never-committed instance: its staged effects
@@ -94,7 +95,7 @@ impl SwapSlots for LaneSlots {
     fn prepare(&self, entry: &EntryId) -> KernelFuture<'_, Staged> {
         let entry = entry.clone();
         Box::pin(async move {
-            let (slot, peer, fiber, context, clock_floor_ms, config) = {
+            let (slot, peer, fiber, context, clock_floor_ms, config, faults) = {
                 let roster = lock(&self.core.roster);
                 let live = roster.get(&entry).ok_or_else(|| {
                     refusal(ErrorCode::InvalidProfile, "entry left the roster".into())
@@ -106,6 +107,7 @@ impl SwapSlots for LaneSlots {
                     live.context,
                     live.clock_floor_ms,
                     live.config.clone(),
+                    live.faults.clone(),
                 )
             };
             let old = slot.current().ok_or_else(|| {
@@ -133,9 +135,13 @@ impl SwapSlots for LaneSlots {
                     staging: true,
                 },
             );
-            let (outcome, contributed) = staged.activate(config).await;
+            let (outcome, mut contributed) = staged.activate(config).await;
             let healthy = match outcome {
-                Ok(()) => staged.restore(handoff).await,
+                Ok(()) => {
+                    let (restored, mut late) = staged.restore_with_outcome(handoff).await;
+                    contributed.registrations.append(&mut late.registrations);
+                    restored
+                }
                 Err(refused) => Err(refused),
             };
             if let Err(refused) = healthy {
@@ -156,6 +162,7 @@ impl SwapSlots for LaneSlots {
                 peer,
                 fiber,
                 context,
+                faults,
             })
         })
     }
@@ -165,7 +172,10 @@ impl SwapSlots for LaneSlots {
     /// captured at prepare, and a disposal that could invalidate it would
     /// have tombstoned the claim first.
     fn commit(&self, _entry: &EntryId, staged: Staged) -> Option<SeatState> {
-        commit_staged(
+        let watched = staged.instance.clone();
+        let slot = Arc::clone(&staged.slot);
+        let faults = staged.faults.clone();
+        let displaced = commit_staged(
             &staged.slot,
             staged.instance,
             staged.outcome,
@@ -176,7 +186,9 @@ impl SwapSlots for LaneSlots {
             Some(staged.fiber),
             staged.context,
             self.core.sink.as_ref(),
-        )
+        );
+        self.core.track_death(slot, watched, faults);
+        displaced
     }
 
     fn retire_displaced(&self, entry: &EntryId, displaced: SeatState) -> KernelFuture<'_, ()> {

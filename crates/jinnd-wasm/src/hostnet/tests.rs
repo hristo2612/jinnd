@@ -362,6 +362,7 @@ impl crate::topics::EventTarget for Face {
         token: u64,
         topic: &str,
         payload: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
     ) -> jinnd_api::KernelFuture<'static, Vec<u8>> {
         self.0
             .lock()
@@ -500,6 +501,7 @@ async fn closing_from_inside_the_wake_handler_never_deadlocks() {
             token: u64,
             _topic: &str,
             _payload: Vec<u8>,
+            _: Option<std::num::NonZeroU64>,
         ) -> jinnd_api::KernelFuture<'static, Vec<u8>> {
             let broker = Arc::clone(&self.broker);
             let guest = self.guest;

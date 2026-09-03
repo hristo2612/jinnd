@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use jinnd_api::{EffectDescriptor, FiberId, FiberState, Owed, TransitionCause};
 use tokio::sync::watch;
 
-use crate::body::FiberBody;
+use crate::body::{FiberBody, TransitionObserver};
 use crate::readiness::ReadinessSignal;
 use crate::record::FiberRecord;
 use crate::shared::Shared;
@@ -38,7 +38,25 @@ impl Fiber {
     ///
     /// If called outside a tokio runtime, which is where every fiber lives (R1).
     pub fn spawn(body: Arc<dyn FiberBody>, signal: impl ReadinessSignal) -> Self {
-        let shared = Arc::new(Shared::new(next_fiber_id(), signal.epoch()));
+        Self::spawn_with(body, signal, None)
+    }
+
+    /// Spawns a fiber whose committed transitions are synchronously observed
+    /// before work under the new state begins (Law 2).
+    pub fn spawn_observed(
+        body: Arc<dyn FiberBody>,
+        signal: impl ReadinessSignal,
+        observer: Arc<dyn TransitionObserver>,
+    ) -> Self {
+        Self::spawn_with(body, signal, Some(observer))
+    }
+
+    fn spawn_with(
+        body: Arc<dyn FiberBody>,
+        signal: impl ReadinessSignal,
+        observer: Option<Arc<dyn TransitionObserver>>,
+    ) -> Self {
+        let shared = Arc::new(Shared::new(next_fiber_id(), signal.epoch(), observer));
         // The whole supervisor task carries its fiber's identity, so any code
         // it runs — activations and teardown replays alike — can be refused
         // an operation that would await this very fiber (M1-P6c).

@@ -5,12 +5,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use jinnd_api::{EntryFault, ErrorCode, GROUP_PACKAGE, KernelError, Profile};
-use jinnd_fiber::Fiber;
+use jinnd_api::{EntryFault, ErrorCode, GROUP_PACKAGE, KernelError, Profile, Transition};
+use jinnd_fiber::{Fiber, TransitionObserver};
+use jinnd_ledger::Ledger;
 use jinnd_loader::PackageLane;
 use jinnd_wasm::{LaneCore, LoadedComponent, WasmBody, wasm_lane_declaring};
 
-use crate::daemon::Daemon;
+use crate::daemon::{Daemon, Lifecycle};
 use crate::seat::{seat_config, seat_declaration};
 use crate::support::{SharedFibers, error, lock, tracked};
 
@@ -23,10 +24,19 @@ fn lane(
     core: Arc<LaneCore>,
     fibers: SharedFibers,
     component: Arc<Mutex<LoadedComponent>>,
+    ledger: Ledger,
+    lifecycle: Arc<Lifecycle>,
 ) -> PackageLane {
     let track = move |body: Arc<WasmBody>, signal| {
         let entry = body.entry().clone();
-        tracked(&fibers, entry, || Arc::new(Fiber::spawn(body, signal)))
+        let observer = Arc::new(LedgerTransitions {
+            entry: entry.clone(),
+            ledger: ledger.clone(),
+            lifecycle: Arc::clone(&lifecycle),
+        });
+        tracked(&fibers, entry, None, || {
+            Arc::new(Fiber::spawn_observed(body, signal, observer))
+        })
     };
     wasm_lane_declaring::<serde_json::Value, _, _>(
         core,
@@ -36,6 +46,23 @@ fn lane(
         seat_declaration,
         track,
     )
+}
+
+struct LedgerTransitions {
+    entry: jinnd_api::EntryId,
+    ledger: Ledger,
+    lifecycle: Arc<Lifecycle>,
+}
+
+impl TransitionObserver for LedgerTransitions {
+    fn committed(&self, transition: &Transition) {
+        self.ledger.record(
+            jinnd_api::LedgerEventKind::FiberTransition(transition.clone()),
+            Some(self.entry.clone()),
+            Some(transition.fiber),
+        );
+        self.lifecycle.offer(&self.entry, transition);
+    }
 }
 
 /// The last path segment of a package name keys its artifact file.
@@ -96,6 +123,8 @@ impl Daemon {
                         Arc::clone(&self.lane),
                         Arc::clone(&self.fibers),
                         Arc::clone(&cell),
+                        self.ledger.clone(),
+                        Arc::clone(&self.lifecycle),
                     );
                     self.loader
                         .register_lane::<serde_json::Value>(package, lane)

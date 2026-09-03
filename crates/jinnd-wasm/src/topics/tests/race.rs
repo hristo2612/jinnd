@@ -22,7 +22,13 @@ struct Held {
 }
 
 impl EventTarget for Held {
-    fn deliver(&self, _: u64, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        _: u64,
+        _: &str,
+        _: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         self.entered.add_permits(1);
         let release = Arc::clone(&self.release);
         let answer = self.answer.clone();
@@ -65,6 +71,7 @@ impl RestartOracle for SwapsThenAdmits {
                     context: 1,
                     token: 0,
                     fiber: Some(FiberId(4)),
+                    budget: None,
                     target: Arc::clone(&self.successor) as Arc<dyn EventTarget>,
                 }],
             );
@@ -191,6 +198,7 @@ async fn a_delivery_in_flight_across_a_swap_still_answers_its_emitter() {
             context: 1,
             token: 0,
             fiber: Some(FiberId(4)),
+            budget: None,
             target: Arc::new(Answer(b"successor".to_vec())) as Arc<dyn EventTarget>,
         }],
     );

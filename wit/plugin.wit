@@ -1,4 +1,4 @@
-/// jinn:plugin@0.10.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.11.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
@@ -35,6 +35,10 @@
 /// included: the kernel awaits every listener delivery end to end, so
 /// fire-and-forget discards the answer, never the wait.
 /// Additive: no existing case, signature, or meaning changes.
+/// 0.11.0 (M2-K25): `events.listen-within` adds a deterministic
+/// per-delivery fuel bound. Event walks park the emitter's guest deadline;
+/// every delivery spends only its listener's declared fuel or deadline.
+/// Additive: plain `listen` and every existing signature are unchanged.
 /// 0.10.0 (M2-K15): outbound reaches the real network. `https://` is
 /// provided over a verified TLS connection, and `net-error` gains
 /// `untrusted` — the typed refusal of a peer that did not authenticate.
@@ -62,7 +66,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.10.0;
+package jinn:plugin@0.11.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -75,6 +79,13 @@ interface types {
   /// scope (R4). Handles are minted by the broker and are not forgeable or
   /// transferable across instances.
   type handle-id = u64;
+
+  /// A deterministic per-delivery containment bound (M2-K25). `fuel` is
+  /// the listener store's fuel; zero is invalid. The guest deadline remains
+  /// the outer horizon while a host call burns no fuel.
+  record delivery-budget {
+    fuel: u64,
+  }
 
   /// Stable error classes exposed by the kernel boundary. Guest panics and
   /// traps never cross it (R11); they surface to SIBLINGS only as declared
@@ -89,7 +100,8 @@ interface types {
     grant-refused(string),
     /// The provider failed while answering; contained per R11.
     provider-failed(string),
-    /// The kernel refused the operation as malformed.
+    /// The kernel refuses zero `delivery-budget.fuel` as malformed; every
+    /// refusal is recorded.
     invalid(string),
     /// A reply-expecting `events.emit` was refused because a selected
     /// listener's incarnation is already being REPLACED (M2-K9). Nothing
@@ -226,7 +238,7 @@ interface services {
 
 /// The one event bus (LAW §3), five dispatch modes, inverted routing.
 interface events {
-  use types.{effect-id, kernel-error, dispatch-mode, selector};
+  use types.{effect-id, kernel-error, dispatch-mode, selector, delivery-budget};
 
   /// Emits one typed payload under the declared mode. `target` is the
   /// payload's declarative listener selection (C4). Outputs are the settled
@@ -257,6 +269,12 @@ interface events {
   /// whole point of the publish is that a consumer emits what it WITNESSED
   /// rather than what it inferred. Listening on such a topic is allowed
   /// under the owning contract's grant; emitting on it never is.
+  ///
+  /// The emitter's guest deadline DOES NOT RUN while it is parked on this
+  /// walk (M2-K25). Each selected delivery spends the listener's declared
+  /// fuel bound, or its guest deadline when unbudgeted. Exceeding either
+  /// bound ends and fails that listener's own fiber, counts one contained
+  /// failure, and the walk continues in every mode, including `emit`.
   emit: func(topic: string, mode: dispatch-mode, target: selector, payload: list<u8>)
     -> result<list<list<u8>>, kernel-error>;
 
@@ -274,6 +292,13 @@ interface events {
   /// subscription is refused on the record, like any other authority
   /// refusal.
   listen: func(topic: string, token: u64) -> result<effect-id, kernel-error>;
+
+  /// Registers as `listen`, with a deterministic fuel bound applied anew
+  /// to every delivery. The bound belongs to the registration and follows
+  /// it through suspension, staging, and atomic rebind. Zero is refused as
+  /// `kernel-error.invalid`, on the record, without changing other listens.
+  listen-within: func(topic: string, token: u64, budget: delivery-budget)
+    -> result<u64, kernel-error>;
 }
 
 /// Base host-provider contract `jinn:fs` (R7): the kernel supplies this
@@ -664,6 +689,10 @@ interface lifecycle {
   undo: func(token: u64) -> result<_, guest-fault>;
 
   /// Delivers one selected event to the listener registered under `token`.
+  /// The call runs under that registration's fuel budget when declared;
+  /// exhaustion ends this instance and fails its own fiber on the record.
+  /// The guest deadline remains the outer bound for host calls that burn
+  /// no fuel (M2-K25, R9, R11).
   handle-event: func(token: u64, topic: string, payload: list<u8>)
     -> result<list<u8>, guest-fault>;
 

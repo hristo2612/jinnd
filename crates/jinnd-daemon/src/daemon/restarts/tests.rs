@@ -59,7 +59,7 @@ fn tracked(entry: &str) -> (SharedFibers, Arc<Fiber>, ReadinessSource, Arc<Gated
         Tracked {
             fiber: Arc::clone(&fiber),
             entry: EntryId(entry.to_owned()),
-            recorded: 0,
+            recorded: Some(0),
         },
     );
     (Arc::new(Mutex::new(rows)), fiber, source, body)

@@ -31,6 +31,7 @@ impl EventTarget for Timed {
         _token: u64,
         _topic: &str,
         _payload: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
     ) -> KernelFuture<'static, Vec<u8>> {
         let delay = self.delay;
         let start = self.start;
@@ -70,6 +71,7 @@ impl EventTarget for Trapping {
         _token: u64,
         _topic: &str,
         _payload: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
     ) -> KernelFuture<'static, Vec<u8>> {
         let landed = Arc::clone(&self.landed);
         let start = self.start;
@@ -125,6 +127,7 @@ impl EventTarget for Parking {
         _token: u64,
         _topic: &str,
         payload: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
     ) -> KernelFuture<'static, Vec<u8>> {
         let ordinal: u64 = String::from_utf8_lossy(&payload)
             .parse()

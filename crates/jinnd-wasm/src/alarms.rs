@@ -237,9 +237,15 @@ async fn wake(
         return false;
     }
     if let Err(error) = target
-        .deliver(token, WAKE_TOPIC, now_unix_ms().to_le_bytes().to_vec())
+        .deliver(
+            token,
+            WAKE_TOPIC,
+            now_unix_ms().to_le_bytes().to_vec(),
+            None,
+        )
         .await
         && alarms.table.alive(id)
+        && error.fiber.is_none()
     {
         // Still live, so this is a real contained wake-handler failure —
         // not the benign race with a teardown that just cancelled us.

@@ -50,7 +50,13 @@ fn wired(sink: &Arc<RecordingSink>) -> (LocalTopics, Arc<WaitGraph>) {
 struct Parking(Arc<Notify>);
 
 impl EventTarget for Parking {
-    fn deliver(&self, _: u64, _: &str, _: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        _: u64,
+        _: &str,
+        _: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         let entered = Arc::clone(&self.0);
         Box::pin(async move {
             entered.notify_one();

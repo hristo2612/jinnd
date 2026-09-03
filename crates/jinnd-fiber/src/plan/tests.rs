@@ -40,6 +40,7 @@ fn desired(aim: Aim) -> Desired {
         cause: TransitionCause::InitialLoad,
         disposing: false,
         suspending: false,
+        faulted: false,
     }
 }
 
@@ -61,6 +62,7 @@ fn a_suspension_unloads_under_its_own_cause_and_a_disposal_outranks_it() {
     };
     let suspending = Desired {
         suspending: true,
+        faulted: false,
         ..desired(aim(0, 0))
     };
     assert_eq!(

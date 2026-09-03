@@ -92,7 +92,7 @@ impl Rebind for WasmBody {
 impl FiberBody for WasmBody {
     fn activate<'a>(&'a self, mut setup: Setup<'a>) -> KernelFuture<'a, ()> {
         Box::pin(async move {
-            let (grants, faults, config) = {
+            let (grants, grant_faults, config) = {
                 let seat = lock(&self.seat);
                 (
                     seat.grants.clone(),
@@ -102,6 +102,7 @@ impl FiberBody for WasmBody {
             };
             let at = lock(&self.at).clone();
             let fiber = setup.fiber();
+            let fault_sink = setup.faults();
             let core = Arc::clone(&self.core);
             let peer = core.broker.register_peer(Some(fiber));
             // Host providers retain this seat's inverses under the ENTRY
@@ -112,7 +113,7 @@ impl FiberBody for WasmBody {
             // refusal — an invalid scope, or an entry unreadable as a grant
             // at all — is a ledgered per-entry error, never a silent drop
             // and never a widened unscoped grant.
-            for fault in &faults {
+            for fault in &grant_faults {
                 core.sink.append(
                     LedgerEventKind::ErrorRecorded {
                         error: refusal(
@@ -191,6 +192,7 @@ impl FiberBody for WasmBody {
                     clock_floor_ms,
                     config: config.clone(),
                     component: Arc::clone(&self.component),
+                    faults: fault_sink.clone(),
                 },
             );
             // ONE effect owns the whole guest contribution: tombstone the
@@ -276,8 +278,12 @@ impl FiberBody for WasmBody {
                         .append(LedgerEventKind::EffectRegistered { label }, Some(fiber));
                 }
             }
+            let watched = handle.clone();
             if let Some(previous) = self.slot.install(SeatState::live(handle, contributed)) {
                 previous.instance.dispose().await;
+            }
+            if outcome.is_ok() {
+                core.track_death(Arc::clone(&self.slot), watched, fault_sink);
             }
             outcome
         })

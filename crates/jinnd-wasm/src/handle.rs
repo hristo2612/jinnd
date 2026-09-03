@@ -6,9 +6,12 @@
 //! other, which is what keeps the broker transport-agnostic.
 
 use jinnd_api::KernelError;
+use std::num::NonZeroU64;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::peer::PeerId;
+use crate::settle::{DeadlineControl, within};
 
 mod command;
 mod face;
@@ -112,6 +115,7 @@ pub struct ListenRecord {
     pub topic: String,
     pub token: u64,
     pub id: Option<u64>,
+    pub budget: Option<NonZeroU64>,
 }
 
 /// One guest alarm request (M2-K2). A live activation carries the alarm
@@ -134,9 +138,27 @@ pub struct AlarmRecord {
 #[derive(Clone)]
 pub struct InstanceHandle {
     pub(crate) tx: mpsc::Sender<Command>,
+    pub(crate) deaths: tokio::sync::watch::Receiver<Option<KernelError>>,
+    pub(crate) abort: tokio::sync::watch::Sender<Option<KernelError>>,
+    pub(crate) deadline: Duration,
+    /// The instance's ONE guest-call clock (M2-K25(a)): the supervisor's
+    /// per-entry horizon and the caller-side delivery horizon both run on
+    /// it, so a walk the instance parks on pauses both at once.
+    pub(crate) horizon: DeadlineControl,
 }
 
 impl InstanceHandle {
+    /// Watches the retained terminal error when this live instance dies
+    /// after activation (M2-K25). The lane uses it to fault the owning
+    /// fiber without polling.
+    pub fn deaths(&self) -> tokio::sync::watch::Receiver<Option<KernelError>> {
+        self.deaths.clone()
+    }
+
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        self.tx.same_channel(&other.tx)
+    }
+
     async fn send<T>(&self, command: Command, rx: oneshot::Receiver<T>) -> Result<T, KernelError> {
         self.tx.send(command).await.map_err(|_| gone())?;
         rx.await.map_err(|_| gone())
@@ -198,17 +220,35 @@ impl InstanceHandle {
         topic: &str,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, KernelError> {
+        self.deliver_within(token, topic, payload, None).await
+    }
+
+    pub(crate) async fn deliver_within(
+        &self,
+        token: u64,
+        topic: &str,
+        payload: Vec<u8>,
+        budget: Option<NonZeroU64>,
+    ) -> Result<Vec<u8>, KernelError> {
         let (reply, rx) = oneshot::channel();
-        self.send(
+        let delivery = self.send(
             Command::Deliver {
                 token,
                 topic: topic.to_owned(),
                 payload,
+                budget,
                 reply,
             },
             rx,
-        )
-        .await?
+        );
+        match within(self.deadline, &self.horizon, delivery).await {
+            Ok(answer) => answer?,
+            Err(_) => {
+                let error = crate::settle::hung();
+                self.abort.send_replace(Some(error.clone()));
+                Err(error)
+            }
+        }
     }
 
     /// One state-handoff snapshot (R8 Mode 1).
@@ -220,8 +260,17 @@ impl InstanceHandle {
     /// Offers the predecessor's snapshot (R8 Mode 1). Refusal fails the
     /// swap's health gate.
     pub async fn restore(&self, blob: Vec<u8>) -> Result<(), KernelError> {
+        self.restore_with_outcome(blob).await.0
+    }
+
+    pub(crate) async fn restore_with_outcome(
+        &self,
+        blob: Vec<u8>,
+    ) -> (Result<(), KernelError>, ActivationOutcome) {
         let (reply, rx) = oneshot::channel();
-        self.send(Command::Restore { blob, reply }, rx).await?
+        self.send(Command::Restore { blob, reply }, rx)
+            .await
+            .unwrap_or_else(|error| (Err(error), ActivationOutcome::default()))
     }
 
     /// Seals the instance ahead of its retirement or suspension (M2-K4,

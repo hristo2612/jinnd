@@ -3,6 +3,7 @@
 //! from `handle.rs` by responsibility (R10 file hygiene).
 
 use jinnd_api::{ErrorCode, KernelError};
+use std::num::NonZeroU64;
 use tokio::sync::oneshot;
 
 use crate::peer::PeerId;
@@ -33,6 +34,7 @@ pub(crate) enum Command {
         token: u64,
         topic: String,
         payload: Vec<u8>,
+        budget: Option<NonZeroU64>,
         reply: oneshot::Sender<Result<Vec<u8>, KernelError>>,
     },
     Snapshot {
@@ -40,7 +42,7 @@ pub(crate) enum Command {
     },
     Restore {
         blob: Vec<u8>,
-        reply: oneshot::Sender<Result<(), KernelError>>,
+        reply: oneshot::Sender<(Result<(), KernelError>, ActivationOutcome)>,
     },
     /// Seals the instance (M2-K4): answered once every guest entry already
     /// in flight has returned; afterwards no activation, call, or delivery

@@ -106,6 +106,8 @@ impl Rig {
 }
 
 const COUNTER: &str = "jinn:test/counter";
+const EVENT_TOPIC: &str = "jinn:test/topic";
+const NESTED_TOPIC: &str = "jinn:test/nested";
 
 #[tokio::test]
 async fn wrong_hash_refuses_to_load_and_the_refusal_is_recorded() {
@@ -440,6 +442,261 @@ async fn a_spinning_guest_is_killed_at_the_deadline_not_the_executor() {
     let (_, sibling) = rig.spawn(2);
     let (outcome, _) = sibling.activate(b"plain".to_vec()).await;
     outcome.unwrap_or_else(|error| panic!("sibling: {error:?}"));
+}
+
+#[tokio::test]
+async fn a_listener_spends_its_own_fuel_and_retains_its_death_notice() {
+    let mut messages = Vec::new();
+    for _ in 0..3 {
+        let rig = rig();
+        let (peer, listener) = rig.spawn(1);
+        rig.broker.grant(peer, EVENT_TOPIC);
+        listener
+            .activate(b"listener-budget".to_vec())
+            .await
+            .0
+            .unwrap_or_else(|error| panic!("listener activation: {error:?}"));
+        let mut deaths = listener.deaths();
+
+        let started = std::time::Instant::now();
+        let report = rig
+            .topics
+            .emit(
+                2,
+                EVENT_TOPIC,
+                jinnd_api::DispatchMode::Emit,
+                &jinnd_wasm::Selector::All,
+                b"ping".to_vec(),
+                Some(FiberId(2)),
+                &NoRealms,
+            )
+            .await;
+        assert_eq!(report.failures.len(), 1);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        deaths
+            .changed()
+            .await
+            .unwrap_or_else(|error| panic!("death: {error}"));
+        let death = deaths
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| panic!("the fatal notice is retained"));
+        assert_eq!(death.fiber, Some(FiberId(1)));
+        messages.push(death.message);
+    }
+    assert_eq!(
+        messages,
+        vec!["guest exhausted its delivery fuel budget"; 3]
+    );
+}
+
+#[tokio::test]
+async fn a_walk_parks_the_emitter_while_the_listener_spends_its_deadline() {
+    let rig = rig();
+    jinnd_wasm::HostClock::register(&rig.broker)
+        .unwrap_or_else(|error| panic!("clock provider: {error:?}"));
+    let (listener_peer, listener_seat) = rig.seat(1, Duration::from_millis(300));
+    rig.broker.grant(listener_peer, EVENT_TOPIC);
+    rig.broker.grant(listener_peer, jinnd_wasm::CLOCK_CONTRACT);
+    let listener = rig.host.instantiate(&rig.component, listener_seat);
+    listener
+        .activate(b"listener-slow".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("listener activation: {error:?}"));
+    let probe = rig
+        .topics
+        .emit(
+            99,
+            EVENT_TOPIC,
+            jinnd_api::DispatchMode::Serial,
+            &jinnd_wasm::Selector::All,
+            Vec::new(),
+            Some(FiberId(99)),
+            &NoRealms,
+        )
+        .await;
+    assert_eq!(
+        probe.outputs.len(),
+        1,
+        "the listener registration must be live"
+    );
+    assert!(probe.failures.is_empty(), "listener probe: {probe:?}");
+
+    let (_, emitter_seat) = rig.seat(2, Duration::from_millis(80));
+    let emitter = rig.host.instantiate(&rig.component, emitter_seat);
+    let started = std::time::Instant::now();
+    emitter
+        .activate(b"emitter".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("the emitter must survive the walk: {error:?}"));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(100),
+        "the listener walk returned after only {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_listener_that_emits_a_nested_walk_is_not_charged_as_the_emitter() {
+    let rig = rig();
+    jinnd_wasm::HostClock::register(&rig.broker)
+        .unwrap_or_else(|error| panic!("clock provider: {error:?}"));
+    // Two nested listeners, each delivery well under its own 300 ms bound;
+    // the nested walk sums to ~240 ms.
+    for fiber in [1, 2] {
+        let (peer, seat) = rig.seat(fiber, Duration::from_millis(300));
+        rig.broker.grant(peer, NESTED_TOPIC);
+        rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+        let nested = rig.host.instantiate(&rig.component, seat);
+        nested
+            .activate(b"nested-listener-slow".to_vec())
+            .await
+            .0
+            .unwrap_or_else(|error| panic!("nested listener activation: {error:?}"));
+    }
+    // The middle listener's own bound is SHORTER than the walk it parks on:
+    // card (a) says its clock does not run while it is the emitter.
+    let (peer, seat) = rig.seat(3, Duration::from_millis(150));
+    rig.broker.grant(peer, EVENT_TOPIC);
+    let middle = rig.host.instantiate(&rig.component, seat);
+    middle
+        .activate(b"nested-emitter".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("middle listener activation: {error:?}"));
+
+    let report = rig
+        .topics
+        .emit(
+            9,
+            EVENT_TOPIC,
+            jinnd_api::DispatchMode::Serial,
+            &jinnd_wasm::Selector::All,
+            b"ping".to_vec(),
+            Some(FiberId(9)),
+            &NoRealms,
+        )
+        .await;
+    assert!(
+        report.failures.is_empty(),
+        "the middle listener was charged for the nested walk: {:?}",
+        report.failures
+    );
+    assert_eq!(report.outputs, vec![b"ping".to_vec()]);
+    assert!(
+        middle.deaths().borrow().is_none(),
+        "the middle listener died: {:?}",
+        middle.deaths().borrow()
+    );
+}
+
+#[tokio::test]
+async fn an_unbudgeted_listener_keeps_the_guest_deadline_bound() {
+    let rig = rig();
+    let (peer, seat) = rig.seat(1, Duration::from_millis(80));
+    rig.broker.grant(peer, EVENT_TOPIC);
+    let listener = rig.host.instantiate(&rig.component, seat);
+    listener
+        .activate(b"listener-spin".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("listener activation: {error:?}"));
+    let report = rig
+        .topics
+        .emit(
+            2,
+            EVENT_TOPIC,
+            jinnd_api::DispatchMode::Emit,
+            &jinnd_wasm::Selector::All,
+            Vec::new(),
+            Some(FiberId(2)),
+            &NoRealms,
+        )
+        .await;
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.failures[0].message.contains("deadline"));
+}
+
+#[tokio::test]
+async fn a_queued_delivery_starts_its_listener_horizon_at_selection() {
+    let rig = rig();
+    jinnd_wasm::HostClock::register(&rig.broker)
+        .unwrap_or_else(|error| panic!("clock provider: {error:?}"));
+    let (peer, seat) = rig.seat(1, Duration::from_millis(200));
+    rig.broker.grant(peer, EVENT_TOPIC);
+    rig.broker.grant(peer, jinnd_wasm::CLOCK_CONTRACT);
+    let listener = rig.host.instantiate(&rig.component, seat);
+    listener
+        .activate(b"listener-slow".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("listener activation: {error:?}"));
+
+    let busy = {
+        let listener = listener.clone();
+        tokio::spawn(async move {
+            listener
+                .contract_call(2, COUNTER, "stall", Vec::new())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let started = std::time::Instant::now();
+    let report = rig
+        .topics
+        .emit(
+            2,
+            EVENT_TOPIC,
+            jinnd_api::DispatchMode::Serial,
+            &jinnd_wasm::Selector::All,
+            Vec::new(),
+            Some(FiberId(2)),
+            &NoRealms,
+        )
+        .await;
+    assert!(
+        busy.await
+            .unwrap_or_else(|error| panic!("busy call: {error}"))
+            .is_ok()
+    );
+    assert_eq!(report.failures.len(), 1, "the queued delivery expires");
+    assert!(
+        started.elapsed() < Duration::from_millis(260),
+        "queue delay cannot extend the listener horizon"
+    );
+}
+
+#[tokio::test]
+async fn a_zero_delivery_budget_is_refused_on_record_without_registration() {
+    let rig = rig();
+    let (peer, listener) = rig.spawn(1);
+    rig.broker.grant(peer, EVENT_TOPIC);
+    listener
+        .activate(b"listener-zero".to_vec())
+        .await
+        .0
+        .unwrap_or_else(|error| panic!("the guest expected the refusal: {error:?}"));
+    assert!(rig.ledger.kinds().iter().any(|kind| matches!(
+        kind,
+        LedgerEventKind::ErrorRecorded { error }
+            if error.code == ErrorCode::InvalidProfile && error.fiber == Some(FiberId(1))
+    )));
+    let report = rig
+        .topics
+        .emit(
+            2,
+            EVENT_TOPIC,
+            jinnd_api::DispatchMode::Serial,
+            &jinnd_wasm::Selector::All,
+            Vec::new(),
+            Some(FiberId(2)),
+            &NoRealms,
+        )
+        .await;
+    assert!(report.outputs.is_empty());
+    assert!(report.failures.is_empty());
 }
 
 #[tokio::test]

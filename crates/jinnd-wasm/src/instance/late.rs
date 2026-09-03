@@ -52,8 +52,9 @@ pub(super) async fn refuse_all(rx: &mut mpsc::Receiver<Command>, error: KernelEr
                 let _ = reply.send((Err(error.clone()), ActivationOutcome::default()));
             }
             Command::Check { reply, .. } => drop(reply.send(false)),
-            Command::Undo { reply, .. } | Command::Restore { reply, .. } => {
-                drop(reply.send(Err(error.clone())))
+            Command::Undo { reply, .. } => drop(reply.send(Err(error.clone()))),
+            Command::Restore { reply, .. } => {
+                drop(reply.send((Err(error.clone()), ActivationOutcome::default())))
             }
             Command::HandleCall { reply, .. }
             | Command::Deliver { reply, .. }

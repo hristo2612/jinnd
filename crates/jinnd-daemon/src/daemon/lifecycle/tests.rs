@@ -69,6 +69,7 @@ impl jinnd_wasm::EventTarget for Recorder {
         _token: u64,
         _topic: &str,
         payload: Vec<u8>,
+        _budget: Option<std::num::NonZeroU64>,
     ) -> KernelFuture<'static, Vec<u8>> {
         let wire: serde_json::Value = serde_json::from_slice(&payload)
             .unwrap_or_else(|error| panic!("a delivery is JSON: {error}"));

@@ -9,23 +9,25 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use jinnd_api::FiberId;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
+use jinnd_api::{FiberId, KernelError};
+use tokio::sync::{mpsc, watch};
 use wasmtime::Store;
 
-use crate::bindings::{Plugin, PluginPre};
+use crate::bindings::PluginPre;
 use crate::broker::Broker;
 use crate::handle::{ActivationOutcome, Command, InstanceHandle, gone, pair, peer_face};
 use crate::peer::PeerId;
 use crate::selector::RealmOracle;
-use crate::settle::{Settled, hung, settle, trapped};
+use crate::settle::{DeadlineControl, hung, trapped, within};
 use crate::topics::LocalTopics;
 
+mod guard;
 mod late;
+mod serve;
 
+use late::refuse_all;
 pub(crate) use late::sealed_error;
-use late::{commit_late, refuse_all};
+use serve::serve;
 
 /// How often a guest yields back to the executor, in fuel units.
 const FUEL_YIELD_INTERVAL: u64 = 10_000;
@@ -70,6 +72,7 @@ pub(crate) struct HostState {
     pub(crate) seat: Seat,
     pub(crate) face: Arc<crate::handle::InstancePeer>,
     pub(crate) outcome: ActivationOutcome,
+    pub(crate) horizon: DeadlineControl,
 }
 
 /// Spawns the supervisor for one instance of a world-typechecked component
@@ -80,17 +83,22 @@ pub(crate) fn spawn(
     pre: PluginPre<HostState>,
     seat: Seat,
 ) -> InstanceHandle {
-    let (handle, rx) = pair();
+    let (handle, deaths, aborts, rx) = pair(seat.deadline);
     let face = peer_face(&handle);
-    tokio::spawn(run(engine, pre, seat, face, rx));
+    let horizon = handle.horizon.clone();
+    tokio::spawn(run(engine, pre, seat, face, horizon, deaths, aborts, rx));
     handle
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     engine: wasmtime::Engine,
     pre: PluginPre<HostState>,
     seat: Seat,
     face: Arc<crate::handle::InstancePeer>,
+    horizon: DeadlineControl,
+    deaths: watch::Sender<Option<KernelError>>,
+    aborts: watch::Receiver<Option<KernelError>>,
     mut rx: mpsc::Receiver<Command>,
 ) {
     let deadline = seat.deadline;
@@ -100,6 +108,7 @@ async fn run(
             seat,
             face,
             outcome: ActivationOutcome::default(),
+            horizon: horizon.clone(),
         },
     );
     let fueled = store
@@ -109,7 +118,7 @@ async fn run(
         refuse_all(&mut rx, gone()).await;
         return;
     }
-    let instantiated = timeout(deadline, pre.instantiate_async(&mut store)).await;
+    let instantiated = within(deadline, &horizon, pre.instantiate_async(&mut store)).await;
     let plugin = match instantiated {
         Ok(Ok(plugin)) => plugin,
         Ok(Err(trap)) => {
@@ -121,152 +130,9 @@ async fn run(
             return;
         }
     };
-    serve(&mut store, &plugin, deadline, &mut rx).await;
+    serve(&mut store, &plugin, deadline, &deaths, aborts, &mut rx).await;
     // The store drops here: the instance's memory, tables, and in-flight
     // state vanish together (R7 instant dispose; I1 — exactly its
     // contribution, because everything it contributed lives behind effects
     // the kernel replays separately).
-}
-
-async fn serve(
-    store: &mut Store<HostState>,
-    plugin: &Plugin,
-    deadline: Duration,
-    rx: &mut mpsc::Receiver<Command>,
-) {
-    let guest = plugin.jinn_plugin_lifecycle();
-    let mut sealed = false;
-    while let Some(command) = rx.recv().await {
-        // A sealed instance runs no guest entry (M2-K4): the seat's journal
-        // is closed, so nothing may register into it or escape it. A
-        // CLOSING seat refuses at the door too (M2-K5 #16): the entry that
-        // was already running drained under its deadline; the ones queued
-        // behind it never start.
-        let closing = store
-            .data()
-            .seat
-            .slot
-            .as_ref()
-            .is_some_and(|slot| slot.closing());
-        let shut = sealed || closing;
-        match &command {
-            Command::Activate { reply, .. } if shut => {
-                if let Command::Activate { reply, .. } = command {
-                    let _ = reply.send((Err(sealed_error()), ActivationOutcome::default()));
-                }
-                continue;
-            }
-            Command::HandleCall { .. } | Command::Deliver { .. } if shut => {
-                match command {
-                    Command::HandleCall { reply, .. } | Command::Deliver { reply, .. } => {
-                        let _ = reply.send(Err(sealed_error()));
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-            _ => {}
-        }
-        match command {
-            Command::Shutdown => return,
-            Command::Seal { reply } => {
-                sealed = true;
-                let _ = reply.send(());
-            }
-            Command::Activate { config, reply } => {
-                let settled = settle(deadline, guest.call_activate(&mut *store, &config)).await;
-                let outcome = std::mem::take(&mut store.data_mut().outcome);
-                match settled {
-                    Settled::Ok(()) => drop(reply.send((Ok(()), outcome))),
-                    Settled::Fault(error) => drop(reply.send((Err(error), outcome))),
-                    Settled::Dead(error) => {
-                        let _ = reply.send((Err(error), outcome));
-                        return;
-                    }
-                }
-            }
-            Command::Check { consumer, reply } => {
-                match timeout(deadline, guest.call_check(&mut *store, consumer)).await {
-                    Ok(Ok(vital)) => drop(reply.send(vital)),
-                    // A trapped or hung check is not vital, and ends the
-                    // instance (contained, recorded by the caller).
-                    _ => {
-                        let _ = reply.send(false);
-                        return;
-                    }
-                }
-            }
-            Command::Undo { token, reply } => {
-                match settle(deadline, guest.call_undo(&mut *store, token)).await {
-                    Settled::Ok(()) => drop(reply.send(Ok(()))),
-                    Settled::Fault(error) => drop(reply.send(Err(error))),
-                    Settled::Dead(error) => {
-                        let _ = reply.send(Err(error));
-                        return;
-                    }
-                }
-            }
-            Command::HandleCall {
-                caller,
-                contract,
-                operation,
-                payload,
-                reply,
-            } => {
-                let call =
-                    guest.call_handle_call(&mut *store, caller, &contract, &operation, &payload);
-                let settled = settle(deadline, call).await;
-                commit_late(store);
-                match settled {
-                    Settled::Ok(answer) => drop(reply.send(Ok(answer))),
-                    Settled::Fault(error) => drop(reply.send(Err(error))),
-                    Settled::Dead(error) => {
-                        let _ = reply.send(Err(error));
-                        return;
-                    }
-                }
-            }
-            Command::Deliver {
-                token,
-                topic,
-                payload,
-                reply,
-            } => {
-                let call = guest.call_handle_event(&mut *store, token, &topic, &payload);
-                let settled = settle(deadline, call).await;
-                commit_late(store);
-                match settled {
-                    Settled::Ok(answer) => drop(reply.send(Ok(answer))),
-                    Settled::Fault(error) => drop(reply.send(Err(error))),
-                    Settled::Dead(error) => {
-                        let _ = reply.send(Err(error));
-                        return;
-                    }
-                }
-            }
-            Command::Snapshot { reply } => {
-                match timeout(deadline, guest.call_snapshot(&mut *store)).await {
-                    Ok(Ok(blob)) => drop(reply.send(Ok(blob))),
-                    Ok(Err(trap)) => {
-                        let _ = reply.send(Err(trapped(&trap)));
-                        return;
-                    }
-                    Err(_) => {
-                        let _ = reply.send(Err(hung()));
-                        return;
-                    }
-                }
-            }
-            Command::Restore { blob, reply } => {
-                match settle(deadline, guest.call_restore(&mut *store, &blob)).await {
-                    Settled::Ok(()) => drop(reply.send(Ok(()))),
-                    Settled::Fault(error) => drop(reply.send(Err(error))),
-                    Settled::Dead(error) => {
-                        let _ = reply.send(Err(error));
-                        return;
-                    }
-                }
-            }
-        }
-    }
 }

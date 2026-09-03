@@ -1,14 +1,23 @@
 //! The state a fiber's handle and its supervisor share.
 
-use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 
 use jinnd_api::{EffectDescriptor, FiberId, FiberState, KernelError, Transition};
 use jinnd_effects::ReplayReport;
 use tokio::sync::{Notify, watch};
 
+use crate::body::TransitionObserver;
 use crate::record::FiberRecord;
 use crate::steering::SteeringCell;
+
+struct Observer(Arc<dyn TransitionObserver>);
+
+impl std::fmt::Debug for Observer {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str("TransitionObserver")
+    }
+}
 
 /// The handle-visible half of a fiber.
 ///
@@ -28,11 +37,16 @@ pub(crate) struct Shared {
     pub(crate) settled: watch::Sender<u64>,
     /// Raised for exactly the span of every withdrawal replay (M1-P6b).
     pub(crate) withdrawal: crate::withdrawal::WithdrawalCell,
+    observer: Option<Observer>,
     record: Mutex<FiberRecord>,
 }
 
 impl Shared {
-    pub(crate) fn new(id: FiberId, epoch: Option<jinnd_api::Epoch>) -> Self {
+    pub(crate) fn new(
+        id: FiberId,
+        epoch: Option<jinnd_api::Epoch>,
+        observer: Option<Arc<dyn TransitionObserver>>,
+    ) -> Self {
         Self {
             id,
             steering: SteeringCell::new(epoch),
@@ -41,6 +55,7 @@ impl Shared {
             probe: AtomicU64::new(0),
             settled: watch::Sender::new(0),
             withdrawal: crate::withdrawal::WithdrawalCell::new(),
+            observer: observer.map(Observer),
             record: Mutex::new(FiberRecord::default()),
         }
     }
@@ -54,7 +69,10 @@ impl Shared {
     }
 
     pub(crate) fn transitioned(&self, transition: Transition) {
-        self.with_record(|record| record.transitions.push(transition));
+        self.with_record(|record| record.transitions.push(transition.clone()));
+        if let Some(observer) = &self.observer {
+            observer.0.committed(&transition);
+        }
     }
 
     pub(crate) fn fail(&self, error: KernelError) {
