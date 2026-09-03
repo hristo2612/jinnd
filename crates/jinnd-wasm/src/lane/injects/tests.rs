@@ -81,7 +81,10 @@ fn the_gate_ignores_a_declaration_whose_grant_admission_refuses() {
         scope: Some(ScopeValue::Path("nope".to_owned())),
         ops: None,
     };
-    let gate = Gate::new(&declaration(&["jinn:ledger"]), &[refused.clone()]);
+    let gate = Gate::new(
+        &declaration(&["jinn:ledger"]),
+        std::slice::from_ref(&refused),
+    );
     assert!(gate.gated().is_empty(), "a refused grant gates nothing");
     let gate = Gate::new(&declaration(&["jinn:ledger"]), &[grant("jinn:ledger")]);
     assert_eq!(gate.gated(), ["jinn:ledger"]);
