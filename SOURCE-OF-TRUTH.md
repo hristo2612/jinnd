@@ -263,8 +263,9 @@ within a major version.
   **Two structural blockers, discovered by the M2 port and recorded 2026-09-01 (see
   Decision Log). Both CLOSED 2026-09-02 — kept here as the record of what M3 needed
   and where each was delivered. A THIRD, discovered by the harness UI packet and
-  recorded 2026-09-02, LANDED 2026-09-03 (item 3). A FOURTH, discovered by the
-  harness extension-tier packet and recorded 2026-09-03, is OPEN (item 4).**
+  recorded 2026-09-02, LANDED 2026-09-03 (item 3). A FOURTH and a FIFTH, discovered
+  by the harness extension-tier packet and recorded 2026-09-03, are OPEN (items 4
+  and 5).**
   1. **No outbound anything.** `jinn:net` v0.1 has no `request`, no TLS and no
      non-loopback listen, at every pin so far. Slack, Stripe, Linear, GitHub, the
      vendor engine APIs and every webhook are therefore *structurally impossible* in
@@ -333,14 +334,39 @@ within a major version.
      OWN fiber on the record (`Failed`, its own error row, its kernel registrations
      released), resting there per R9 until a declared input moves (M2-K24 (c)).
      Sequenced first of the two cards from UI-2 round 1, before M2-K26 and M2-K23.
+  5. **A listener's config restart withdraws its listen BEFORE the replacement
+     commits, so a reply-expecting walk inside the window selects nobody and
+     answers the payload UNMODIFIED.** A `ConfigChanged` restart suspends the
+     listener's seat — its `listen` is withdrawn at the start of the window — and
+     the replacement's `listen` lands only when its activation reaches that call;
+     between the two the topic has no registration, M2-K9's `restarting` refusal
+     has no selected listener to key on, and a `before-*` waterfall "succeeds" with
+     the payload untouched: 53 sends unvalidated across one source edit, a
+     1,492 ms window, not one `503` (harness FINDINGS #47, UI-2 proof 5 at pin
+     `a53a352`, with a transcript; Blocker-class for every walk that means
+     "validate before you act"). The Mode-1 swap already commits its listener
+     replacement atomically under one lock (R8); the config restart — Mode 0 — has
+     no commit, so the kernel breaks its own `events.emit` text for the window. A
+     second half, found by the card's reading: M2-K9's oracle answers `stalled`
+     for a replacement whose load is IN FLIGHT. And the sibling authority gap
+     FINDINGS #49: `events.emit` is not covered by the topic's grant while
+     `listen` is (constitution 01 §Grants). **OPEN — carded as M2-K26
+     (`docs/packets/M2-K26.md`, PLA-355):** a listen registration outlives its
+     instance's suspension as a selectable, refusing TOMBSTONE until the
+     replacement commits atomically in the Mode-1 shape (`rebind`), tombstones
+     live exactly as long as the fiber owes a transition (I4), the oracle answers
+     `restarting` for an in-flight load at the one source, and #49 rides with it
+     (`emit` covered by the topic's grant, with the reasons stated on the card).
+     Sequenced after M2-K25 and before M2-K23.
   The M2 port delivered the SHAPES faithfully; the two capabilities that separate a
   faithful shape from a thing that can run a business followed as seven kernel packets
   and two harness packets in the two days after, and the third blocker surfaced the
-  moment a real UI was composed on the result; the fourth surfaced the moment a
-  machine-written extension was composed on top of that UI. M3 planning starts from
-  an instance that can reach out and can refuse a stranger, whose plugins can depend
-  on each other without a coin toss, and waits on one whose walks are bounded by the
-  listener that spends them. §7(b)'s week of duty is still owed (audit 2026-09-04).
+  moment a real UI was composed on the result; the fourth and fifth surfaced the
+  moment a machine-written extension was composed on top of that UI. M3 planning
+  starts from an instance that can reach out and can refuse a stranger, whose plugins
+  can depend on each other without a coin toss, and waits on one whose walks are
+  bounded by the listener that spends them and whose restarts are closed to
+  unvalidated traffic. §7(b)'s week of duty is still owed (audit 2026-09-04).
 - **M4 — Cutover.** Old gateway retired per the cutover rule. jinnOS work (desktop
   session, mobile ROM) begins only after M4 — as bigger profiles, not new projects.
 
@@ -355,6 +381,24 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-09-03** — **A fifth M3 structural blocker is named in §7: a listener's
+  config restart opens a fail-open window to every reply-expecting walk (roadmap
+  amendment, recorded by kernel-dev on the COO's dispatch, PLA-355; COO veto
+  window open).** Found by harness packet UI-2 (PLA-353) at pin `a53a352`, proof
+  5, with a transcript (FINDINGS #47): the listener's `listen` is withdrawn at the
+  restart's suspension and the replacement's lands at the end of its activation,
+  so for the window (1,492 ms measured) a `before-send` waterfall selects nobody
+  and answers the payload unmodified — 53 unvalidated sends, no `503` — while
+  M2-K9's `restarting` never fires because it is keyed on a SELECTED listener. The
+  direction is carded, not decided here: M2-K26 (`docs/packets/M2-K26.md`) keeps
+  the registration as a refusing tombstone until the replacement commits under the
+  Mode-1 `rebind` lock, clears it exactly when the fiber rests (I4), closes M2-K9's
+  in-flight-load `stalled` answer at the one source, and carries FINDINGS #49
+  (`emit` covered by the topic's grant) with reasons stated on the card. §7's item
+  5 records the blocker and points at the card. Sequenced after M2-K25, before
+  M2-K23. Nothing about M2's acceptance changes — §7(a) is met, §7(b) is still
+  owed.
 
 - **2026-09-03** — **A fourth M3 structural blocker is named in §7: a listener's
   delivery spends the emitter's clock, and a dead instance is not a failed fiber
