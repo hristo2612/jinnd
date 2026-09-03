@@ -8,16 +8,17 @@ use std::sync::{Arc, Mutex};
 use jinnd_api::{EntryFault, ErrorCode, GROUP_PACKAGE, KernelError, Profile};
 use jinnd_fiber::Fiber;
 use jinnd_loader::PackageLane;
-use jinnd_wasm::{LaneCore, LoadedComponent, WasmBody, wasm_lane};
+use jinnd_wasm::{LaneCore, LoadedComponent, WasmBody, wasm_lane_declaring};
 
 use crate::daemon::Daemon;
-use crate::seat::seat_config;
+use crate::seat::{seat_config, seat_declaration};
 use crate::support::{SharedFibers, Tracked, error, lock};
 
 /// The daemon's lane over one wasm package (the lifted generic lane, M2-K1):
-/// seats decode from the profile's JSON config, the guest's registrations
-/// land the daemon's Law-2 ledger trail, and every spawned fiber is tracked
-/// for the transition-ledger bridge (R6).
+/// seats and their `injects` declarations (M2-K24) decode from the
+/// profile's JSON config, the guest's registrations land the daemon's
+/// Law-2 ledger trail, and every spawned fiber is tracked for the
+/// transition-ledger bridge (R6).
 fn lane(
     core: Arc<LaneCore>,
     fibers: SharedFibers,
@@ -36,7 +37,14 @@ fn lane(
         );
         fiber
     };
-    wasm_lane::<serde_json::Value, _>(core, component, true, seat_config, track)
+    wasm_lane_declaring::<serde_json::Value, _, _>(
+        core,
+        component,
+        true,
+        seat_config,
+        seat_declaration,
+        track,
+    )
 }
 
 /// The last path segment of a package name keys its artifact file.

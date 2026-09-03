@@ -58,7 +58,7 @@ fn the_world_carries_the_typed_dispatch_refusals() {
     // The ask that replaces discovering a pending transition by stalling,
     // in the SAME vocabulary the refusal uses.
     let introspect = bundle("jinn-introspect").wit().wit();
-    assert_eq!(introspect.package_id(), "jinn:introspect@0.5.0");
+    assert_eq!(introspect.package_id(), "jinn:introspect@0.6.0");
     let composition = introspect.interface("composition");
     assert_eq!(
         composition.enum_cases("unserved"),

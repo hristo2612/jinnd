@@ -9,12 +9,10 @@ mod support;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use jinnd_api::{FiberState, LedgerEventKind, LedgerRecord, Transition};
+use jinnd_api::FiberState;
 use jinnd_daemon::{Daemon, DaemonPaths};
 
-/// The sibling contract the fixture's `provider` mode provides and the
-/// `inject-counter` modes inject at activation.
-pub(crate) const COUNTER: &str = "jinn:test/counter";
+use crate::ledger::{COUNTER, events, loads, provided};
 
 pub(crate) struct Home(pub(crate) PathBuf);
 
@@ -55,6 +53,17 @@ pub(crate) fn provider(id: &str) -> serde_json::Value {
         serde_json::json!([COUNTER]),
         serde_json::json!([]),
         "provider",
+    )
+}
+
+/// The `provider-slow` mode: provision lands, then activation dawdles
+/// ~700 ms before returning — the provided-but-`Loading` window.
+pub(crate) fn slow_provider(id: &str) -> serde_json::Value {
+    entry(
+        id,
+        serde_json::json!([COUNTER, "jinn:clock"]),
+        serde_json::json!([]),
+        "provider-slow",
     )
 }
 
@@ -144,15 +153,6 @@ pub(crate) async fn reload(
     );
 }
 
-/// The ledger after the daemon has committed every landed transition.
-pub(crate) async fn events(daemon: &Daemon) -> Vec<LedgerRecord> {
-    daemon.sync_transitions();
-    daemon
-        .ledger_events()
-        .await
-        .unwrap_or_else(|error| panic!("ledger read: {error:?}"))
-}
-
 pub(crate) fn state(daemon: &Daemon, entry: &str) -> Option<FiberState> {
     daemon
         .entry_fiber(entry)
@@ -195,73 +195,42 @@ pub(crate) async fn until_loaded(daemon: &Daemon, entry: &str, want: usize) {
     }
 }
 
+/// THE witness for (a): polls the provided-but-`Loading` window of a
+/// `provider-slow` entry and, on every observation inside it, requires
+/// that `consumer` has not loaded — provision alone is not readiness.
+/// Returns how many observations fell inside the window; the caller
+/// requires at least one, so the window was actually exercised.
+pub(crate) async fn witness_gate(daemon: &Daemon, provider: &str, consumer: &str) -> usize {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut observed = 0;
+    loop {
+        let records = events(daemon).await;
+        match state(daemon, provider) {
+            Some(FiberState::Active) => return observed,
+            Some(FiberState::Loading) if provided(&records, provider) => {
+                observed += 1;
+                assert!(
+                    matches!(state(daemon, consumer), None | Some(FiberState::Pending)),
+                    "{consumer} waits while {provider} is provided but Loading (rests {:?})",
+                    state(daemon, consumer)
+                );
+                assert_eq!(
+                    loads(&records, consumer),
+                    0,
+                    "{consumer} did not load on provision"
+                );
+            }
+            _ => {}
+        }
+        assert!(Instant::now() < deadline, "{provider} reaches Active");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// A quiet interval for the NEGATIVE claims — that nothing moved.
 pub(crate) async fn settle(daemon: &Daemon) {
     tokio::time::sleep(Duration::from_millis(600)).await;
     daemon.sync_transitions();
-}
-
-/// `entry`'s committed transitions, in ledger order.
-pub(crate) fn transitions<'a>(records: &'a [LedgerRecord], entry: &str) -> Vec<&'a Transition> {
-    records
-        .iter()
-        .filter(|record| record.entry.as_ref().is_some_and(|id| id.0 == entry))
-        .filter_map(|record| match &record.kind {
-            LedgerEventKind::FiberTransition(transition) => Some(transition),
-            _ => None,
-        })
-        .collect()
-}
-
-/// How many times `entry` entered `Loading` — one per activation.
-pub(crate) fn loads(records: &[LedgerRecord], entry: &str) -> usize {
-    transitions(records, entry)
-        .iter()
-        .filter(|transition| transition.to == FiberState::Loading)
-        .count()
-}
-
-/// Whether `entry` ever rested `Failed`.
-pub(crate) fn failed(records: &[LedgerRecord], entry: &str) -> bool {
-    transitions(records, entry)
-        .iter()
-        .any(|transition| transition.to == FiberState::Failed)
-}
-
-/// The ledger sequence of `entry`'s `n`th arrival in `state` (from 1).
-pub(crate) fn arrival(records: &[LedgerRecord], entry: &str, state: FiberState, n: usize) -> u64 {
-    records
-        .iter()
-        .filter(|record| record.entry.as_ref().is_some_and(|id| id.0 == entry))
-        .filter(|record| {
-            matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.to == state)
-        })
-        .nth(n - 1)
-        .map(|record| record.sequence)
-        .unwrap_or_else(|| panic!("{entry} arrived in {state:?} {n} time(s)"))
-}
-
-/// `entry`'s contract-call crossings of `operation` on the counter.
-pub(crate) fn calls(records: &[LedgerRecord], entry: &str, operation: &str) -> usize {
-    records
-        .iter()
-        .filter(|record| record.entry.as_ref().is_some_and(|id| id.0 == entry))
-        .filter(|record| {
-            matches!(&record.kind, LedgerEventKind::ContractCall { contract, operation: op } if contract == COUNTER && op == operation)
-        })
-        .count()
-}
-
-/// `entry`'s recorded errors, as their messages.
-pub(crate) fn errors(records: &[LedgerRecord], entry: &str) -> Vec<String> {
-    records
-        .iter()
-        .filter(|record| record.entry.as_ref().is_some_and(|id| id.0 == entry))
-        .filter_map(|record| match &record.kind {
-            LedgerEventKind::ErrorRecorded { error } => Some(error.message.clone()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// Waits for a file a guest writes once, then reads it as JSON.

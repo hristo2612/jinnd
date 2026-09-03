@@ -4,10 +4,8 @@
 
 use jinnd_api::FiberState;
 
-use crate::harness::{
-    COUNTER, booted, declared, entry, events, failed, home, loads, paths, provider, reload, settle,
-    state, wait_json,
-};
+use crate::harness::{booted, entry, home, paths, reload, settle, state, wait_json};
+use crate::ledger::{COUNTER, events, failed, loads};
 
 const SETTINGS: &str = "jinn:test/settings";
 
@@ -19,22 +17,27 @@ const SETTINGS: &str = "jinn:test/settings";
 async fn mutually_declared_entries_rest_pending_and_say_so() {
     let home = home("mutual");
     let mutual = [
-        // Provides the counter, but injects the settings first.
-        entry(
-            "alpha",
-            serde_json::json!([COUNTER, SETTINGS]),
-            serde_json::json!([SETTINGS]),
-            "provider",
-        ),
         // Provides the settings, but injects the counter first.
         entry(
-            "beta",
+            "alpha",
             serde_json::json!([SETTINGS, COUNTER]),
             serde_json::json!([COUNTER]),
             "settings-provider",
         ),
-        provider("provider"),
-        declared("consumer", "inject-counter"),
+        // Provides the counter, but injects the settings first.
+        entry(
+            "beta",
+            serde_json::json!([COUNTER, SETTINGS]),
+            serde_json::json!([SETTINGS]),
+            "provider",
+        ),
+        // A satisfied declaration beside them: the kernel's own `jinn:fs`.
+        entry(
+            "satisfied",
+            serde_json::json!(["jinn:fs"]),
+            serde_json::json!(["jinn:fs"]),
+            "plain",
+        ),
     ];
     let (paths, hash) = paths(&home, &mutual);
     let data = paths.data.clone();
@@ -50,7 +53,7 @@ async fn mutually_declared_entries_rest_pending_and_say_so() {
         assert_eq!(loads(&records, parked), 0, "{parked} was never attempted");
         assert!(!failed(&records, parked));
     }
-    assert_eq!(state(&daemon, "consumer"), Some(FiberState::Active));
+    assert_eq!(state(&daemon, "satisfied"), Some(FiberState::Active));
     // The viewer arrives AFTER the composition settled, so its one read
     // reports the rest state, not a moment mid-activation.
     let mut with_viewer = mutual.to_vec();
@@ -71,16 +74,16 @@ async fn mutually_declared_entries_rest_pending_and_say_so() {
     };
     let alpha = read("alpha");
     assert_eq!(alpha["state"], "pending");
-    assert_eq!(alpha["injects"], serde_json::json!([SETTINGS]));
-    assert_eq!(alpha["unmet"], serde_json::json!([SETTINGS]));
+    assert_eq!(alpha["injects"], serde_json::json!([COUNTER]));
+    assert_eq!(alpha["unmet"], serde_json::json!([COUNTER]));
     let beta = read("beta");
     assert_eq!(beta["state"], "pending");
-    assert_eq!(beta["injects"], serde_json::json!([COUNTER]));
-    assert_eq!(beta["unmet"], serde_json::json!([COUNTER]));
-    let consumer = read("consumer");
-    assert_eq!(consumer["state"], "active");
-    assert_eq!(consumer["injects"], serde_json::json!([COUNTER]));
-    assert_eq!(consumer["unmet"], serde_json::json!([]));
+    assert_eq!(beta["injects"], serde_json::json!([SETTINGS]));
+    assert_eq!(beta["unmet"], serde_json::json!([SETTINGS]));
+    let satisfied = read("satisfied");
+    assert_eq!(satisfied["state"], "active");
+    assert_eq!(satisfied["injects"], serde_json::json!(["jinn:fs"]));
+    assert_eq!(satisfied["unmet"], serde_json::json!([]));
     let viewer = read("viewer");
     assert_eq!(viewer["injects"], serde_json::json!([]));
     assert_eq!(viewer["unmet"], serde_json::json!([]));

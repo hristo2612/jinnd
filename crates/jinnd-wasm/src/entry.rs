@@ -12,8 +12,9 @@ use jinnd_context::Context;
 use jinnd_fiber::Fiber;
 use jinnd_loader::EntryHandle;
 use jinnd_loader::host::{Rebind, config_of};
+use tokio::sync::watch;
 
-use crate::lane::{LaneCore, WasmBody};
+use crate::lane::{LaneCore, WasmBody, lock};
 
 /// One wasm entry's handle: the fiber, its body, and the lane that holds
 /// the entry's journal.
@@ -23,6 +24,8 @@ pub(crate) struct WasmHandle<C, R> {
     core: Arc<LaneCore>,
     entry: EntryId,
     restate: R,
+    /// Held for the gate's watcher (M2-K24): dropping the handle ends it.
+    _stop: watch::Sender<()>,
     _config: std::marker::PhantomData<fn(C)>,
 }
 
@@ -37,6 +40,7 @@ where
         core: Arc<LaneCore>,
         entry: EntryId,
         restate: R,
+        stop: watch::Sender<()>,
     ) -> Self {
         Self {
             fiber,
@@ -44,7 +48,22 @@ where
             core,
             entry,
             restate,
+            _stop: stop,
             _config: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<C, R> Drop for WasmHandle<C, R> {
+    /// The entry's gate leaves the lane's table with its handle (M2-K24) —
+    /// only its own row: a successor for the same id may already be there.
+    fn drop(&mut self) {
+        let mut gates = lock(&self.core.gates);
+        if gates
+            .get(&self.entry)
+            .is_some_and(|gate| Arc::ptr_eq(gate, &self.body.gate()))
+        {
+            gates.remove(&self.entry);
         }
     }
 }

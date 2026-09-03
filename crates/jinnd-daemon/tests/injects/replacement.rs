@@ -4,9 +4,10 @@
 use jinnd_api::{FiberState, TransitionCause};
 
 use crate::harness::{
-    COUNTER, booted, bystander, calls, declared, entry, events, failed, home, loads, paths,
-    provider, reload, settle, state, transitions, until_loaded, until_state,
+    booted, bystander, declared, entry, home, paths, provider, reload, settle, state, until_loaded,
+    until_state,
 };
+use crate::ledger::{COUNTER, calls, events, failed, loads, transitions};
 
 /// #46: replacing the provider (a config edit that restarts its entry)
 /// reloads the declared consumer EXACTLY once, `Active → Unloading` under

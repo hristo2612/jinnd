@@ -9,6 +9,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use jinnd_api::{ErrorCode, FiberId, KernelError, LedgerEventKind};
+use tokio::sync::watch;
 
 use crate::broker_state::{PeerRecord, Provider, refusal};
 use crate::peer::{HandleId, LedgerSink, Peer, PeerId};
@@ -32,6 +33,10 @@ pub struct Broker {
     /// the guest deadline. Unset, no call ever records or refuses a wait —
     /// the broker stays the pure dispatch point it is for crate tests.
     waits: OnceLock<Arc<WaitGraph>>,
+    /// The provision table's change edge (M2-K24): moved by every provide
+    /// and withdrawal, so a declared consumer's readiness recomputes on
+    /// the store's edge and never polls (§3 "Services", R1).
+    provisions: watch::Sender<u64>,
 }
 
 impl Broker {
@@ -40,7 +45,32 @@ impl Broker {
             state: Mutex::new(State::default()),
             ledger,
             waits: OnceLock::new(),
+            provisions: watch::Sender::new(0),
         }
+    }
+
+    /// The provision table's change edge (M2-K24): resolves `changed()`
+    /// after every provide and withdrawal. A reader recomputes what it
+    /// needs from [`Broker::provider_of`]; the counter carries no meaning
+    /// beyond "something moved".
+    #[must_use]
+    pub fn provisions(&self) -> watch::Receiver<u64> {
+        self.provisions.subscribe()
+    }
+
+    /// Who provides `contract` now — the providing fiber (`None` for a
+    /// kernel-supplied provider, which has no fiber) and the generation a
+    /// handle resolved now would pin — or `None` while nothing does. A
+    /// withdrawn contract is MISSING, never stale (M2-K24).
+    #[must_use]
+    pub fn provider_of(&self, contract: &str) -> Option<(Option<FiberId>, u64)> {
+        let state = self.lock();
+        let provider = state.providers.get(contract)?;
+        Some((state.fiber_of(provider.peer), provider.generation))
+    }
+
+    fn moved(&self) {
+        self.provisions.send_modify(|edge| *edge += 1);
     }
 
     /// Installs the assembly's wait graph (M2-K10). Idempotent.
@@ -156,6 +186,7 @@ impl Broker {
             },
             fiber,
         );
+        self.moved();
         Ok(())
     }
 
@@ -178,6 +209,7 @@ impl Broker {
             },
             fiber,
         );
+        self.moved();
     }
 
     /// Removes a peer entirely: its provisions withdraw and its handles die.

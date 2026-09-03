@@ -1,9 +1,9 @@
-# Contract-bundle metadata for jinn:introspect@0.5.0 (M2-K16; 0.4.0 M2-K13;
-# 0.3.0 M2-K10; 0.2.0 M2-K9; 0.1.0 M2-K7)
+# Contract-bundle metadata for jinn:introspect@0.6.0 (M2-K24; 0.5.0 M2-K16;
+# 0.4.0 M2-K13; 0.3.0 M2-K10; 0.2.0 M2-K9; 0.1.0 M2-K7)
 
 [contract]
 name    = "jinn:introspect"
-version = "0.5.0"
+version = "0.6.0"
 
 # No scope type: a grant is whole-composition read access (a scoped grant
 # refuses fail-closed, M2-K2 law). Attenuation is by grant or no grant.
@@ -42,6 +42,10 @@ relation = "composition-report-modulo-incarnation"
 # `unserved` is state, not identity: two reports differing in it describe
 # DIFFERENT compositions — one owes a transition, the other does not — so
 # it is inside the relation (M2-K9).
+# `injects` (0.6.0) is configuration and `unmet` is state: two reports
+# differing in either describe DIFFERENT compositions — one declares a
+# dependency the other does not, or one is waiting on a provider the other
+# has — so both are inside the relation (M2-K24).
 # `waits` is deliberately OUTSIDE the relation (M2-K10): a live wait is a
 # moment, not a composition, so two reads that differ only in which
 # crossings are in flight describe the same composition. Nothing may be

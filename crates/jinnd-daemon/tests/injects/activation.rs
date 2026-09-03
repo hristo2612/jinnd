@@ -1,24 +1,29 @@
 //! (a), the ratchet, and the contained fault: what a declaration gates,
 //! what its absence leaves exactly as it was, and what a bad one costs.
 
+use std::sync::Arc;
+
 use jinnd_api::FiberState;
+use jinnd_daemon::Daemon;
 
 use crate::harness::{
-    COUNTER, arrival, booted, bystander, calls, declared, entry, errors, events, failed, home,
-    loads, paths, provider, reload, settle, state, undeclared, until_loaded, until_state,
+    booted, bystander, declared, entry, home, paths, provider, reload, settle, slow_provider,
+    state, undeclared, until_loaded, until_state, witness_gate, write_profile,
 };
+use crate::ledger::{COUNTER, calls, errors, events, failed, loads};
 
 /// The consumer-first order, FORCED: the consumer boots ALONE, so no
 /// scheduling luck can put the provider first. It rests `Pending` — no
 /// `Failed`, no crossing, no `missing-dependency` — until the provider
-/// lands by profile edit, and then activates exactly once, after the
-/// provider's own `Active`.
+/// lands by profile edit; while that provider is provided but still
+/// `Loading` it keeps waiting (provision is not readiness, #45 seq 44 vs
+/// 76); then it activates exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declared_consumer_rests_pending_until_its_provider_is_active_consumer_first() {
     let home = home("consumer-first");
     let alone = [declared("consumer", "inject-counter")];
     let (paths, hash) = paths(&home, &alone);
-    let daemon = booted(paths).await;
+    let daemon = Arc::new(booted(paths).await);
     settle(&daemon).await;
     let records = events(&daemon).await;
     assert_eq!(
@@ -37,9 +42,31 @@ async fn a_declared_consumer_rests_pending_until_its_provider_is_active_consumer
         "no crossing met an absent provider"
     );
     assert!(!failed(&records, "consumer"), "never Failed");
-    // The environment moves: the provider lands.
-    let both = [declared("consumer", "inject-counter"), provider("provider")];
-    reload(&daemon, &home, &both, &hash).await;
+    // The environment moves: a slow provider lands. The reload runs beside
+    // the witness so the provided-but-Loading window is observed.
+    let both = [
+        declared("consumer", "inject-counter"),
+        slow_provider("provider"),
+    ];
+    write_profile(&home, &both, &hash);
+    let reloading = tokio::spawn({
+        let daemon = Arc::clone(&daemon);
+        async move { daemon.reload().await }
+    });
+    let observed = witness_gate(&daemon, "provider", "consumer").await;
+    assert!(
+        observed > 0,
+        "the provided-but-Loading window was exercised"
+    );
+    let report = reloading
+        .await
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|error| panic!("reload: {error:?}"));
+    assert!(
+        report.errors.is_empty(),
+        "clean reload: {:?}",
+        report.errors
+    );
     until_state(&daemon, "consumer", FiberState::Active).await;
     let records = events(&daemon).await;
     assert_eq!(
@@ -60,20 +87,16 @@ async fn a_declared_consumer_rests_pending_until_its_provider_is_active_consumer
         errors(&records, "consumer").is_empty(),
         "no error on the consumer's record"
     );
-    assert!(
-        arrival(&records, "consumer", FiberState::Loading, 1)
-            > arrival(&records, "provider", FiberState::Active, 1),
-        "the consumer loaded only after the provider was Active"
-    );
     daemon
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("{error:?}"));
 }
 
-/// Both document orders of ONE boot: whichever the loader spawns first,
-/// the consumer's `Active` row lands after the provider's and nothing
-/// fails. The kernel-supplied `jinn:fs` is declared too: trivially ready.
+/// Both document orders of ONE boot, witnessed DURING the boot: whichever
+/// the loader spawns first, the consumer does not load while the slow
+/// provider is provided but `Loading`, and nothing fails. The
+/// kernel-supplied `jinn:fs` is declared too: trivially ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declared_consumer_activates_after_its_provider_in_either_document_order() {
     for (name, first) in [("provider-first", true), ("consumer-last", false)] {
@@ -85,12 +108,31 @@ async fn a_declared_consumer_activates_after_its_provider_in_either_document_ord
             "inject-counter",
         );
         let entries = if first {
-            [provider("provider"), consumer]
+            [slow_provider("provider"), consumer]
         } else {
-            [consumer, provider("provider")]
+            [consumer, slow_provider("provider")]
         };
         let (paths, _) = paths(&home, &entries);
-        let daemon = booted(paths).await;
+        let daemon =
+            Arc::new(Daemon::open(paths).unwrap_or_else(|error| panic!("open: {error:?}")));
+        let booting = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { daemon.boot().await }
+        });
+        let observed = witness_gate(&daemon, "provider", "consumer").await;
+        assert!(
+            observed > 0,
+            "{name}: the provided-but-Loading window was exercised"
+        );
+        let report = booting
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|error| panic!("boot: {error:?}"));
+        assert!(
+            report.errors.is_empty(),
+            "{name}: clean boot: {:?}",
+            report.errors
+        );
         until_state(&daemon, "consumer", FiberState::Active).await;
         let records = events(&daemon).await;
         assert_eq!(
@@ -103,11 +145,6 @@ async fn a_declared_consumer_activates_after_its_provider_in_either_document_ord
             calls(&records, "consumer", "get"),
             1,
             "{name}: one answered crossing"
-        );
-        assert!(
-            arrival(&records, "consumer", FiberState::Active, 1)
-                > arrival(&records, "provider", FiberState::Active, 1),
-            "{name}: the consumer's Active row lands after the provider's"
         );
         daemon
             .shutdown()

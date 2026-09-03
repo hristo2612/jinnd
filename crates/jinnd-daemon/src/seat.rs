@@ -4,6 +4,10 @@
 
 use jinnd_wasm::{Grant, ScopeValue, SeatSpec};
 
+mod declaration;
+
+pub(crate) use declaration::seat_declaration;
+
 /// Decodes one entry's config document: `grants` are the contracts the
 /// profile side grants the instance, each with its optional scope
 /// (constitution 01: requests are not grants), `data` is the opaque payload

@@ -27,15 +27,19 @@ use crate::grants::{admission, attenuate, authority};
 use crate::handle::Registration;
 use crate::host::LoadedComponent;
 use crate::instance::Seat;
-use crate::peer::PeerId;
 use crate::selector::NoRealms;
 use crate::slot::{SeatState, SharedSlot};
 
+mod closing;
+mod injects;
 mod journal;
 mod spawn;
 mod state;
 
-pub use spawn::wasm_lane;
+use closing::SeatClosing;
+
+pub use injects::Declaration;
+pub use spawn::{wasm_lane, wasm_lane_declaring};
 pub use state::LaneCore;
 pub(crate) use state::{Roster, lock};
 
@@ -52,6 +56,8 @@ pub struct WasmBody {
     entry: EntryId,
     component: Arc<Mutex<LoadedComponent>>,
     seat: Mutex<SeatSpec>,
+    /// The entry's string-lane gate (M2-K24): what it declares it injects.
+    gate: Arc<injects::Gate>,
     at: Mutex<Context<()>>,
     slot: Arc<SharedSlot>,
     /// Law 2: with the trail on, guest effect registrations and withdrawals
@@ -70,6 +76,10 @@ impl WasmBody {
     #[must_use]
     pub fn entry(&self) -> &EntryId {
         &self.entry
+    }
+
+    pub(crate) fn gate(&self) -> Arc<injects::Gate> {
+        Arc::clone(&self.gate)
     }
 }
 
@@ -124,6 +134,20 @@ impl FiberBody for WasmBody {
                 core.broker
                     .grant_with(peer, &grant.contract, authority(grant));
                 attenuate(&core.broker, peer, grant);
+            }
+            // The declaration is judged at this same fail-closed point
+            // (M2-K24; R11, constitution 01): an element that is no
+            // declaration, or a contract declared but not admitted as a
+            // grant, is a per-entry fault ON THE RECORD — the entry loads
+            // nothing, its siblings load normally, nothing widens.
+            let refused = self.gate.admission(&admitted);
+            if let Some(first) = refused.first().cloned() {
+                for error in refused {
+                    core.sink
+                        .append(LedgerEventKind::ErrorRecorded { error }, Some(fiber));
+                }
+                core.broker.remove_peer(peer);
+                return Err(first);
             }
             // The entry's granted `jinn:clock` resolution floor (M2-K2,
             // R9): grants scope alarm resolution per entry — read off the
@@ -257,40 +281,5 @@ impl FiberBody for WasmBody {
             }
             outcome
         })
-    }
-}
-
-/// One seat's closing sequence (M2-K4), shared by its two inverses.
-#[derive(Clone)]
-struct SeatClosing {
-    slot: Arc<SharedSlot>,
-    entry: EntryId,
-    owner: Arc<LaneCore>,
-    slot_id: u64,
-    peer: PeerId,
-}
-
-impl SeatClosing {
-    /// Tombstones the swap slot, then closes the seat in law order (M2-K5
-    /// #16): door shut, the instance's in-flight guest entry DRAINED under
-    /// its deadline, journal sealed — and takes the seat, or `None` when no
-    /// seat was ever installed.
-    async fn close(&self) -> Option<SeatState> {
-        self.owner.swap.dispose(self.slot_id);
-        let instance = self.slot.current();
-        self.slot
-            .close(async move {
-                if let Some(instance) = instance {
-                    instance.seal().await;
-                }
-            })
-            .await;
-        self.slot.take()
-    }
-
-    /// The seat is gone: the peer and the roster row go with it.
-    fn forget(&self) {
-        self.owner.broker.remove_peer(self.peer);
-        lock(&self.owner.roster).remove(&self.entry);
     }
 }

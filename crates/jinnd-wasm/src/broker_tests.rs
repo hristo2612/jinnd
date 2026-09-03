@@ -493,3 +493,52 @@ async fn an_attenuated_grant_refuses_operations_outside_its_class() {
             .is_ok()
     );
 }
+
+/// M2-K24: the provision table has a change EDGE and a provider lookup —
+/// what a declared consumer's gate recomputes on and reads, never polls
+/// (§3, R1). The edge moves on every provide and withdrawal; the lookup
+/// names the providing fiber and the generation a handle would pin.
+#[tokio::test]
+async fn the_provision_edge_moves_on_provide_and_withdraw_and_names_the_provider() {
+    let (broker, _) = fixture();
+    let mut edge = broker.provisions();
+    let before = *edge.borrow_and_update();
+    let provider = broker.register_peer(Some(FiberId(9)));
+    broker.grant(provider, "jinn:echo");
+    assert_eq!(
+        broker.provider_of("jinn:echo"),
+        None,
+        "nothing provided yet"
+    );
+    broker
+        .provide(provider, "jinn:echo", Arc::new(Echo))
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    assert!(
+        edge.has_changed().unwrap_or(false),
+        "provide moves the edge"
+    );
+    assert!(*edge.borrow_and_update() > before);
+    assert_eq!(
+        broker.provider_of("jinn:echo"),
+        Some((Some(FiberId(9)), 1)),
+        "the providing fiber and its generation"
+    );
+    broker.withdraw(provider, "jinn:echo");
+    assert!(
+        edge.has_changed().unwrap_or(false),
+        "withdrawal moves the edge"
+    );
+    assert_eq!(
+        broker.provider_of("jinn:echo"),
+        None,
+        "withdrawn is missing, not stale"
+    );
+    // A kernel-supplied provider has no fiber: the lookup says so, and its
+    // generation is the one it was provided under.
+    let kernel = broker.register_peer(None);
+    broker.grant(kernel, "jinn:echo");
+    broker
+        .provide(kernel, "jinn:echo", Arc::new(Echo))
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    assert_eq!(broker.provider_of("jinn:echo"), Some((None, 2)));
+}

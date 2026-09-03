@@ -84,6 +84,10 @@ impl HostIntrospect {
                         (Some(incarnation), Some(seat))
                     });
                 let seat = seat.unwrap_or_default();
+                // M2-K24 (0.6.0): what the entry declares it injects on
+                // the string lane, and which of those its gate finds
+                // unmet — WHY a `pending` entry has not activated.
+                let (injects, unmet) = self.lane.declaration(&id).unwrap_or_default();
                 // M2-K9: what this entry's live incarnation already owes,
                 // named exactly as a refused dispatch would name it — the
                 // ask that replaces discovering it by stalling.
@@ -102,6 +106,8 @@ impl HostIntrospect {
                     "state": state,
                     "incarnation": incarnation,
                     "unserved": unserved,
+                    "injects": injects,
+                    "unmet": unmet,
                     "provisions": seat.provisions,
                     "registrations": {
                         "listeners": seat.listeners,

@@ -1051,6 +1051,14 @@ impl Guest for Fixture {
             // shape; `inject-counter-bad` fails on its OWN account against
             // a live provider (an operation it does not have), the (c)
             // shape a repaired provider re-arms.
+            // M2-K24: a provider whose provision lands long before its
+            // activation returns — the window in which a gate that read
+            // provision as readiness would let a consumer through.
+            "provider-slow" => {
+                effects::register("fixture effect", 1).map_err(fault)?;
+                services::provide(COUNTER_CONTRACT).map_err(fault)?;
+                dawdle(700)
+            }
             "inject-counter" | "inject-counter-bad" => {
                 let handle = services::resolve(COUNTER_CONTRACT).map_err(fault)?;
                 let operation = if mode == "inject-counter" { "get" } else { "nope" };
