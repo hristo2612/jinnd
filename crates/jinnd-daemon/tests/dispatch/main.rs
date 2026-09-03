@@ -34,15 +34,21 @@ use harness::{booted, entry, events, home, json, paths, wait_for};
 /// its patched config — the refusal never cost the restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
-    // PROBE (scratch): the shape eight times per run, to catch the race.
-    for round in 0..8 {
+    // PROBE (scratch): the shape twenty times per run in concurrent pairs,
+    // to catch the race; the summary is reported through a final panic so
+    // the harness prints it.
+    let mut summary = Vec::new();
+    for pair in 0..10 {
         let started = Instant::now();
-        run_once(&format!("restarting{round}")).await;
-        eprintln!("PROBE round {round} ok in {:?}", started.elapsed());
+        let (left, right) = (format!("restarting{pair}a"), format!("restarting{pair}b"));
+        let (a, b) = tokio::join!(run_once(&left), run_once(&right));
+        summary.push(format!("pair {pair} in {:?}: {a} | {b}", started.elapsed()));
     }
+    panic!("PROBE SUMMARY\n{}", summary.join("\n"));
 }
 
-async fn run_once(name: &str) {
+async fn run_once(name: &str) -> String {
+    let started = Instant::now();
     let home = home(name);
     let paths = paths(
         &home,
@@ -258,4 +264,18 @@ async fn run_once(name: &str) {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+    let rows = events(&daemon).await;
+    let transitions = rows
+        .iter()
+        .filter(|row| format!("{row:?}").contains("FiberTransition"))
+        .count();
+    let errors = rows
+        .iter()
+        .filter(|row| format!("{row:?}").contains("ErrorRecorded"))
+        .count();
+    let log = std::fs::read(paths.data.join("notify.log")).unwrap_or_default();
+    format!(
+        "{name}: {:?}, notify.log={log:?}, transitions={transitions}, errors={errors}",
+        started.elapsed()
+    )
 }
