@@ -4,6 +4,7 @@
 //! shares the registry's listener table and nothing else of its dispatch:
 //! no selector, no mode, no reply, no wait edge, no refusal.
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use jinnd_api::{DispatchMode, LedgerEventKind};
@@ -69,7 +70,13 @@ impl Lane {
     /// Opens a listener's lane on the current runtime. Without one there is
     /// no lane and every offer to it is REFUSED and counted — the kernel
     /// says it could not deliver rather than buffering into a silence.
-    fn open(target: &Arc<dyn EventTarget>, token: u64, topic: &str, sink: Sink) -> Option<Self> {
+    fn open(
+        target: &Arc<dyn EventTarget>,
+        token: u64,
+        topic: &str,
+        budget: Option<NonZeroU64>,
+        sink: Sink,
+    ) -> Option<Self> {
         let runtime = tokio::runtime::Handle::try_current().ok()?;
         let (inbox, mut queue) = tokio::sync::mpsc::channel::<Vec<u8>>(LANE_CAPACITY);
         let target = Arc::clone(target);
@@ -92,9 +99,10 @@ impl Lane {
                 // to refuse (R11, Law 2).
                 let listener = Arc::clone(&target);
                 let subject = topic.clone();
-                let settled =
-                    tokio::spawn(async move { listener.deliver(token, &subject, payload).await })
-                        .await;
+                let settled = tokio::spawn(async move {
+                    listener.deliver(token, &subject, payload, budget).await
+                })
+                .await;
                 if let Some(sink) = &sink {
                     sink.append(
                         LedgerEventKind::DispatchTrace {
@@ -151,12 +159,13 @@ impl LocalTopics {
                 lane,
                 target,
                 token,
+                budget,
                 ..
             } in selected
             {
                 let opened = match lane {
                     Some(lane) => Some(&*lane),
-                    None => Lane::open(target, *token, topic, sink.clone())
+                    None => Lane::open(target, *token, topic, *budget, sink.clone())
                         .map(|fresh| &*lane.insert(fresh)),
                 };
                 match opened {

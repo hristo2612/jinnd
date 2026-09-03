@@ -8,6 +8,7 @@
 //! byte-lane mode rules are declared in `wit/plugin.wit`: a non-empty output
 //! is decisive (bail) and replaces the payload (waterfall).
 
+use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use jinnd_api::{DispatchMode, FiberId, KernelError, KernelFuture, LedgerEventKind};
@@ -26,7 +27,13 @@ pub use restarting::{RestartOracle, Unserved};
 /// One event delivery answered by a listener's host — the transport seam,
 /// like [`crate::broker::Peer`] for contract calls.
 pub trait EventTarget: Send + Sync + 'static {
-    fn deliver(&self, token: u64, topic: &str, payload: Vec<u8>) -> KernelFuture<'static, Vec<u8>>;
+    fn deliver(
+        &self,
+        token: u64,
+        topic: &str,
+        payload: Vec<u8>,
+        budget: Option<NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>>;
 }
 
 struct Listener {
@@ -37,12 +44,20 @@ struct Listener {
     /// The fiber whose incarnation minted this registration (M2-K9): the
     /// identity a reply-expecting walk asks the restart oracle about.
     fiber: Option<FiberId>,
+    budget: Option<NonZeroU64>,
     target: Arc<dyn EventTarget>,
     /// This listener's private delivery lane (M2-K13), opened on its first
     /// kernel publish and dropped with the registration — a withdrawn
     /// listener's lane task ends when its queue closes.
     lane: Option<publish::Lane>,
 }
+
+type Selected = (
+    Option<FiberId>,
+    u64,
+    Option<NonZeroU64>,
+    Arc<dyn EventTarget>,
+);
 
 /// One listener registration for an atomic [`LocalTopics::rebind`].
 pub struct Rebind {
@@ -51,6 +66,7 @@ pub struct Rebind {
     pub token: u64,
     /// The fiber the successor incarnation serves (M2-K9).
     pub fiber: Option<FiberId>,
+    pub budget: Option<NonZeroU64>,
     pub target: Arc<dyn EventTarget>,
 }
 
@@ -141,7 +157,7 @@ impl LocalTopics {
     fn park(
         &self,
         emitter: Option<FiberId>,
-        selected: &[(Option<FiberId>, u64, Arc<dyn EventTarget>)],
+        selected: &[Selected],
         topic: &str,
     ) -> Result<Vec<WaitTicket>, Cycle> {
         let Some(graph) = self.waits.get() else {
@@ -149,7 +165,7 @@ impl LocalTopics {
         };
         selected
             .iter()
-            .map(|(listener, _, _)| graph.enter(emitter, *listener, topic))
+            .map(|(listener, _, _, _)| graph.enter(emitter, *listener, topic))
             .collect()
     }
 
@@ -169,6 +185,21 @@ impl LocalTopics {
         fiber: Option<FiberId>,
         target: Arc<dyn EventTarget>,
     ) -> u64 {
+        self.listen_within(topic, context, token, fiber, None, target)
+    }
+
+    /// Registers a listener with its optional deterministic per-delivery
+    /// fuel bound (M2-K25(b)); the bound is part of the registration and
+    /// therefore follows snapshots and atomic rebinds.
+    pub fn listen_within(
+        &self,
+        topic: &str,
+        context: u64,
+        token: u64,
+        fiber: Option<FiberId>,
+        budget: Option<NonZeroU64>,
+        target: Arc<dyn EventTarget>,
+    ) -> u64 {
         let mut inner = self.lock();
         inner.next += 1;
         let id = inner.next;
@@ -178,6 +209,7 @@ impl LocalTopics {
             context,
             token,
             fiber,
+            budget,
             target,
             lane: None,
         });
@@ -214,6 +246,7 @@ impl LocalTopics {
                     context: registration.context,
                     token: registration.token,
                     fiber: registration.fiber,
+                    budget: registration.budget,
                     target: registration.target,
                     lane: None,
                 });
@@ -225,14 +258,11 @@ impl LocalTopics {
     /// The first selected listener whose incarnation already owes a
     /// transition, in selection order (M2-K9). Answered by the oracle from
     /// kernel-owned state alone; without one, never.
-    fn doomed(
-        &self,
-        selected: &[(Option<FiberId>, u64, Arc<dyn EventTarget>)],
-    ) -> Option<Unserved> {
+    fn doomed(&self, selected: &[Selected]) -> Option<Unserved> {
         let oracle = self.restarts.get()?;
         selected
             .iter()
-            .filter_map(|(fiber, _, _)| *fiber)
+            .filter_map(|(fiber, _, _, _)| *fiber)
             .find_map(|fiber| oracle.unserved(fiber))
     }
 
@@ -254,14 +284,21 @@ impl LocalTopics {
         fiber: Option<FiberId>,
         oracle: &dyn RealmOracle,
     ) -> EmitReport {
-        let selected: Vec<(Option<FiberId>, u64, Arc<dyn EventTarget>)> = {
+        let selected: Vec<Selected> = {
             let inner = self.lock();
             inner
                 .listeners
                 .iter()
                 .filter(|listener| listener.topic == topic)
                 .filter(|listener| selects(selector, oracle, emitter, listener.context))
-                .map(|listener| (listener.fiber, listener.token, Arc::clone(&listener.target)))
+                .map(|listener| {
+                    (
+                        listener.fiber,
+                        listener.token,
+                        listener.budget,
+                        Arc::clone(&listener.target),
+                    )
+                })
                 .collect()
         };
         // A walk that would close a wait cycle is refused FIRST (M2-K10):
@@ -316,8 +353,8 @@ impl LocalTopics {
         let mut report = EmitReport::default();
         match mode {
             DispatchMode::Emit | DispatchMode::Parallel | DispatchMode::Serial => {
-                for (_, token, target) in selected {
-                    match target.deliver(token, topic, payload.clone()).await {
+                for (_, token, budget, target) in selected {
+                    match target.deliver(token, topic, payload.clone(), budget).await {
                         Ok(output) => report.outputs.push(output),
                         Err(failure) => report.failures.push(failure),
                     }
@@ -327,8 +364,8 @@ impl LocalTopics {
                 }
             }
             DispatchMode::Bail => {
-                for (_, token, target) in selected {
-                    match target.deliver(token, topic, payload.clone()).await {
+                for (_, token, budget, target) in selected {
+                    match target.deliver(token, topic, payload.clone(), budget).await {
                         Ok(output) if !output.is_empty() => {
                             report.outputs.push(output);
                             break;
@@ -340,8 +377,8 @@ impl LocalTopics {
             }
             DispatchMode::Waterfall => {
                 let mut current = payload;
-                for (_, token, target) in selected {
-                    match target.deliver(token, topic, current.clone()).await {
+                for (_, token, budget, target) in selected {
+                    match target.deliver(token, topic, current.clone(), budget).await {
                         Ok(output) if !output.is_empty() => current = output,
                         Ok(_) => {}
                         Err(failure) => report.failures.push(failure),

@@ -19,6 +19,7 @@ use crate::broker::Broker;
 use crate::handle::{ActivationOutcome, InstanceHandle, Registration, peer_face};
 use crate::peer::{LedgerSink, Peer, PeerId};
 use crate::topics::{EventTarget, LocalTopics, Rebind};
+use jinnd_fiber::FaultSink;
 
 mod gate;
 mod peer_face;
@@ -184,6 +185,22 @@ impl SharedSlot {
         self.lock().as_ref().map(|seat| seat.instance.clone())
     }
 
+    /// Reports a retained death only if `instance` is still this slot's
+    /// committed seat. The identity check and fault write linearize with
+    /// Mode-1 install under this brief kernel lock (R1, M2-K25(c)).
+    pub(crate) fn fault_if_current(
+        &self,
+        instance: &InstanceHandle,
+        faults: &FaultSink,
+        error: KernelError,
+    ) -> bool {
+        let current = self.lock();
+        current
+            .as_ref()
+            .is_some_and(|seat| seat.instance.same_instance(instance))
+            && faults.fault(error)
+    }
+
     /// The live seat's broker provisions, listener ids, and alarm ids.
     pub fn registrations(&self) -> (Vec<String>, Vec<u64>, Vec<u64>) {
         match self.lock().as_ref() {
@@ -230,6 +247,7 @@ pub fn commit_staged(
             context,
             token: record.token,
             fiber,
+            budget: record.budget,
             target: Arc::clone(&face) as Arc<dyn EventTarget>,
         })
         .collect();

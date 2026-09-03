@@ -2,10 +2,11 @@
 //! [`EventTarget`], plus the channel `pair` constructor. Split from
 //! `handle.rs` by responsibility (R10 file hygiene).
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use jinnd_api::KernelFuture;
-use tokio::sync::{mpsc, oneshot};
+use jinnd_api::{KernelError, KernelFuture};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::peer::{Peer, PeerId};
 use crate::topics::EventTarget;
@@ -58,7 +59,13 @@ impl Peer for InstancePeer {
 }
 
 impl EventTarget for InstancePeer {
-    fn deliver(&self, token: u64, topic: &str, payload: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        token: u64,
+        topic: &str,
+        payload: Vec<u8>,
+        budget: Option<NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         let handle = self.handle.clone();
         let topic = topic.to_owned();
         Box::pin(async move {
@@ -69,6 +76,7 @@ impl EventTarget for InstancePeer {
                         token,
                         topic,
                         payload,
+                        budget,
                         reply,
                     },
                     rx,
@@ -78,9 +86,14 @@ impl EventTarget for InstancePeer {
     }
 }
 
-pub(crate) fn pair() -> (InstanceHandle, mpsc::Receiver<Command>) {
+pub(crate) fn pair() -> (
+    InstanceHandle,
+    watch::Sender<Option<KernelError>>,
+    mpsc::Receiver<Command>,
+) {
     let (tx, rx) = mpsc::channel(16);
-    (InstanceHandle { tx }, rx)
+    let (death_tx, deaths) = watch::channel(None);
+    (InstanceHandle { tx, deaths }, death_tx, rx)
 }
 
 /// The instance's own transport face, handed to the broker on `provide` and

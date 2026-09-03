@@ -1077,6 +1077,32 @@ impl Guest for Fixture {
                 jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
                 Ok(())
             }
+            "listener-slow" | "listener-spin" => {
+                jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
+                Ok(())
+            }
+            "listener-budget" => {
+                jinn::plugin::events::listen_within(
+                    TOPIC,
+                    7,
+                    jinn::plugin::types::DeliveryBudget { fuel: 10_000 },
+                )
+                .map_err(fault)?;
+                Ok(())
+            }
+            "listener-zero" => match jinn::plugin::events::listen_within(
+                TOPIC,
+                7,
+                jinn::plugin::types::DeliveryBudget { fuel: 0 },
+            ) {
+                Err(jinn::plugin::types::KernelError::Invalid(_)) => Ok(()),
+                Err(error) => Err(GuestFault::Failed(format!(
+                    "zero budget returned the wrong refusal: {error:?}"
+                ))),
+                Ok(_) => Err(GuestFault::Failed(
+                    "a zero delivery budget was accepted".into(),
+                )),
+            },
             "eavesdrop" => match jinn::plugin::events::listen(TOPIC, 7) {
                 Err(_) => Ok(()),
                 Ok(_) => Err(GuestFault::Failed(
@@ -1274,6 +1300,16 @@ impl Guest for Fixture {
         // written down verbatim, followed by what the ledger had ALREADY
         // committed when the delivery landed — the in-handler half of the
         // ordering proof (a delivery may never precede its ledger row).
+        if topic == TOPIC {
+            match MODE.lock().unwrap().as_str() {
+                "listener-slow" => dawdle(120)?,
+                "listener-spin" | "listener-budget" => loop {
+                    std::hint::black_box(());
+                },
+                _ => {}
+            }
+            return Ok(payload);
+        }
         if topic == TRANSITIONS_TOPIC {
             if token != LIFECYCLE_TOKEN {
                 return Err(GuestFault::Failed(

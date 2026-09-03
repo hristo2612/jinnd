@@ -28,6 +28,7 @@ Recorded event families:
    are excluded from the originating subscription's feed — recursion is prevented
    without creating an off-ledger channel.
 3. **Lifecycle** — fiber state transitions, epoch changes, loads/unloads, failures.
+   A kernel-ended instance death is recorded under the fiber that died before cleanup begins.
 4. **Composition** — profile edits, reconciles, write-backs, grants and revocations,
    plugin installs/updates with their signature envelopes (05).
 5. **Reverts** — intent, per-inverse completion, and outcome events (03); reverting

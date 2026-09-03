@@ -42,7 +42,13 @@ impl RecordingSink {
 struct ChannelTarget(mpsc::UnboundedSender<(u64, String, Vec<u8>)>);
 
 impl EventTarget for ChannelTarget {
-    fn deliver(&self, token: u64, topic: &str, payload: Vec<u8>) -> KernelFuture<'static, Vec<u8>> {
+    fn deliver(
+        &self,
+        token: u64,
+        topic: &str,
+        payload: Vec<u8>,
+        _: Option<std::num::NonZeroU64>,
+    ) -> KernelFuture<'static, Vec<u8>> {
         let _ = self.0.send((token, topic.to_owned(), payload));
         Box::pin(async { Ok(Vec::new()) })
     }

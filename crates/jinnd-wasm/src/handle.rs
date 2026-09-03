@@ -6,6 +6,7 @@
 //! other, which is what keeps the broker transport-agnostic.
 
 use jinnd_api::KernelError;
+use std::num::NonZeroU64;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::peer::PeerId;
@@ -112,6 +113,7 @@ pub struct ListenRecord {
     pub topic: String,
     pub token: u64,
     pub id: Option<u64>,
+    pub budget: Option<NonZeroU64>,
 }
 
 /// One guest alarm request (M2-K2). A live activation carries the alarm
@@ -134,9 +136,21 @@ pub struct AlarmRecord {
 #[derive(Clone)]
 pub struct InstanceHandle {
     pub(crate) tx: mpsc::Sender<Command>,
+    pub(crate) deaths: tokio::sync::watch::Receiver<Option<KernelError>>,
 }
 
 impl InstanceHandle {
+    /// Watches the retained terminal error when this live instance dies
+    /// after activation (M2-K25). The lane uses it to fault the owning
+    /// fiber without polling.
+    pub fn deaths(&self) -> tokio::sync::watch::Receiver<Option<KernelError>> {
+        self.deaths.clone()
+    }
+
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        self.tx.same_channel(&other.tx)
+    }
+
     async fn send<T>(&self, command: Command, rx: oneshot::Receiver<T>) -> Result<T, KernelError> {
         self.tx.send(command).await.map_err(|_| gone())?;
         rx.await.map_err(|_| gone())
@@ -198,12 +212,23 @@ impl InstanceHandle {
         topic: &str,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, KernelError> {
+        self.deliver_within(token, topic, payload, None).await
+    }
+
+    pub(crate) async fn deliver_within(
+        &self,
+        token: u64,
+        topic: &str,
+        payload: Vec<u8>,
+        budget: Option<NonZeroU64>,
+    ) -> Result<Vec<u8>, KernelError> {
         let (reply, rx) = oneshot::channel();
         self.send(
             Command::Deliver {
                 token,
                 topic: topic.to_owned(),
                 payload,
+                budget,
                 reply,
             },
             rx,

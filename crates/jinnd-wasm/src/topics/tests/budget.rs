@@ -33,7 +33,7 @@ async fn each_delivery_carries_its_registration_fuel_budget() {
     let topics = LocalTopics::default();
     let probe = Arc::new(BudgetProbe::default());
     let budget = NonZeroU64::new(12_345);
-    topics.listen("t", 1, 7, None, budget, probe.clone());
+    topics.listen_within("t", 1, 7, None, budget, probe.clone());
 
     topics
         .emit(

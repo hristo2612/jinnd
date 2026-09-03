@@ -3,6 +3,7 @@
 //! from `handle.rs` by responsibility (R10 file hygiene).
 
 use jinnd_api::{ErrorCode, KernelError};
+use std::num::NonZeroU64;
 use tokio::sync::oneshot;
 
 use crate::peer::PeerId;
@@ -33,6 +34,7 @@ pub(crate) enum Command {
         token: u64,
         topic: String,
         payload: Vec<u8>,
+        budget: Option<NonZeroU64>,
         reply: oneshot::Sender<Result<Vec<u8>, KernelError>>,
     },
     Snapshot {

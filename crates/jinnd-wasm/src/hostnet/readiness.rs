@@ -78,11 +78,12 @@ pub(super) async fn run(
         }
         wake.delivering.store(true, Ordering::SeqCst);
         let delivered = target
-            .deliver(handle, READABLE_TOPIC, handle.to_le_bytes().to_vec())
+            .deliver(handle, READABLE_TOPIC, handle.to_le_bytes().to_vec(), None)
             .await;
         wake.delivering.store(false, Ordering::SeqCst);
         if let Err(error) = delivered
             && provider.wakes.alive(handle)
+            && error.fiber.is_none()
         {
             // Still live: a real contained wake-handler failure, never the
             // benign race with a release that just took the row (R6, R11).

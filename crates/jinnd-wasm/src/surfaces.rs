@@ -2,6 +2,7 @@
 //! effect registration, broker provide/resolve/call, and the event port —
 //! every crossing lands at the broker/topics seams (Law 2, R6; C3/C4).
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use crate::bindings;
@@ -59,6 +60,56 @@ impl HostState {
             self.seat.fiber,
         );
         Err(error)
+    }
+
+    fn register_listener(
+        &mut self,
+        topic: String,
+        token: u64,
+        budget: Option<NonZeroU64>,
+    ) -> Result<u64, jinnd_api::KernelError> {
+        self.admit("listen")?;
+        self.seat
+            .broker
+            .check_grant(self.seat.peer, crate::topics::grant_for(&topic))?;
+        let id = if self.seat.staging {
+            None
+        } else {
+            Some(self.seat.topics.listen_within(
+                &topic,
+                self.seat.context,
+                token,
+                self.seat.fiber,
+                budget,
+                self.face.clone() as Arc<dyn crate::topics::EventTarget>,
+            ))
+        };
+        self.outcome
+            .registrations
+            .push(crate::handle::Registration::Listen(
+                crate::handle::ListenRecord {
+                    topic,
+                    token,
+                    id,
+                    budget,
+                },
+            ));
+        Ok(id.unwrap_or(0))
+    }
+
+    fn invalid_budget(&self) -> jinnd_api::KernelError {
+        let error = jinnd_api::KernelError {
+            code: jinnd_api::ErrorCode::InvalidProfile,
+            message: "delivery fuel budget must be non-zero".to_owned(),
+            fiber: self.seat.fiber,
+        };
+        self.seat.broker.ledger().append(
+            jinnd_api::LedgerEventKind::ErrorRecorded {
+                error: error.clone(),
+            },
+            self.seat.fiber,
+        );
+        error
     }
 }
 
@@ -145,6 +196,7 @@ impl bindings::events::Host for HostState {
         // whole publish path exists to end. The refusal is a ledger event
         // like every other authority refusal (Law 1, Law 2).
         self.reserve(&topic).map_err(bindings::wire_error)?;
+        let parked = self.horizon.park();
         let report = self
             .seat
             .topics
@@ -158,6 +210,7 @@ impl bindings::events::Host for HostState {
                 self.seat.oracle.as_ref(),
             )
             .await;
+        drop(parked);
         // The reply-expecting refusal (M2-K9): the walk never dispatched,
         // so the guest is told so — typed, naming the target and its own
         // next move — instead of waiting on an incarnation the kernel is
@@ -179,49 +232,20 @@ impl bindings::events::Host for HostState {
         topic: String,
         token: u64,
     ) -> Result<u64, bindings::types::KernelError> {
-        self.admit("listen").map_err(bindings::wire_error)?;
-        // Subscriptions are covered by the contract grant in v0.1
-        // (constitution 01 §Grants): listening on a topic requires the grant
-        // of the topic's name, and the refusal is a ledger event (Law 1).
-        // A kernel-reserved topic belongs to the contract whose authority
-        // bounds its payload, and is gated by THAT grant (M2-K13) — the
-        // same check, on the name the contract is granted under.
-        self.seat
-            .broker
-            .check_grant(self.seat.peer, crate::topics::grant_for(&topic))
+        self.register_listener(topic, token, None)
+            .map_err(bindings::wire_error)
+    }
+
+    async fn listen_within(
+        &mut self,
+        topic: String,
+        token: u64,
+        budget: bindings::types::DeliveryBudget,
+    ) -> Result<u64, bindings::types::KernelError> {
+        let budget = NonZeroU64::new(budget.fuel)
+            .ok_or_else(|| self.invalid_budget())
             .map_err(bindings::wire_error)?;
-        if self.seat.staging {
-            // Recorded, not routed (R8): the registration is committed at
-            // swap commit, against the new instance's own delivery face.
-            self.outcome
-                .registrations
-                .push(crate::handle::Registration::Listen(
-                    crate::handle::ListenRecord {
-                        topic,
-                        token,
-                        id: None,
-                    },
-                ));
-            return Ok(0);
-        }
-        // The delivery target is THIS instance's own face: a token pairs
-        // with the instance that minted it, never rebound through a slot.
-        let id = self.seat.topics.listen(
-            &topic,
-            self.seat.context,
-            token,
-            self.seat.fiber,
-            self.face.clone() as Arc<dyn crate::topics::EventTarget>,
-        );
-        self.outcome
-            .registrations
-            .push(crate::handle::Registration::Listen(
-                crate::handle::ListenRecord {
-                    topic,
-                    token,
-                    id: Some(id),
-                },
-            ));
-        Ok(id)
+        self.register_listener(topic, token, Some(budget))
+            .map_err(bindings::wire_error)
     }
 }

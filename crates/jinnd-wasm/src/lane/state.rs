@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jinnd_api::{EntryId, FiberId, FiberState, KernelError};
+use jinnd_fiber::FaultSink;
 use tokio::sync::watch;
 
 use super::injects::Gate;
@@ -37,6 +38,7 @@ pub(crate) struct Roster {
     pub(crate) clock_floor_ms: u64,
     pub(crate) config: Vec<u8>,
     pub(crate) component: Arc<Mutex<LoadedComponent>>,
+    pub(crate) faults: FaultSink,
 }
 
 /// Host-held wasm-lane state: ONE broker, one topic registry, one host, one
@@ -122,6 +124,28 @@ impl LaneCore {
             }
             lock(&lane.states).remove(&fiber);
             lane.transitions.send_modify(|edge| *edge += 1);
+        });
+    }
+
+    /// Watches one committed instance's retained death notice. A staged
+    /// instance is armed only after Mode-1 commit; slot identity makes a
+    /// displaced instance's late notice stale rather than fatal to its
+    /// successor (M2-K25(c), R11).
+    pub(crate) fn track_death(
+        self: &Arc<Self>,
+        slot: Arc<SharedSlot>,
+        instance: crate::InstanceHandle,
+        faults: FaultSink,
+    ) {
+        let mut deaths = instance.deaths();
+        tokio::spawn(async move {
+            if deaths.borrow().is_none() && deaths.changed().await.is_err() {
+                return;
+            }
+            let error = deaths.borrow().clone();
+            if let Some(error) = error {
+                slot.fault_if_current(&instance, &faults, error);
+            }
         });
     }
 

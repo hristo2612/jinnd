@@ -9,9 +9,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use jinnd_api::FiberId;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
+use jinnd_api::{FiberId, KernelError, LedgerEventKind};
+use tokio::sync::{mpsc, watch};
 use wasmtime::Store;
 
 use crate::bindings::{Plugin, PluginPre};
@@ -19,7 +18,7 @@ use crate::broker::Broker;
 use crate::handle::{ActivationOutcome, Command, InstanceHandle, gone, pair, peer_face};
 use crate::peer::PeerId;
 use crate::selector::RealmOracle;
-use crate::settle::{Settled, hung, settle, trapped};
+use crate::settle::{DeadlineControl, Settled, hung, settle, settle_delivery, trapped, within};
 use crate::topics::LocalTopics;
 
 mod late;
@@ -70,6 +69,7 @@ pub(crate) struct HostState {
     pub(crate) seat: Seat,
     pub(crate) face: Arc<crate::handle::InstancePeer>,
     pub(crate) outcome: ActivationOutcome,
+    pub(crate) horizon: DeadlineControl,
 }
 
 /// Spawns the supervisor for one instance of a world-typechecked component
@@ -80,9 +80,9 @@ pub(crate) fn spawn(
     pre: PluginPre<HostState>,
     seat: Seat,
 ) -> InstanceHandle {
-    let (handle, rx) = pair();
+    let (handle, deaths, rx) = pair();
     let face = peer_face(&handle);
-    tokio::spawn(run(engine, pre, seat, face, rx));
+    tokio::spawn(run(engine, pre, seat, face, deaths, rx));
     handle
 }
 
@@ -91,15 +91,18 @@ async fn run(
     pre: PluginPre<HostState>,
     seat: Seat,
     face: Arc<crate::handle::InstancePeer>,
+    deaths: watch::Sender<Option<KernelError>>,
     mut rx: mpsc::Receiver<Command>,
 ) {
     let deadline = seat.deadline;
+    let horizon = DeadlineControl::new();
     let mut store = Store::new(
         &engine,
         HostState {
             seat,
             face,
             outcome: ActivationOutcome::default(),
+            horizon: horizon.clone(),
         },
     );
     let fueled = store
@@ -109,7 +112,7 @@ async fn run(
         refuse_all(&mut rx, gone()).await;
         return;
     }
-    let instantiated = timeout(deadline, pre.instantiate_async(&mut store)).await;
+    let instantiated = within(deadline, &horizon, pre.instantiate_async(&mut store)).await;
     let plugin = match instantiated {
         Ok(Ok(plugin)) => plugin,
         Ok(Err(trap)) => {
@@ -121,7 +124,7 @@ async fn run(
             return;
         }
     };
-    serve(&mut store, &plugin, deadline, &mut rx).await;
+    serve(&mut store, &plugin, deadline, &deaths, &mut rx).await;
     // The store drops here: the instance's memory, tables, and in-flight
     // state vanish together (R7 instant dispose; I1 — exactly its
     // contribution, because everything it contributed lives behind effects
@@ -132,10 +135,12 @@ async fn serve(
     store: &mut Store<HostState>,
     plugin: &Plugin,
     deadline: Duration,
+    deaths: &watch::Sender<Option<KernelError>>,
     rx: &mut mpsc::Receiver<Command>,
 ) {
     let guest = plugin.jinn_plugin_lifecycle();
     let mut sealed = false;
+    let mut active = false;
     while let Some(command) = rx.recv().await {
         // A sealed instance runs no guest entry (M2-K4): the seat's journal
         // is closed, so nothing may register into it or escape it. A
@@ -174,10 +179,19 @@ async fn serve(
                 let _ = reply.send(());
             }
             Command::Activate { config, reply } => {
-                let settled = settle(deadline, guest.call_activate(&mut *store, &config)).await;
+                let horizon = store.data().horizon.clone();
+                let settled = settle(
+                    deadline,
+                    &horizon,
+                    guest.call_activate(&mut *store, &config),
+                )
+                .await;
                 let outcome = std::mem::take(&mut store.data_mut().outcome);
                 match settled {
-                    Settled::Ok(()) => drop(reply.send((Ok(()), outcome))),
+                    Settled::Ok(()) => {
+                        active = true;
+                        drop(reply.send((Ok(()), outcome)));
+                    }
                     Settled::Fault(error) => drop(reply.send((Err(error), outcome))),
                     Settled::Dead(error) => {
                         let _ = reply.send((Err(error), outcome));
@@ -186,21 +200,32 @@ async fn serve(
                 }
             }
             Command::Check { consumer, reply } => {
-                match timeout(deadline, guest.call_check(&mut *store, consumer)).await {
+                let horizon = store.data().horizon.clone();
+                match within(deadline, &horizon, guest.call_check(&mut *store, consumer)).await {
                     Ok(Ok(vital)) => drop(reply.send(vital)),
-                    // A trapped or hung check is not vital, and ends the
-                    // instance (contained, recorded by the caller).
-                    _ => {
+                    Ok(Err(trap)) => {
+                        commit_late(store);
+                        die(store, deaths, active, trapped(&trap));
+                        let _ = reply.send(false);
+                        return;
+                    }
+                    Err(_) => {
+                        commit_late(store);
+                        die(store, deaths, active, hung());
                         let _ = reply.send(false);
                         return;
                     }
                 }
             }
             Command::Undo { token, reply } => {
-                match settle(deadline, guest.call_undo(&mut *store, token)).await {
+                let horizon = store.data().horizon.clone();
+                let settled = settle(deadline, &horizon, guest.call_undo(&mut *store, token)).await;
+                commit_late(store);
+                match settled {
                     Settled::Ok(()) => drop(reply.send(Ok(()))),
                     Settled::Fault(error) => drop(reply.send(Err(error))),
                     Settled::Dead(error) => {
+                        let error = die(store, deaths, active, error);
                         let _ = reply.send(Err(error));
                         return;
                     }
@@ -213,14 +238,16 @@ async fn serve(
                 payload,
                 reply,
             } => {
+                let horizon = store.data().horizon.clone();
                 let call =
                     guest.call_handle_call(&mut *store, caller, &contract, &operation, &payload);
-                let settled = settle(deadline, call).await;
+                let settled = settle(deadline, &horizon, call).await;
                 commit_late(store);
                 match settled {
                     Settled::Ok(answer) => drop(reply.send(Ok(answer))),
                     Settled::Fault(error) => drop(reply.send(Err(error))),
                     Settled::Dead(error) => {
+                        let error = die(store, deaths, active, error);
                         let _ = reply.send(Err(error));
                         return;
                     }
@@ -230,38 +257,55 @@ async fn serve(
                 token,
                 topic,
                 payload,
+                budget,
                 reply,
             } => {
+                let horizon = store.data().horizon.clone();
+                if let Some(budget) = budget {
+                    let _ = store.set_fuel(budget.get());
+                }
                 let call = guest.call_handle_event(&mut *store, token, &topic, &payload);
-                let settled = settle(deadline, call).await;
+                let settled = settle_delivery(deadline, &horizon, budget.is_some(), call).await;
+                let _ = store.set_fuel(u64::MAX);
                 commit_late(store);
                 match settled {
                     Settled::Ok(answer) => drop(reply.send(Ok(answer))),
                     Settled::Fault(error) => drop(reply.send(Err(error))),
                     Settled::Dead(error) => {
+                        let error = die(store, deaths, active, error);
                         let _ = reply.send(Err(error));
                         return;
                     }
                 }
             }
             Command::Snapshot { reply } => {
-                match timeout(deadline, guest.call_snapshot(&mut *store)).await {
+                let horizon = store.data().horizon.clone();
+                match within(deadline, &horizon, guest.call_snapshot(&mut *store)).await {
                     Ok(Ok(blob)) => drop(reply.send(Ok(blob))),
                     Ok(Err(trap)) => {
-                        let _ = reply.send(Err(trapped(&trap)));
+                        commit_late(store);
+                        let error = die(store, deaths, active, trapped(&trap));
+                        let _ = reply.send(Err(error));
                         return;
                     }
                     Err(_) => {
-                        let _ = reply.send(Err(hung()));
+                        commit_late(store);
+                        let error = die(store, deaths, active, hung());
+                        let _ = reply.send(Err(error));
                         return;
                     }
                 }
             }
             Command::Restore { blob, reply } => {
-                match settle(deadline, guest.call_restore(&mut *store, &blob)).await {
+                let horizon = store.data().horizon.clone();
+                let settled =
+                    settle(deadline, &horizon, guest.call_restore(&mut *store, &blob)).await;
+                commit_late(store);
+                match settled {
                     Settled::Ok(()) => drop(reply.send(Ok(()))),
                     Settled::Fault(error) => drop(reply.send(Err(error))),
                     Settled::Dead(error) => {
+                        let error = die(store, deaths, active, error);
                         let _ = reply.send(Err(error));
                         return;
                     }
@@ -269,4 +313,24 @@ async fn serve(
             }
         }
     }
+}
+
+fn die(
+    store: &Store<HostState>,
+    deaths: &watch::Sender<Option<KernelError>>,
+    active: bool,
+    mut error: KernelError,
+) -> KernelError {
+    if !active {
+        return error;
+    }
+    error.fiber = store.data().seat.fiber;
+    store.data().seat.broker.ledger().append(
+        LedgerEventKind::ErrorRecorded {
+            error: error.clone(),
+        },
+        store.data().seat.fiber,
+    );
+    deaths.send_replace(Some(error.clone()));
+    error
 }
