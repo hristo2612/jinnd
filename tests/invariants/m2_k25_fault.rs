@@ -4,6 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use jinnd_api::{ErrorCode, FiberState, KernelError, KernelFuture, TransitionCause};
+use jinnd_effects::Disposer;
 use jinnd_fiber::{FaultSink, Fiber, FiberBody, ReadinessSource, Setup};
 use tokio::sync::Notify;
 
@@ -28,13 +29,11 @@ impl FiberBody for Faultable {
             *sink.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(setup.faults());
             setup.effect(
                 "gated seat",
-                Box::new(move || {
-                    Box::pin(async move {
-                        gate.entered.notify_one();
-                        gate.release.notified().await;
-                        *undos.lock().unwrap_or_else(|poison| poison.into_inner()) += 1;
-                        Ok(())
-                    })
+                Disposer::future(move || async move {
+                    gate.entered.notify_one();
+                    gate.release.notified().await;
+                    *undos.lock().unwrap_or_else(|poison| poison.into_inner()) += 1;
+                    Ok(())
                 }),
             )?;
             Ok(())

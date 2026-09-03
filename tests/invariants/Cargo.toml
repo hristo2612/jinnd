@@ -14,6 +14,7 @@ workspace = true
 jinnd-adapter = { path = "../../crates/jinnd-adapter" }
 jinnd-api = { path = "../../crates/jinnd-api" }
 jinnd-daemon = { path = "../../crates/jinnd-daemon" }
+jinnd-effects = { path = "../../crates/jinnd-effects" }
 jinnd-fiber = { path = "../../crates/jinnd-fiber" }
 jinnd-wasm = { path = "../../crates/jinnd-wasm" }
 proptest = "1.11.0"
