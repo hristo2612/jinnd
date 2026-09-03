@@ -62,14 +62,20 @@ pub(crate) struct Tracked {
 }
 
 /// Spawns one fiber through `spawn` and records it under `entry` for the
-/// transition bridge and the sink's entry attribution.
+/// transition bridge and the sink's entry attribution — in ONE critical
+/// section (M2-K24 round 3; Law 2, M2-K7). The supervisor starts inside
+/// `spawn` and may run the body on another worker before this returns;
+/// the map lock is taken FIRST, so a row that body appends waits on the
+/// insert through the sink's own lookup instead of landing fiber-only.
+/// `spawn` runs no plugin code — it only starts the task (R1).
 pub(crate) fn tracked(
     fibers: &SharedFibers,
     entry: EntryId,
     spawn: impl FnOnce() -> Arc<Fiber>,
 ) -> Arc<Fiber> {
+    let mut fibers = lock(fibers);
     let fiber = spawn();
-    lock(fibers).insert(
+    fibers.insert(
         fiber.id(),
         Tracked {
             fiber: Arc::clone(&fiber),

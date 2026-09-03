@@ -60,6 +60,14 @@ async fn a_declaration_whose_grant_is_refused_faults_at_admission_instead_of_wai
 /// Ruling 3: `injects: null` is a present non-list, not an absent list —
 /// a per-entry fault refused on the record at admission; the entry rests
 /// `Failed`, its sibling loads normally.
+///
+/// The witness is causal, never timed (round 3): the refusal row is sent
+/// to the ledger's single writer before the body returns its error, the
+/// fiber commits `Failed` only after that return, and the read below is a
+/// barrier through the same writer — so once `Failed` is observed the row
+/// is on the record. What the Linux gate caught was the row landing
+/// fiber-only: the daemon's tracker inserted the fiber → entry attribution
+/// after the supervisor could already run the body (Law 2, M2-K7).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_injects_that_is_null_is_a_contained_entry_fault() {
     let home = home("null-injects");
