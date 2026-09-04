@@ -1004,10 +1004,11 @@ fn patch_tick(mode: &str, id: &str) -> Result<(), GuestFault> {
     if fs::meta("/patch.out").is_ok() {
         return Ok(());
     }
-    let patch = if mode == "profile-patch-bad" {
-        r#"{"grants":[7]}"#
-    } else {
-        r#"{"data":"noop"}"#
+    let patch = match mode {
+        "profile-patch-bad" => r#"{"grants":[7]}"#,
+        // M2-K23 (d): a grants WIDENING that would admit at activation.
+        "profile-patch-grants" => r#"{"grants":["jinn:fs","jinn:clock"]}"#,
+        _ => r#"{"data":"noop"}"#,
     };
     let answer = operator_call("jinn:profile", "patch-entry", &patch_payload(id, patch))?;
     let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
@@ -1015,6 +1016,39 @@ fn patch_tick(mode: &str, id: &str) -> Result<(), GuestFault> {
         return Ok(());
     }
     fs::write("/patch.out", &answer, "").map_err(fs_fault)
+}
+
+/// The M2-K23 `jinn:profile-admin` mode (`admin`): from a tick, once the
+/// boot reconcile has landed, runs the writes listed in `/admin-script.txt`
+/// — one per line, `op<TAB>segment<TAB>segment…` — in order, and writes
+/// each RAW wire answer to `/admin-<n>.out`; a `conflict` refusal (tag 1,
+/// class 3) is retried next tick, so the daemon test reads exactly what the
+/// guest saw and the writes never race the boot.
+fn admin_tick() -> Result<(), GuestFault> {
+    let Ok(script) = fs::read("/admin-script.txt") else {
+        return Ok(());
+    };
+    let script = String::from_utf8_lossy(&script).into_owned();
+    for (index, line) in script.lines().enumerate() {
+        let out = format!("/admin-{index}.out");
+        if fs::meta(&out).is_ok() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let op = fields.next().unwrap_or_default();
+        let mut wire = Vec::new();
+        for segment in fields {
+            wire.extend((segment.len() as u32).to_le_bytes());
+            wire.extend(segment.as_bytes());
+        }
+        let answer = operator_call("jinn:profile-admin", op, &wire)?;
+        if answer.first() == Some(&1) && answer.get(1) == Some(&3) {
+            return Ok(());
+        }
+        fs::write(&out, &answer, "").map_err(fs_fault)?;
+        return Ok(());
+    }
+    Ok(())
 }
 
 struct Fixture;
@@ -1032,6 +1066,10 @@ impl Guest for Fixture {
         }
         if mode == "introspect" || mode == "ledger-read" || mode.starts_with("profile-patch") {
             return operator_mode(mode, arg);
+        }
+        if mode == "admin" {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            return Ok(());
         }
         if mode == "auth" {
             return auth_mode(arg);
@@ -1477,6 +1515,9 @@ impl Guest for Fixture {
             // the provider's dispatch, the caller opens with its own call.
             if mode == "cycle-trigger" {
                 cycle_tick("/cycle.out")?;
+            }
+            if mode == "admin" {
+                admin_tick()?;
             }
             if mode == "cycle-caller" {
                 cycle_tick("/caller.out")?;

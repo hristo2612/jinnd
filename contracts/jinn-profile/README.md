@@ -1,4 +1,4 @@
-# jinn:profile 0.2.0
+# jinn:profile 0.3.0
 
 The profile-patch contract (M2-K7; harness finding 21): an operator edit
 made through a plugin is operator intent applied by the loader, not a
@@ -32,7 +32,12 @@ wire. A viewer holds `ops = ["entry", "document"]` and cannot patch.
 ## What applies
 
 The merge-patch (RFC 7396) is applied to the entry's `config` subtree;
-the result must be an object whose `grants` would admit at activation.
+the result must be an object whose `grants` would admit at activation
+and — 0.3.0, M2-K23 (d) — whose `grants` EQUAL the committed `grants`
+by value: a grants change is `jinn:profile-admin`'s, never this
+contract's (04 §Write-back is confined), and a patch carrying one is
+`refused("grants are jinn:profile-admin's")` with nothing written and
+an `AmendmentRefused` row. `injects` stays patchable.
 The loader validates, writes the document back atomically, commits the
 runtime view, and SCHEDULES exactly the patched fiber's restart
 (`ConfigChanged`) — the call returns before the restart runs, so a

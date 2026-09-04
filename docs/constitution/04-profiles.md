@@ -70,7 +70,10 @@ Rules:
 - **Write-back is confined.** A plugin may write **only its own schema-validated
   `config` subtree**. Grants, identity, nesting, isolation, interception, policy, and
   profile ancestry require a separate operator-authorized control capability
-  (`jinn:profile-admin`); every write-back is a ledger event.
+  (`jinn:profile-admin`) (M2-K23: five writes — add, remove, `disabled`, grants,
+  plugin identity — each an operator intent applied by reconcile-by-id, each a
+  `ProfileAdministered` row with the caller and both digests, each reversible by
+  the inverse write the row records); every write-back is a ledger event.
 - **Expressions:** config values may reference only `${vars.*}` (declared,
   non-secret, allowlisted in the profile itself) and `${platform}` — a closed,
   side-effect-free grammar with no environment access, no general evaluation, no
@@ -89,7 +92,11 @@ Rules:
   didn't change" never exempts a consumer whose provider did. A string-lane
   declaration (`injects`) is an epoch input exactly as a typed injection is: an edit
   to it restarts the entry by reconcile, and a declared provider's generation change
-  reaches the consumer the same way (M2-K24).
+  reaches the consumer the same way (M2-K24). A plugin-identity change (package
+  or pin) is an incarnation replacement of the SAME entry — the M2-K4 ruling:
+  the successor inherits the entry's live effect journal and the swap window is
+  closed to reply-expecting walks (M2-K23 (e); where a kernel version has not
+  yet closed it, its bundle README names the limit).
 - Reconciliation maintains **committed vs target views** per fiber (the paper's
   calculus): a leaving provider stops admitting new consumers *before* its inverses
   run, while committed consumers keep their existing handle until their teardown
