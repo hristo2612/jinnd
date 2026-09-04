@@ -126,7 +126,7 @@ impl Loader {
     }
 
     /// Builds an entry's context and spawns its fiber through its lane.
-    fn spawn_step<C: LaneConfig>(
+    pub(crate) fn spawn_step<C: LaneConfig>(
         &self,
         entry: &EntryId,
         index: &EntryIndex<'_, C>,

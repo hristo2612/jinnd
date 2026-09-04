@@ -1,0 +1,101 @@
+// jinn:profile-admin@0.1.0 (M2-K23, harness #37; UI arc KG-1) — the
+// composition's SHAPE as OPERATOR INTENT: adding, removing, disabling,
+// re-granting and re-pinning an entry is a ledgered kernel operation and
+// not a file edit. Constitution 04 §Write-back is confined names this
+// capability. The kernel supplies it; every write is applied BY THE
+// LOADER by reconcile-by-id — exactly the plan step the document-led diff
+// would produce for that entry and no other — written back atomically
+// (stage + fsync + rename, the whole document), recorded as a typed
+// `ProfileAdministered { entry, by, write, before, after, prior }` row
+// under the CALLING entry with the rendered document's SHA-256 before and
+// after, and reversible by the inverse write the row's `prior` records.
+// No inverse in any fiber's journal: the profile's history is the ledger's.
+// Reached over `services.resolve("jinn:profile-admin")` + `services.call`.
+package jinn:profile-admin@0.1.0;
+
+/// Authority. What authorizes an admin write is a separate
+/// `jinn:profile-admin` grant on the CALLING entry (scope type `entry-ids`,
+/// the `jinn:profile` parser; `*` only when written; `ops` attenuation as
+/// M2-K8 defines it): whoever holds the grant is the operator's delegate by
+/// the operator's own document — the profile that grants a plugin this
+/// contract is the operator saying "this plugin reshapes my composition",
+/// exactly as a `jinn:net` grant says "this plugin holds my socket". What
+/// the capability confines is PLUGINS: a plugin without the grant cannot
+/// reshape the composition, a plugin with a scoped grant cannot reach
+/// outside its scope, and no plugin can reshape ITSELF or an ANCESTOR.
+/// What it does not do is authenticate the operator: that is `jinn:auth`'s
+/// and the transport's — the door the operator's credential opens — and a
+/// transport that issues admin writes for unverified connections is the
+/// composition suite's to catch, never the kernel's. The same-uid limit,
+/// in `jinn:auth`'s words: a process running as the daemon's own uid can
+/// edit the profile file directly, and no grant holds against it; a
+/// guarantee that cannot hold against same-uid is not a guarantee, so none
+/// is claimed. Per-call principal propagation from `jinn:auth` is rejected
+/// (M2-K23 §The ONE design decision) and is not re-litigated here.
+interface admin {
+  // The write's outcome. `accepted(seq)`: both views committed — the
+  // document on disk and the runtime — and the restart, activation or
+  // disposal's consequences are SCHEDULED, never awaited inside the call;
+  // `seq` is the `ProfileAdministered` row's ledger sequence — the row is
+  // the INTENT and lands before the commit (Law 2). `refused`: nothing
+  // was written anywhere, and the class says why — except a commit that
+  // failed after its intent row, refused `conflict` with an
+  // `AmendmentRefused` row naming that intent's sequence.
+  variant outcome { accepted(u64), refused(tuple<refusal, string>) }
+
+  // The closed refusal classes. `unauthorized`: an id (or, on add, the new
+  // id or its parent) outside the caller's `entry-ids` scope — a ledgered
+  // `GrantRefused` row with reason `ScopeMismatch` — or the caller's own entry or an
+  // ancestor of it. `malformed`: a record that does not decode, an id that
+  // exists on `add-entry` or does not on the others, a parent that is not
+  // an entry, `config` not an object, `grants` that would refuse at
+  // activation, an empty `hash` or a package no reconcile has admitted
+  // (Law 5). `conflict`, retryable: an operation in flight on the entry or
+  // the document, a target fiber not at rest, a withdrawal replay in
+  // flight, a faulted entry, or a `swap-plugin` re-pinning a package another
+  // live entry holds under a different hash (one pin per package, R9).
+  // `irreversible`: no inverse can be recorded as one write — an entry with
+  // children on `remove-entry` (leaves first; no cascade), or a RAW entry.
+  // Every refusal is an `AmendmentRefused` row under the caller.
+  enum refusal { unauthorized, malformed, conflict, irreversible }
+
+  // Broker wire, for every write: payload = u32-LE length-prefixed UTF-8
+  // segments in the order the operation lists them; answer = one tag byte
+  // (2 accepted then the u64-LE sequence; 1 refused then one class byte —
+  // unauthorized 1, malformed 2, conflict 3, irreversible 4 — then the
+  // reason's UTF-8).
+
+  // Adds one entry: the 0.2.0 `entry` record `{ id, package, version, hash,
+  // grants, config, disabled, parent }` as one JSON segment. Plan step
+  // `Create` (or `Track` when disabled). Inverse: `remove-entry(id)`; the
+  // row's `prior` is absent. Effect class: operator-intent.
+  add-entry: func(entry: string) -> outcome;
+
+  // Removes one LEAF entry: its fiber withdrawn — registrations released,
+  // its world journal withdrawn LIFO (I1) — and the entry forgotten. Plan
+  // step `Remove`. Inverse: `add-entry(prior)`; a re-added entry is a NEW
+  // incarnation (I4: the runtime converges on the document). Segments: id.
+  remove-entry: func(id: string) -> outcome;
+
+  // Flips `disabled`: `true` is a DISPOSAL (`Disable`: journal withdrawn,
+  // entry kept, the flag persisted); `false` is `Enable` — a fresh
+  // incarnation with an empty journal. Inverse: the negation. Segments:
+  // id, then `true` or `false`.
+  set-disabled: func(id: string, disabled: bool) -> outcome;
+
+  // Rewrites `config.grants` — the field `jinn:profile.patch-entry` may
+  // never carry (04). A grants change is an epoch input: it lands only
+  // through the entry's restart (`Restate`, `ConfigChanged`), never live
+  // (R9). Inverse: `set-grants(prior.grants)`. Segments: id, grants JSON.
+  set-grants: func(id: string, grants: string) -> outcome;
+
+  // Re-pins the entry's plugin identity: `Replace` — the entry's fiber is
+  // replaced under the same id (see the bundle README for this version's
+  // window semantics). Inverse: `swap-plugin(prior.package, prior.version,
+  // prior.hash)`. Segments: id, package, version, hash.
+  swap-plugin: func(id: string, pkg: string, version: string, hash: string) -> outcome;
+}
+
+world admin-provider {
+  export admin;
+}

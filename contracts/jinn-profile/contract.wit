@@ -1,4 +1,5 @@
-// jinn:profile@0.2.0 (M2-K7, harness #21; 0.2.0 M2-K8, harness #25/#26)
+// jinn:profile@0.3.0 (M2-K7, harness #21; 0.2.0 M2-K8, harness #25/#26;
+// 0.3.0 M2-K23: one refusal, no signature change)
 // — a profile patch as OPERATOR INTENT, and a read-only view of the
 // document of record. The kernel supplies it; `patch-entry` is applied BY
 // THE LOADER: validated against the profile schema (04), written back
@@ -13,7 +14,7 @@
 // over 0.1.0 (R12): `accepted` joins `outcome` and is what a 0.2.0
 // provider answers; `applied` is retained for 0.1.0 readers and is never
 // answered by a 0.2.0 provider; `entry` and `document` are new.
-package jinn:profile@0.2.0;
+package jinn:profile@0.3.0;
 
 interface patch {
   // The patch's outcome. `accepted(seq)`: the document committed and the
@@ -29,7 +30,10 @@ interface patch {
   // unwritten: an entry outside the caller's scope (a ledgered grant
   // refusal), an unknown entry, a patch that does not parse or is not an
   // object, a result that is not an object or whose grants would refuse
-  // at activation, the caller's own entry, or a loader conflict (an
+  // at activation, a result whose `grants` differ from the committed
+  // `grants` by value (0.3.0, M2-K23 (d): grants are
+  // `jinn:profile-admin`'s — 04 §Write-back is confined; `injects` stays
+  // patchable), the caller's own entry, or a loader conflict (an
   // operation in flight on the entry or the document — retryable).
   // Broker wire: operation `patch-entry`, payload = u32-LE length + the
   // entry id's UTF-8 bytes, then the merge-patch JSON bytes; answer = one

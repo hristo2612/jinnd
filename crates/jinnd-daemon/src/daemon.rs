@@ -27,6 +27,7 @@ mod introspect;
 mod ledger_cap;
 mod lifecycle;
 mod observe;
+mod profile_admin_cap;
 mod profile_cap;
 mod profile_read;
 mod restarts;

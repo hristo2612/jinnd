@@ -35,10 +35,12 @@
 //! transition of the target fiber itself — could hold up its waits.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use jinnd_api::{EntryId, ErrorCode, KernelError};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
+use crate::loader::Loader;
 use crate::state::error;
 
 /// Loom owns the model checker's primitives: the engagement cell is written
@@ -202,5 +204,54 @@ impl Gate {
             .acquire()
             .await
             .map_err(|_closed| error(ErrorCode::InvalidProfile, "the loader gate is closed"))
+    }
+}
+
+/// An engagement held PAST the call that took it (M2-K23, R1): an
+/// administration's scheduled runtime step keeps its entry (or the
+/// document) engaged on its own task until the step lands, so a
+/// conflicting operation is refused retryably meanwhile and one entry
+/// never has two fibers. Released on drop, exactly as the borrowed marker.
+pub(crate) struct OwnedEngagement {
+    loader: Arc<Loader>,
+    entry: Option<EntryId>,
+}
+
+impl OwnedEngagement {
+    /// Engages one entry, refusing as [`Gate::engage_entry`] does.
+    pub(crate) fn entry(loader: &Arc<Loader>, entry: &EntryId) -> Result<Self, KernelError> {
+        if !loader.gate.engagement.engage_entry(entry) {
+            return Err(error(
+                ErrorCode::InvalidProfile,
+                "operation refused: a loader operation is already in flight for this entry",
+            ));
+        }
+        Ok(Self {
+            loader: Arc::clone(loader),
+            entry: Some(entry.clone()),
+        })
+    }
+
+    /// Engages the document, refusing as [`Gate::engage_document`] does.
+    pub(crate) fn document(loader: &Arc<Loader>) -> Result<Self, KernelError> {
+        if !loader.gate.engagement.engage_document() {
+            return Err(error(
+                ErrorCode::InvalidProfile,
+                "operation refused: a loader operation is already in flight",
+            ));
+        }
+        Ok(Self {
+            loader: Arc::clone(loader),
+            entry: None,
+        })
+    }
+}
+
+impl Drop for OwnedEngagement {
+    fn drop(&mut self) {
+        match &self.entry {
+            Some(entry) => self.loader.gate.engagement.release_entry(entry),
+            None => self.loader.gate.engagement.release_document(),
+        }
     }
 }

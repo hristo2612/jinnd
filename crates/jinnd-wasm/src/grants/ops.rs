@@ -9,7 +9,7 @@ use jinnd_api::KernelError;
 use super::{Grant, ScopeValue, refused};
 use crate::alarms::CLOCK_CONTRACT;
 use crate::broker::Broker;
-use crate::grants::{INTROSPECT_CONTRACT, PROFILE_CONTRACT};
+use crate::grants::{INTROSPECT_CONTRACT, PROFILE_ADMIN_CONTRACT, PROFILE_CONTRACT};
 use crate::hostcaps::{NET_CONTRACT, PROCESS_CONTRACT};
 use crate::hostfs::FS_CONTRACT;
 use crate::hostkeystore::KEYSTORE_CONTRACT;
@@ -22,6 +22,13 @@ fn declared_ops(contract: &str) -> Option<&'static [&'static str]> {
         FS_CONTRACT => &["read", "list", "meta", "write", "append", "remove"],
         KEYSTORE_CONTRACT => &["get", "put", "delete", "list"],
         PROFILE_CONTRACT => &["patch-entry", "entry", "document"],
+        PROFILE_ADMIN_CONTRACT => &[
+            "add-entry",
+            "remove-entry",
+            "set-disabled",
+            "set-grants",
+            "swap-plugin",
+        ],
         CLOCK_CONTRACT => &["now", "alarm-at", "alarm-every"],
         PROCESS_CONTRACT => &[
             "run",

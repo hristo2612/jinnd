@@ -70,6 +70,20 @@ pub(crate) struct Persistence {
 }
 
 impl Persistence {
+    /// The baseline rendered: the bytes the last save wrote (M2-K23).
+    pub(crate) fn rendered(&self) -> String {
+        lock(&self.baseline).render()
+    }
+
+    /// The ids of the baseline's preserved raw entries (M2-K23).
+    pub(crate) fn raw_ids(&self) -> Vec<EntryId> {
+        lock(&self.baseline)
+            .raw
+            .iter()
+            .map(crate::raw::RawEntry::entry_id)
+            .collect()
+    }
+
     /// Saves one pre-encoded committed profile over the baseline document.
     /// Mechanical throughout — plain values merged and written, no
     /// caller-supplied code — so the persist permit may span it (R1). The
@@ -79,14 +93,17 @@ impl Persistence {
         &self,
         values: &Profile<serde_json::Value>,
     ) -> Result<(), KernelError> {
-        let document = {
-            let baseline = lock(&self.baseline);
-            Document::merge_profile(values, &baseline)
-        };
+        let document = self.merged(values);
         self.store.save(&document).await?;
         *lock(&self.written) = Some(document.render());
         *lock(&self.baseline) = document;
         Ok(())
+    }
+
+    /// The committed profile over the baseline: what the next save writes,
+    /// byte-for-byte, so its rendering's digest is the file's after (M2-K23).
+    pub(crate) fn merged(&self, values: &Profile<serde_json::Value>) -> Document {
+        Document::merge_profile(values, &lock(&self.baseline))
     }
 
     /// Saves one entry's runtime-led amendment by rewriting the committed

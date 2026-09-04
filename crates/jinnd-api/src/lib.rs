@@ -40,7 +40,7 @@ pub use inject::{Inject, ServiceResolver, ServiceType};
 #[cfg(feature = "harness")]
 pub use kernel::Kernel;
 pub use ledger::{
-    LedgerEventKind, LedgerQuery, LedgerRecord, Receipt, RefusalReason, RevertKey,
+    LedgerEventKind, LedgerQuery, LedgerRecord, ProfileWrite, Receipt, RefusalReason, RevertKey,
     RevertResolution, SwapPhaseKind, Witness,
 };
 pub use plugin::{Activation, ActivationReceipt, PluginContract};
