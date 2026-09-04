@@ -113,3 +113,7 @@ path = "m2_k25_delivery.rs"
 [[test]]
 name = "m2_k25_fault"
 path = "m2_k25_fault.rs"
+
+[[test]]
+name = "m2_k26_restart_window"
+path = "m2_k26_restart_window.rs"
