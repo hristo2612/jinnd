@@ -337,7 +337,7 @@ async fn a_disposed_entry_leaves_no_tombstone() {
         serde_json::json!([]),
         "listener",
     );
-    let (paths, hash) = harness::paths(&home, &[listener.clone()]);
+    let (paths, hash) = harness::paths(&home, std::slice::from_ref(&listener));
     let daemon = harness::booted(paths).await;
     wait_for_state(&daemon, "listener", FiberState::Active).await;
     harness::reload(&daemon, &home, &[], &hash).await;
@@ -504,7 +504,7 @@ async fn a_first_activation_is_never_refused() {
         serde_json::json!([]),
         "listener",
     );
-    let (paths, hash) = harness::paths(&home, &[listener.clone()]);
+    let (paths, hash) = harness::paths(&home, std::slice::from_ref(&listener));
     let daemon = harness::booted(paths).await;
     wait_for_state(&daemon, "listener", FiberState::Active).await;
     let emitter = harness::entry(
