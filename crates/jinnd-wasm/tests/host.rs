@@ -523,7 +523,9 @@ async fn a_walk_parks_the_emitter_while_the_listener_spends_its_deadline() {
     );
     assert!(probe.failures.is_empty(), "listener probe: {probe:?}");
 
-    let (_, emitter_seat) = rig.seat(2, Duration::from_millis(80));
+    let (emitter_peer, emitter_seat) = rig.seat(2, Duration::from_millis(80));
+    // The walk is covered by the topic's grant (M2-K26 (e)).
+    rig.broker.grant(emitter_peer, EVENT_TOPIC);
     let emitter = rig.host.instantiate(&rig.component, emitter_seat);
     let started = std::time::Instant::now();
     emitter
@@ -560,6 +562,8 @@ async fn a_listener_that_emits_a_nested_walk_is_not_charged_as_the_emitter() {
     // card (a) says its clock does not run while it is the emitter.
     let (peer, seat) = rig.seat(3, Duration::from_millis(150));
     rig.broker.grant(peer, EVENT_TOPIC);
+    // Its nested walk is covered by the nested topic's grant (M2-K26 (e)).
+    rig.broker.grant(peer, NESTED_TOPIC);
     let middle = rig.host.instantiate(&rig.component, seat);
     middle
         .activate(b"nested-emitter".to_vec())
@@ -1402,7 +1406,7 @@ async fn an_emit_without_the_topics_grant_is_refused_on_the_record() {
     }
     let rig = rig();
     let topics = Arc::new(LocalTopics::traced(
-        rig.ledger.clone() as Arc<dyn LedgerSink>,
+        rig.ledger.clone() as Arc<dyn LedgerSink>
     ));
     let entered = Arc::new(Entered(std::sync::atomic::AtomicUsize::new(0)));
     topics.listen(
@@ -1429,13 +1433,22 @@ async fn an_emit_without_the_topics_grant_is_refused_on_the_record() {
             .iter()
             .any(|kind| matches!(kind, LedgerEventKind::DispatchTrace { .. }));
         if granted {
-            assert!(outcome.is_ok(), "the granted emitter is unchanged: {outcome:?}");
+            assert!(
+                outcome.is_ok(),
+                "the granted emitter is unchanged: {outcome:?}"
+            );
             assert!(!refused && traced, "granted: walked and traced: {trail:?}");
             assert_eq!(entered.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         } else {
-            assert!(outcome.is_err(), "the ungranted emit is refused to the guest");
+            assert!(
+                outcome.is_err(),
+                "the ungranted emit is refused to the guest"
+            );
             assert!(refused, "the broker's own GrantRefused row: {trail:?}");
-            assert!(!traced, "no DispatchTrace for a walk that never selected: {trail:?}");
+            assert!(
+                !traced,
+                "no DispatchTrace for a walk that never selected: {trail:?}"
+            );
             assert_eq!(
                 entered.0.load(std::sync::atomic::Ordering::SeqCst),
                 0,

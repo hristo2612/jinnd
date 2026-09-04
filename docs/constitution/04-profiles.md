@@ -96,7 +96,10 @@ Rules:
   completes (I2). Every launched transition lands before reconciling to the latest
   target (inertia, R1); stale in-flight steps are diverted by epoch; dependency
   cycles stay cleanly inactive (I3); failure is local with no auto-retry against an
-  unchanged environment (R9/R11).
+  unchanged environment (R9/R11). A restart's window is closed to reply-expecting
+  walks: a listener's subscription is replaced at its successor's commit, never
+  absent in between, and a walk that selects it meanwhile is refused `restarting`
+  (M2-K26).
 - A profile document that fails **document-level validation** (unparseable file,
   duplicate ids, malformed tree shape) is rejected whole — the running system never
   enters a state no document describes. **Entry-level faults are contained per entry

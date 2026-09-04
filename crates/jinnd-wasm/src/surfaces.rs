@@ -196,6 +196,14 @@ impl bindings::events::Host for HostState {
         // whole publish path exists to end. The refusal is a ledger event
         // like every other authority refusal (Law 1, Law 2).
         self.reserve(&topic).map_err(bindings::wire_error)?;
+        // The walk is covered by the topic's own grant exactly as a
+        // subscription is (M2-K26 (e), harness FINDINGS #49; Law 1,
+        // constitution 01 §Grants): refused BEFORE selection, the broker's
+        // own `GrantRefused` row, nothing dispatched and nothing traced.
+        self.seat
+            .broker
+            .check_grant(self.seat.peer, crate::topics::grant_for(&topic))
+            .map_err(bindings::wire_error)?;
         let parked = self.horizon.park();
         let report = self
             .seat
