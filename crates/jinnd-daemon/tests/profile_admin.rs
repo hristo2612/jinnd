@@ -571,13 +571,14 @@ async fn a_write_whose_commit_fails_records_the_intent_and_then_its_refusal() {
     // The script lands only once the directory is sealed: the first
     // attempt cannot commit.
     script(&paths, "i", &["set-disabled\ttarget\ttrue"]);
-    let names_intent = |record: &LedgerRecord| {
-        matches!(&record.kind, LedgerEventKind::AmendmentRefused { detail } if detail.contains("intent "))
-    };
+    let names_intent = |record: &LedgerRecord| matches!(&record.kind, LedgerEventKind::AmendmentRefused { detail } if detail.contains("intent "));
     let records = records_until(&daemon, "the refusal of the intent", names_intent).await;
     assert_eq!(disk_digest(&paths), original, "the file is untouched");
     let first = administered(&records);
-    assert!(!first.is_empty(), "the intent is on the record: {records:?}");
+    assert!(
+        !first.is_empty(),
+        "the intent is on the record: {records:?}"
+    );
     assert!(
         !records.iter().any(|record| matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.fiber == target && transition.to == FiberState::Disposed)),
         "the target was never disposed by a refused commit: {records:?}"
@@ -590,17 +591,27 @@ async fn a_write_whose_commit_fails_records_the_intent_and_then_its_refusal() {
     })
     .await;
     let rows = administered(&records);
-    let (landed, refused) = rows.split_last().unwrap_or_else(|| panic!("rows: {records:?}"));
+    let (landed, refused) = rows
+        .split_last()
+        .unwrap_or_else(|| panic!("rows: {records:?}"));
     assert!(!refused.is_empty(), "at least one intent was refused");
     for intent in refused {
         let refusal = records.iter().find(|record| matches!(&record.kind, LedgerEventKind::AmendmentRefused { detail } if detail.contains(&format!("intent {}", intent.sequence))));
-        let refusal = refusal.unwrap_or_else(|| panic!("intent {} is answered: {records:?}", intent.sequence));
-        assert!(refusal.sequence > intent.sequence, "intent first, then its refusal");
+        let refusal = refusal
+            .unwrap_or_else(|| panic!("intent {} is answered: {records:?}", intent.sequence));
+        assert!(
+            refusal.sequence > intent.sequence,
+            "intent first, then its refusal"
+        );
     }
     let LedgerEventKind::ProfileAdministered { after, .. } = &landed.kind else {
         unreachable!()
     };
-    assert_eq!(*after, disk_digest(&paths), "the landed row's after is the file");
+    assert_eq!(
+        *after,
+        disk_digest(&paths),
+        "the landed row's after is the file"
+    );
     let disposed = records.iter().find(|record| matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.fiber == target && transition.to == FiberState::Disposed));
     assert!(
         disposed.is_some_and(|record| record.sequence > landed.sequence),
@@ -672,7 +683,10 @@ async fn a_swap_disposes_the_old_incarnation_a_stated_limit_until_m2_k27() {
         "the limit: disposed, not suspended"
     );
     assert!(
-        !records.iter().any(|record| matches!(&record.kind, LedgerEventKind::FiberSuspended { .. }) && record.entry == Some(EntryId("target".to_owned()))),
+        !records.iter().any(|record| matches!(
+            &record.kind,
+            LedgerEventKind::FiberSuspended { .. }
+        ) && record.entry == Some(EntryId("target".to_owned()))),
         "no seat was suspended for the swap: {records:?}"
     );
     let deadline = Instant::now() + Duration::from_secs(20);

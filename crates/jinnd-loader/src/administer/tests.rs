@@ -78,7 +78,10 @@ impl DocumentStore for Store {
                     fiber: None,
                 });
             }
-            *self.last.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(document.clone());
+            *self
+                .last
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()) = Some(document.clone());
             Ok(())
         })
     }
@@ -175,7 +178,13 @@ fn saved_ids(last: &Mutex<Option<Document>>) -> Vec<String> {
     last.lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .as_ref()
-        .map(|document| document.entries.iter().map(|entry| entry.id.clone()).collect())
+        .map(|document| {
+            document
+                .entries
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -204,8 +213,15 @@ async fn a_removal_answers_before_the_targets_disposal_completes() {
     rig.release.notify_one();
     grab(settled.await);
     assert!(rig.disposed.load(Ordering::SeqCst), "the disposal landed");
-    assert!(rig.loader.entry_fiber(&one).is_none(), "the runtime forgot it");
-    assert!(rig.loader.stage(Administration::<u32>::Remove(one)).is_err());
+    assert!(
+        rig.loader.entry_fiber(&one).is_none(),
+        "the runtime forgot it"
+    );
+    assert!(
+        rig.loader
+            .stage(Administration::<u32>::Remove(one))
+            .is_err()
+    );
 }
 
 /// The successor of a replacement spawns only after the old incarnation
@@ -227,9 +243,15 @@ async fn a_replacement_spawns_its_successor_after_the_old_incarnation_withdrew()
     assert_eq!(rig.spawned.load(Ordering::SeqCst), 2, "no successor yet");
     rig.release.notify_one();
     grab(settled.await);
-    assert_eq!(rig.spawned.load(Ordering::SeqCst), 3, "the successor spawned");
+    assert_eq!(
+        rig.spawned.load(Ordering::SeqCst),
+        3,
+        "the successor spawned"
+    );
     assert_ne!(rig.loader.entry_fiber(&one), before, "a new incarnation");
-    let persisted = grab(rig.loader.applied::<u32>()).unwrap_or(Profile { entries: Vec::new() });
+    let persisted = grab(rig.loader.applied::<u32>()).unwrap_or(Profile {
+        entries: Vec::new(),
+    });
     let swapped = persisted.entries.iter().find(|entry| entry.id == one);
     assert_eq!(
         swapped.map(|entry| entry.plugin.package.as_str()),
@@ -265,14 +287,24 @@ async fn the_staged_document_renders_what_the_commit_writes() {
 async fn a_failed_write_back_leaves_both_views_at_the_prior_state() {
     let rig = rig(Some(2)).await;
     let one = EntryId("one".to_owned());
-    let staged = grab(rig.loader.stage(Administration::<u32>::Disable(one.clone())));
+    let staged = grab(
+        rig.loader
+            .stage(Administration::<u32>::Disable(one.clone())),
+    );
     assert!(rig.loader.commit_administration(staged).await.is_err());
     rig.release.notify_one();
     tokio::task::yield_now().await;
-    assert!(!rig.disposed.load(Ordering::SeqCst), "nothing was scheduled");
+    assert!(
+        !rig.disposed.load(Ordering::SeqCst),
+        "nothing was scheduled"
+    );
     assert!(rig.loader.entry_fiber(&one).is_some(), "the fiber stays");
     assert_eq!(saved_ids(&rig.last), vec!["one", "two"]);
     assert!(rig.loader.entry_faults().is_empty(), "no divergence");
     // The engagement is released with the refusal: the next write stages.
-    assert!(rig.loader.stage(Administration::<u32>::Disable(one)).is_ok());
+    assert!(
+        rig.loader
+            .stage(Administration::<u32>::Disable(one))
+            .is_ok()
+    );
 }

@@ -24,7 +24,7 @@ mod writes;
 
 use writes::{Change, Class, Refusal};
 
-use super::profile_cap::{patch::validate, refused_wire};
+use super::profile_cap::refused_wire;
 use super::storage;
 use super::wire::{Callers, unknown};
 use crate::support::{SharedFibers, sync_transitions};
@@ -114,14 +114,24 @@ impl HostProfileAdmin {
             Err(refusal) => return Ok(self.refuse(operation, Some(&entry), by, fiber, &refusal)),
         };
         let before = self.digest();
-        if let Err(refused) = self.apply(&entry, request.change, prior.as_ref()).await {
-            let refusal = Refusal::conflict(&refused.message);
-            return Ok(self.refuse(operation, Some(&entry), by, fiber, &refusal));
-        }
-        let after = self.digest();
+        let staged = match self
+            .loader
+            .stage(administration(&entry, request.change, prior.as_ref()))
+        {
+            Ok(staged) => staged,
+            Err(refused) => {
+                let refusal = Refusal::conflict(&refused.message);
+                return Ok(self.refuse(operation, Some(&entry), by, fiber, &refusal));
+            }
+        };
+        let after = hex_digest(staged.rendered().unwrap_or_default().as_bytes());
         let by_name = by
             .as_ref()
             .map_or_else(|| format!("peer:{caller}"), |by| by.0.clone());
+        // Intent recorded, then applied (Law 2): the row lands BEFORE the
+        // commit, naming the digest the file WILL have; a commit that then
+        // fails is refused on the record naming this row's sequence, so
+        // an applied write can never be unrecorded.
         let receipt = self
             .ledger
             .append(
@@ -133,13 +143,24 @@ impl HostProfileAdmin {
                     after,
                     prior: prior.map(|prior| prior.to_string()),
                 },
-                by,
+                by.clone(),
                 fiber,
             )
             .await
             .map_err(storage)?;
-        // The transitions land on the ledger when they settle — from a
-        // task of their own, never inside this host call (R1).
+        let settled = match self.loader.commit_administration(staged).await {
+            Ok(settled) => settled,
+            Err(failed) => {
+                let refusal = Refusal::conflict(&format!(
+                    "intent {} did not land: {}",
+                    receipt.sequence, failed.message
+                ));
+                return Ok(self.refuse(operation, Some(&entry), by, fiber, &refusal));
+            }
+        };
+        // The transitions land on the ledger when the scheduled step
+        // settles — from a task of their own, never inside this host call
+        // (R1).
         let (loader, fibers, ledger, publisher) = (
             Arc::clone(&self.loader),
             Arc::clone(&self.fibers),
@@ -147,52 +168,13 @@ impl HostProfileAdmin {
             Arc::clone(&self.lifecycle),
         );
         tokio::spawn(async move {
+            let _ = settled.await;
             loader.quiesce_entry(&entry).await;
             sync_transitions(&fibers, &ledger, Some(&publisher));
         });
         let mut wire = vec![TAG_ACCEPTED];
         wire.extend(receipt.sequence.to_le_bytes());
         Ok(wire)
-    }
-
-    /// Hands the loader the one runtime-led amendment the write is.
-    async fn apply(
-        &self,
-        entry: &EntryId,
-        change: Change,
-        prior: Option<&serde_json::Value>,
-    ) -> Result<(), KernelError> {
-        match change {
-            Change::Add(record) => self.loader.administer(Administration::Add(record)).await,
-            Change::Remove => {
-                self.loader
-                    .administer::<serde_json::Value>(Administration::Remove(entry.clone()))
-                    .await
-            }
-            Change::SetDisabled(true) => {
-                self.loader.dispose_entry::<serde_json::Value>(entry).await
-            }
-            Change::SetDisabled(false) => {
-                self.loader
-                    .administer::<serde_json::Value>(Administration::Enable(entry.clone()))
-                    .await
-            }
-            Change::SetGrants(grants) => {
-                let mut config = prior
-                    .and_then(|prior| prior.get("config").cloned())
-                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-                config["grants"] = grants;
-                validate(&config, &config).map_err(|reason| {
-                    crate::support::error(jinnd_api::ErrorCode::InvalidProfile, reason)
-                })?;
-                self.loader.update_entry_deferred(entry, config).await
-            }
-            Change::Swap(plugin) => {
-                self.loader
-                    .administer::<serde_json::Value>(Administration::Swap(entry.clone(), plugin))
-                    .await
-            }
-        }
     }
 
     /// The SHA-256 hex digest of the rendered document of record: what the
@@ -229,6 +211,29 @@ impl HostProfileAdmin {
             fiber,
         );
         refused_wire_class(refusal.class, &refusal.reason)
+    }
+}
+
+/// The loader's one runtime-led amendment a write is; a grants change is
+/// the entry's config with `grants` replaced, written as `config.grants`.
+fn administration(
+    entry: &EntryId,
+    change: Change,
+    prior: Option<&serde_json::Value>,
+) -> Administration<serde_json::Value> {
+    match change {
+        Change::Add(record) => Administration::Add(record),
+        Change::Remove => Administration::Remove(entry.clone()),
+        Change::SetDisabled(true) => Administration::Disable(entry.clone()),
+        Change::SetDisabled(false) => Administration::Enable(entry.clone()),
+        Change::SetGrants(grants) => {
+            let mut config = prior
+                .and_then(|prior| prior.get("config").cloned())
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            config["grants"] = grants;
+            Administration::Configure(entry.clone(), config)
+        }
+        Change::Swap(plugin) => Administration::Swap(entry.clone(), plugin),
     }
 }
 

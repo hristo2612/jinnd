@@ -31,7 +31,7 @@ mod state;
 mod store;
 mod tree;
 
-pub use administer::Administration;
+pub use administer::{Administration, Staged};
 pub use diff::{Attestation, Plan, Step, StepKind, plan};
 pub use document::{Document, DocumentEntry, RawEntry};
 pub use file_store::FileStore;

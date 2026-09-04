@@ -1,32 +1,37 @@
 //! Runtime-led administration of the composition's SHAPE (M2-K23, harness
 //! #37; constitution 04 §Write-back is confined): adding, removing,
-//! enabling and re-pinning an entry as operator intent, applied by
-//! reconcile-by-id — the sibling of `update_entry_deferred` and
-//! `dispose_entry` (split by responsibility, R10). The runtime is offered
-//! the change first, as EXACTLY the plan step the document-led diff would
-//! produce for that entry and no other; the whole document is then written
-//! back atomically (`save_committed`, so preserved raw entries and unknown
-//! fields survive); the daemon treats the write-back as its own echo. A
-//! refusal commits nothing anywhere; a failed write-back is retried once and
-//! then returned loud, never swallowed (LAW §3, the `amend.rs` law).
+//! disabling, enabling, re-granting and re-pinning an entry as operator
+//! intent, applied by reconcile-by-id — the sibling of `update_entry` and
+//! `dispose_entry` (split by responsibility, R10). Two phases, the M2-K8
+//! #26 order: [`Loader::stage`] decides every refusal with nothing moved
+//! and renders the document the commit will write (so a caller can record
+//! the intent FIRST, Law 2); [`Loader::commit_administration`] offers the
+//! runtime the change, writes the whole document back atomically
+//! (`save_committed`, so preserved raw entries and unknown fields survive),
+//! commits, and then STATES the runtime step — a restart, a spawn, or a
+//! disposal whose landing is scheduled on its own task holding the
+//! engagement, never awaited inside the caller's call (R1). A failed
+//! write-back refuses with both views at their prior state; a runtime step
+//! refused after the commit is a recorded divergence, loud (LAW §3).
 
 use std::any::Any;
 use std::sync::Arc;
 
-use jinnd_api::{EntryId, ErrorCode, KernelError, PluginRef, Profile, ProfileEntry};
-use tokio_util::sync::CancellationToken;
-
-use crate::diff::Step;
+use crate::diff::{Plan, Step};
+use crate::gate::OwnedEngagement;
 use crate::loader::{LaneConfig, Loader};
 use crate::state::{error, lock};
+use crate::store::EncodedProfile;
 use crate::tree::EntryIndex;
+use jinnd_api::{EntryId, ErrorCode, KernelError, PluginRef, Profile, ProfileEntry};
 
+mod commit;
+mod reads;
 #[cfg(all(test, not(feature = "loom")))]
 mod tests;
 
-/// One operator intent on the composition's shape. A grants change is a
-/// config change and rides [`Loader::update_entry_deferred`]; a disable
-/// rides [`Loader::dispose_entry`] — neither needs a second mechanism.
+/// One operator intent on the composition's shape: the five writes of
+/// `jinn:profile-admin`, as the plan step each applies.
 #[derive(Clone, Debug)]
 pub enum Administration<C> {
     /// A new entry: `Create` (or `Track` when it is effectively disabled).
@@ -35,8 +40,12 @@ pub enum Administration<C> {
     /// entry forgotten. The caller refuses an entry with children (R10:
     /// no cascade through this seam).
     Remove(EntryId),
+    /// `disabled: true`: `Disable` — the fiber disposed, the entry kept.
+    Disable(EntryId),
     /// `disabled: false`: `Enable` — a fresh incarnation, empty journal.
     Enable(EntryId),
+    /// A new config (a grants change): `Restate` — a reload, never live.
+    Configure(EntryId, C),
     /// A plugin-identity change: `Replace` — the entry's fiber is replaced.
     Swap(EntryId, PluginRef),
 }
@@ -45,7 +54,11 @@ impl<C> Administration<C> {
     fn entry(&self) -> &EntryId {
         match self {
             Self::Add(record) => &record.id,
-            Self::Remove(id) | Self::Enable(id) | Self::Swap(id, _) => id,
+            Self::Remove(id)
+            | Self::Disable(id)
+            | Self::Enable(id)
+            | Self::Configure(id, _)
+            | Self::Swap(id, _) => id,
         }
     }
 
@@ -56,12 +69,33 @@ impl<C> Administration<C> {
     }
 }
 
+/// One administration with every refusal decided and nothing moved: the
+/// entry (or document) engaged until the runtime step lands, the amended
+/// document, its one plan step, and its rendering.
+pub struct Staged<C> {
+    engagement: OwnedEngagement,
+    entry: EntryId,
+    profile: Profile<C>,
+    plan: Plan,
+    committed: Arc<dyn Any + Send + Sync>,
+    encoded: Option<EncodedProfile>,
+    rendered: Option<String>,
+}
+
+impl<C> Staged<C> {
+    /// The document of record as the commit will write it, byte-for-byte —
+    /// `None` without a store. Its digest is the digest the file WILL have
+    /// (Law 2: the row can name `after` before the write).
+    #[must_use]
+    pub fn rendered(&self) -> Option<&str> {
+        self.rendered.as_deref()
+    }
+}
+
 impl Loader {
-    /// Applies one shape-changing operator intent: runtime first (the one
-    /// plan step reconcile-by-id would produce for the entry), then the
-    /// document, atomically. The spawned fiber's activation is SCHEDULED
-    /// and never awaited; a withdrawn fiber's disposal is awaited exactly
-    /// as [`Loader::dispose_entry`] awaits it.
+    /// Stages one shape-changing operator intent: every refusal decided,
+    /// nothing moved, the entry (or the document) engaged from here until
+    /// the committed step lands or the stage is dropped.
     ///
     /// # Errors
     ///
@@ -70,20 +104,18 @@ impl Loader {
     /// withdrawal replay in flight, a call from a teardown context), for a
     /// malformed change (an id that already exists on `Add` or does not on
     /// the others, a parent that is not a live entry — the same structural
-    /// faults the document-led index records), for a runtime refusal of
-    /// the step (nothing committed then), or for a write-back that failed
-    /// twice (the runtime moved; the next reconcile of the document
-    /// reconverges the two views — loud, LAW §3).
-    pub async fn administer<C: LaneConfig>(
-        &self,
+    /// faults the document-led index records), or for a config the store's
+    /// `Serialize` refuses (contained, R11).
+    pub fn stage<C: LaneConfig>(
+        self: &Arc<Self>,
         change: Administration<C>,
-    ) -> Result<(), KernelError> {
+    ) -> Result<Staged<C>, KernelError> {
         crate::refuse::refuse_teardown_context("the administration")?;
         let entry = change.entry().clone();
-        let (_document, _entry) = if change.engages_document() {
-            (Some(self.gate.engage_document()?), None)
+        let engagement = if change.engages_document() {
+            OwnedEngagement::document(self)?
         } else {
-            (None, Some(self.gate.engage_entry(&entry)?))
+            OwnedEngagement::entry(self, &entry)?
         };
         self.refuse_amid_withdrawal("the administration")?;
         if let Some(handle) = self.live_handle(&entry) {
@@ -115,23 +147,18 @@ impl Loader {
         // The caller-authored `Serialize` runs before anything moves,
         // contained (R1, R11, PLA-270).
         let encoded = self.encode_committed(&committed)?;
-        let report = self.apply(plan, &profile, &CancellationToken::new()).await;
-        if let Some(fault) = report.errors.into_iter().find(|fault| fault.entry == entry) {
-            return Err(fault.error);
-        }
-        // The document follows, under the one persist permit; the runtime
-        // already moved, so a failed write-back is retried once and then
-        // returned loud — the disposal precedent (LAW §3).
-        let _permit = self.gate.persist_permit().await?;
-        if let Some((persistence, values)) = &encoded {
-            let mut saved = persistence.save_committed(values).await;
-            if saved.is_err() {
-                saved = persistence.save_committed(values).await;
-            }
-            saved?;
-        }
-        lock(&self.state).committed = Some(committed);
-        Ok(())
+        let rendered = encoded
+            .as_ref()
+            .map(|(persistence, values)| persistence.merged(values).render());
+        Ok(Staged {
+            engagement,
+            entry,
+            profile,
+            plan,
+            committed,
+            encoded,
+            rendered,
+        })
     }
 
     /// The applied document, or the empty document before any reconcile.
@@ -149,32 +176,6 @@ impl Loader {
             .map(|eq| {
                 move |a: &C, b: &C| eq(a as &(dyn Any + Send + Sync), b as &(dyn Any + Send + Sync))
             })
-    }
-
-    /// Whether a lane is registered for `package` under config type `C`:
-    /// an admin write naming a package no reconcile ever admitted refuses
-    /// with the Law-5 reason rather than spawning into nothing.
-    #[must_use]
-    pub fn has_lane<C: LaneConfig>(&self, package: &str) -> bool {
-        lock(&self.lanes).contains_key(&(package.to_owned(), std::any::TypeId::of::<C>()))
-    }
-
-    /// The document of record as the attached store last rendered it —
-    /// byte-for-byte what is on disk — or `None` without a store. A digest
-    /// of this is a digest of the file (Law 2: checkable with nothing but
-    /// the file).
-    #[must_use]
-    pub fn rendered_document(&self) -> Option<String> {
-        self.persistence().map(|persistence| persistence.rendered())
-    }
-
-    /// The ids of entries preserved RAW (undecodable, re-emitted verbatim;
-    /// R11): their record cannot be captured as a typed prior.
-    #[must_use]
-    pub fn raw_entry_ids(&self) -> Vec<EntryId> {
-        self.persistence()
-            .map(|persistence| persistence.raw_ids())
-            .unwrap_or_default()
     }
 }
 
@@ -211,9 +212,17 @@ fn amended_profile<C: LaneConfig>(
             let at = position(&profile, &id)?;
             profile.entries.remove(at);
         }
+        Administration::Disable(id) => {
+            let at = position(&profile, &id)?;
+            profile.entries[at].disabled = true;
+        }
         Administration::Enable(id) => {
             let at = position(&profile, &id)?;
             profile.entries[at].disabled = false;
+        }
+        Administration::Configure(id, config) => {
+            let at = position(&profile, &id)?;
+            profile.entries[at].config = config;
         }
         Administration::Swap(id, plugin) => {
             let at = position(&profile, &id)?;

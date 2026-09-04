@@ -93,14 +93,17 @@ impl Persistence {
         &self,
         values: &Profile<serde_json::Value>,
     ) -> Result<(), KernelError> {
-        let document = {
-            let baseline = lock(&self.baseline);
-            Document::merge_profile(values, &baseline)
-        };
+        let document = self.merged(values);
         self.store.save(&document).await?;
         *lock(&self.written) = Some(document.render());
         *lock(&self.baseline) = document;
         Ok(())
+    }
+
+    /// The committed profile over the baseline: what the next save writes,
+    /// byte-for-byte, so its rendering's digest is the file's after (M2-K23).
+    pub(crate) fn merged(&self, values: &Profile<serde_json::Value>) -> Document {
+        Document::merge_profile(values, &lock(&self.baseline))
     }
 
     /// Saves one entry's runtime-led amendment by rewriting the committed
