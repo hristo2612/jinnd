@@ -1052,6 +1052,29 @@ fn admin_tick(name: &str) -> Result<(), GuestFault> {
     Ok(())
 }
 
+/// One M2-K23 (e) probe tick: a Serial walk on the topic, its outcome
+/// written down as ONE tag byte — `d` delivered (an answer came back),
+/// `n` nobody (`Ok` and empty: the walk selected no listener, the harness
+/// #47 shape), `r` restarting, `g` gone, `s` suspended, `t` stalled, `e`
+/// any other kernel error. What the kernel answered, never a sentence.
+fn probe_tick() -> Result<(), GuestFault> {
+    let tag = match jinn::plugin::events::emit(
+        TOPIC,
+        jinn::plugin::types::DispatchMode::Serial,
+        &jinn::plugin::types::Selector::All,
+        b"probe",
+    ) {
+        Ok(outputs) if outputs.is_empty() => b'n',
+        Ok(_) => b'd',
+        Err(jinn::plugin::types::KernelError::Restarting(_)) => b'r',
+        Err(jinn::plugin::types::KernelError::Gone(_)) => b'g',
+        Err(jinn::plugin::types::KernelError::Suspended(_)) => b's',
+        Err(jinn::plugin::types::KernelError::Stalled(_)) => b't',
+        Err(_) => b'e',
+    };
+    fs::append("/probe.log", &[tag], "").map_err(fs_fault)
+}
+
 struct Fixture;
 
 impl Guest for Fixture {
@@ -1329,6 +1352,22 @@ impl Guest for Fixture {
                     "a period finer than the floor was not refused".into(),
                 )),
             },
+            // M2-K23 (e) limit pin: a listener whose readiness is SLOW BY
+            // CONSTRUCTION — it dawdles `arg` ms BEFORE its listen, so a
+            // successor spawned in its place leaves the topic without a
+            // listener for that long: the swap window forced by the
+            // fixture, never waited for.
+            "listener-late" => {
+                dawdle(arg.parse().unwrap_or(2500))?;
+                jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
+                Ok(())
+            }
+            // M2-K23 (e): a ticking reply-expecting walk on the topic;
+            // each tick's outcome is one byte in `/probe.log`.
+            "probe-walk" => {
+                clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+                Ok(())
+            }
             // One bus emit through the daemon path — the DispatchTrace probe.
             "emitter" => {
                 jinn::plugin::events::emit(
@@ -1525,6 +1564,9 @@ impl Guest for Fixture {
             }
             if mode == "introspect" {
                 introspect_tick()?;
+            }
+            if mode == "probe-walk" {
+                probe_tick()?;
             }
             if mode == "clock-chain" && !CHAINED.swap(true, Ordering::SeqCst) {
                 clock::alarm_at(0, AT_TOKEN).map_err(fault)?;

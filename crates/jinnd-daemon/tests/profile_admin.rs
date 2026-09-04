@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use jinnd_api::{
-    EntryId, FiberState, LedgerEventKind, LedgerRecord, ProfileWrite, RefusalReason,
-    TransitionCause,
+    DispatchMode, EntryId, FiberId, FiberState, LedgerEventKind, LedgerRecord, ProfileWrite,
+    RefusalReason, TransitionCause,
 };
 use jinnd_daemon::{Daemon, DaemonPaths};
 
@@ -623,13 +623,67 @@ async fn a_write_whose_commit_fails_records_the_intent_and_then_its_refusal() {
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }
 
+/// The topic the (e) fixture listens on and probes.
+const TOPIC: &str = "jinn:test/topic";
+
+/// The label the lane gives a listen's journal rows.
+fn listen_label() -> String {
+    format!("listen {TOPIC}")
+}
+
+/// Row indexes of one fiber's listen journal: its registrations, its
+/// withdrawals, its suspensions.
+fn listen_rows(records: &[LedgerRecord], fiber: FiberId) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let label = listen_label();
+    let (mut registered, mut withdrawn, mut suspended) = (Vec::new(), Vec::new(), Vec::new());
+    for (index, record) in records.iter().enumerate() {
+        if record.fiber != Some(fiber) {
+            continue;
+        }
+        match &record.kind {
+            LedgerEventKind::EffectRegistered { label: seen } if *seen == label => {
+                registered.push(index);
+            }
+            LedgerEventKind::EffectWithdrawn { label: seen, .. } if *seen == label => {
+                withdrawn.push(index);
+            }
+            LedgerEventKind::FiberSuspended { .. } => suspended.push(index),
+            _ => {}
+        }
+    }
+    (registered, withdrawn, suspended)
+}
+
+/// A Serial walk on the topic that selected `listeners`.
+fn walk_with(record: &LedgerRecord, listeners: u32) -> bool {
+    matches!(
+        &record.kind,
+        LedgerEventKind::DispatchTrace { topic, mode: DispatchMode::Serial, listeners: seen, .. }
+            if topic == TOPIC && *seen == listeners
+    )
+}
+
 /// (e) — the STATED LIMIT of this kernel version, pinned until M2-K27: a
-/// `swap-plugin` applies `Replace` as dispose-then-spawn. The old
-/// incarnation rests `Disposed` under `ExplicitDispose` — never `Suspend`,
-/// no `FiberSuspended` row, so its world journal is withdrawn rather than
-/// inherited — and the successor is a NEW fiber whose activation was not
-/// staged, so the window between the two is open to reply-expecting walks.
-/// When M2-K27 lands, this test flips: the old incarnation suspends.
+/// `swap-plugin` applies `Replace` as dispose-then-spawn, and BOTH
+/// observable limits are on the record so M2-K27 has a red to turn green.
+/// JOURNAL LOSS: the old incarnation's listen — a journaled effect,
+/// registered on the record — is withdrawn outright under the old fiber
+/// at its disposal, and the successor's journal starts EMPTY: its own
+/// listen is a new registration under a new fiber that lands only AFTER
+/// the old one's withdrawal, nothing under the successor ever withdrawn
+/// (the inverse of the K26 config-restart order, where the one withdrawal
+/// follows the successor's registration). THE SWAP WINDOW: the successor
+/// is slow by construction (`listener-late` dawdles before it listens),
+/// so between the old withdrawal and its registration the topic has no
+/// listener, and every reply-expecting walk a ticking probe lands there is
+/// DROPPED as an honestly empty topic — `DispatchTrace { mode: Serial,
+/// listeners: 0 }`, the harness #47 shape, and `Ok` with no outputs at the
+/// emitter (`n` between `d`s in its log) — never a `DispatchRefused` row:
+/// NOT `restarting`, the K26 refusal a disposal lacks since no restart is
+/// pending. The old incarnation rests `Disposed` under `ExplicitDispose`,
+/// no `FiberSuspended` row, the successor a NEW fiber. When M2-K27 lands,
+/// this test flips: the withdrawal follows the successor's commit and the
+/// walks in the window are refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_swap_disposes_the_old_incarnation_a_stated_limit_until_m2_k27() {
     let home = home("swap-limit");
@@ -645,12 +699,50 @@ async fn a_swap_disposes_the_old_incarnation_a_stated_limit_until_m2_k27() {
                 ]),
                 "admin:w",
             ),
-            entry("target", serde_json::json!(["jinn:fs"]), "plain"),
+            entry(
+                "target",
+                serde_json::json!(["jinn:fs", "jinn:clock", TOPIC]),
+                "listener-late:2500",
+            ),
+            entry(
+                "probe",
+                serde_json::json!(["jinn:fs", "jinn:clock", TOPIC]),
+                "probe-walk",
+            ),
             serde_json::json!({
                 "id": "anchor", "package": "demo/counter-copy", "version": "0.0.1",
                 "hash": "", "config": { "grants": ["jinn:fs"], "data": "plain" }
             }),
         ],
+    );
+    let daemon = booted(paths.clone()).await;
+    let old = daemon
+        .entry_fiber("target")
+        .unwrap_or_else(|| panic!("target live"));
+    // Delivered BEFORE: the old incarnation listened and answered a walk.
+    let records = records_until(&daemon, "the old incarnation's listen", |record| {
+        record.fiber == Some(old)
+            && matches!(&record.kind, LedgerEventKind::EffectRegistered { label } if *label == listen_label())
+    })
+    .await;
+    let listened = records
+        .iter()
+        .position(|record| {
+            record.fiber == Some(old)
+                && matches!(&record.kind, LedgerEventKind::EffectRegistered { .. })
+        })
+        .unwrap_or_else(|| unreachable!());
+    let records = records_until(
+        &daemon,
+        "a walk answered by the old incarnation",
+        |record| record.sequence > records[listened].sequence && walk_with(record, 1),
+    )
+    .await;
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(&record.kind, LedgerEventKind::ProfileAdministered { .. })),
+        "nothing administered before the swap: {records:?}"
     );
     script(
         &paths,
@@ -659,10 +751,6 @@ async fn a_swap_disposes_the_old_incarnation_a_stated_limit_until_m2_k27() {
             "swap-plugin\ttarget\tdemo/counter-copy\t0.0.1\t{hash}"
         )],
     );
-    let daemon = booted(paths.clone()).await;
-    let old = daemon
-        .entry_fiber("target")
-        .unwrap_or_else(|| panic!("target live"));
     let answer = wait_for(&paths.data.join("admin-w-0.out")).await;
     assert_eq!(answer.first(), Some(&2), "swap accepted: {answer:?}");
     let records = records_until(&daemon, "the old incarnation's rest", |record| {
@@ -682,13 +770,6 @@ async fn a_swap_disposes_the_old_incarnation_a_stated_limit_until_m2_k27() {
         Some(TransitionCause::ExplicitDispose),
         "the limit: disposed, not suspended"
     );
-    assert!(
-        !records.iter().any(|record| matches!(
-            &record.kind,
-            LedgerEventKind::FiberSuspended { .. }
-        ) && record.entry == Some(EntryId("target".to_owned()))),
-        "no seat was suspended for the swap: {records:?}"
-    );
     let deadline = Instant::now() + Duration::from_secs(20);
     let successor = loop {
         if let Some(fiber) = daemon.entry_fiber("target")
@@ -701,6 +782,96 @@ async fn a_swap_disposes_the_old_incarnation_a_stated_limit_until_m2_k27() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
     assert_ne!(successor, old, "a new fiber, not the same incarnation");
+    // Delivered AFTER: the successor listened and answered a walk.
+    let records = records_until(&daemon, "the successor's listen", |record| {
+        record.fiber == Some(successor)
+            && matches!(&record.kind, LedgerEventKind::EffectRegistered { label } if *label == listen_label())
+    })
+    .await;
+    let successor_listened = listen_rows(&records, successor).0[0];
+    let records = records_until(&daemon, "a walk answered by the successor", |record| {
+        record.sequence > records[successor_listened].sequence && walk_with(record, 1)
+    })
+    .await;
+
+    // JOURNAL LOSS, by the record: the old listen registered once and
+    // withdrawn once under the OLD fiber, no suspension; the successor's
+    // listen a NEW registration after that withdrawal, nothing under the
+    // successor withdrawn — the journal was not handed over.
+    let (old_registered, old_withdrawn, old_suspended) = listen_rows(&records, old);
+    assert_eq!(
+        old_registered.len(),
+        1,
+        "the old incarnation listened once: {records:?}"
+    );
+    assert_eq!(
+        old_withdrawn.len(),
+        1,
+        "the old listen was withdrawn outright at the disposal: {records:?}"
+    );
+    assert!(
+        old_suspended.is_empty(),
+        "no seat was suspended for the swap: {records:?}"
+    );
+    let (new_registered, new_withdrawn, _) = listen_rows(&records, successor);
+    assert_eq!(
+        new_registered.len(),
+        1,
+        "the successor listened once, anew: {records:?}"
+    );
+    assert!(
+        new_withdrawn.is_empty(),
+        "nothing was ever withdrawn under the successor — it inherited no journal: {records:?}"
+    );
+    let (withdrawn, registered) = (old_withdrawn[0], new_registered[0]);
+    assert!(
+        withdrawn < registered,
+        "the old journal ended (row {withdrawn}) before the successor's began (row {registered}) — \
+         not inherited, the limit: {records:?}"
+    );
+
+    // THE SWAP WINDOW, by the record: between those two rows the topic
+    // had no listener, and every reply-expecting walk landed there was
+    // dropped as an honestly empty topic — traced with zero listeners,
+    // never refused (not `restarting`).
+    let window = &records[withdrawn + 1..registered];
+    let dropped = window.iter().filter(|record| walk_with(record, 0)).count();
+    assert!(
+        dropped >= 1,
+        "a reply-expecting walk landed in the window and selected nobody: {window:?}"
+    );
+    assert!(
+        !window.iter().any(|record| matches!(
+            &record.kind,
+            LedgerEventKind::DispatchRefused { topic, .. } if topic == TOPIC
+        )),
+        "the limit: a walk in the window is dropped, never refused: {window:?}"
+    );
+    assert!(
+        !window.iter().any(|record| walk_with(record, 1)),
+        "no walk in the window reached a listener: {window:?}"
+    );
+    // The emitter's own account: delivered, then nobody, then delivered.
+    let log = std::fs::read(paths.data.join("probe.log")).unwrap_or_default();
+    let first_d = log.iter().position(|tag| *tag == b'd');
+    let n_after = first_d.and_then(|at| {
+        log[at..]
+            .iter()
+            .position(|tag| *tag == b'n')
+            .map(|n| at + n)
+    });
+    let d_after = n_after.and_then(|at| log[at..].iter().position(|tag| *tag == b'd'));
+    assert!(
+        d_after.is_some(),
+        "the probe saw an answer, then an empty topic, then an answer: {:?}",
+        String::from_utf8_lossy(&log)
+    );
+    assert!(
+        !log.iter()
+            .any(|tag| matches!(tag, b'r' | b'g' | b's' | b't' | b'e')),
+        "no walk was refused typed across the swap: {:?}",
+        String::from_utf8_lossy(&log)
+    );
     daemon
         .shutdown()
         .await
