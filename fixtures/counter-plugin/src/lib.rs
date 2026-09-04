@@ -46,6 +46,9 @@ const WAKE_TOPIC: &str = "jinn:clock/alarm";
 const READABLE_TOPIC: &str = "jinn:net/readable";
 /// The token the clock modes request their alarms under.
 const WAKE_TOKEN: u64 = 11;
+/// The token `clock-chain` arms its one-shot under FROM A WAKE HANDLER —
+/// a registration made after activation (M2-K26 amendment 2, #53).
+const AT_TOKEN: u64 = 12;
 /// The M2-K9 notice topic: a settings provider's `changed` notice, which
 /// its consumers must answer (a reply-expecting dispatch).
 const CHANGED_TOPIC: &str = "jinn:test/settings-changed";
@@ -75,6 +78,8 @@ static STASH: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static MODE: Mutex<String> = Mutex::new(String::new());
 /// The `net-echo` listener and its live connections (M2-K6).
 static LISTENER: AtomicU64 = AtomicU64::new(0);
+/// Whether `clock-chain` has armed its one-shot in THIS incarnation.
+static CHAINED: AtomicBool = AtomicBool::new(false);
 static CONNS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 fn fault(error: jinn::plugin::types::KernelError) -> GuestFault {
@@ -1249,6 +1254,14 @@ impl Guest for Fixture {
                 clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
                 Ok(())
             }
+            // A periodic wake whose FIRST tick arms a one-shot (harness #53,
+            // M2-K26 amendment 2): a registration made after activation,
+            // which a replacement incarnation must route exactly as a first
+            // one does. Both wakes are ledger rows; the one-shot is the witness.
+            "clock-chain" => {
+                clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+                Ok(())
+            }
             // A one-shot wake that appends to a guest-kept log from
             // `handle_event` (M2-K3 round 2): an effect registered AFTER
             // activation must still join the fiber's journal.
@@ -1433,6 +1446,11 @@ impl Guest for Fixture {
             echo_tick()?;
             return Ok(Vec::new());
         }
+        // The chained one-shot landed (M2-K26 amendment 2): its `AlarmWake`
+        // row is the witness; the handler has nothing more to do.
+        if topic == WAKE_TOPIC && token == AT_TOKEN {
+            return Ok(Vec::new());
+        }
         // A typed clock wake: right token, right topic, 8-byte LE instant —
         // anything else on the wake topic is a contract violation.
         if topic == WAKE_TOPIC {
@@ -1465,6 +1483,9 @@ impl Guest for Fixture {
             }
             if mode == "introspect" {
                 introspect_tick()?;
+            }
+            if mode == "clock-chain" && !CHAINED.swap(true, Ordering::SeqCst) {
+                clock::alarm_at(0, AT_TOKEN).map_err(fault)?;
             }
             if mode == "fs-on-wake" {
                 fs::append("/wakes.log", b"tick\n", "").map_err(fs_fault)?;
