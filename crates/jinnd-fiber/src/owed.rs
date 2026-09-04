@@ -108,7 +108,7 @@ fn requested(committed: &Committed, desired: &Desired) -> Option<Owed> {
 
 /// THE ALLOWLIST — the only door to [`Owed::Reload`], and a closed one.
 ///
-/// Two arms, each proving a replacement is scheduled by producing the
+/// Three arms, each proving a replacement is scheduled by producing the
 /// planner's own answer rather than by asserting something about the state:
 ///
 /// 1. the planner schedules the `Load` itself, now; or
@@ -129,8 +129,29 @@ fn reload_scheduled(committed: &Committed, desired: &Desired) -> bool {
                 Some(Step::Load { .. })
             )
         }
+        // 3. a transition is IN FLIGHT (M2-K26 (d)): the planner answers
+        //    `None` because it will not plan a second one, but the landing
+        //    is known — a clean unload rests on `unloaded()`, a clean load
+        //    serves outright, and either way the same planner loads from
+        //    the unloaded projection for a satisfiable target. An unclean
+        //    landing commits `Failed` BEFORE its cleanup (round-4 law), so
+        //    it is never read here as in flight; a fault already reported
+        //    for the incarnation (M2-K25) lands `Failed` too, and stalls.
+        None if in_flight(committed.state) && !desired.faulted => {
+            matches!(
+                plan(&committed.unloaded(), desired),
+                Some(Step::Load { .. })
+            )
+        }
         Some(Step::Unload { .. } | Step::Finish) | None => false,
     }
+}
+
+/// A transition already launched and not yet landed: the one shape the
+/// planner declines to plan over, and the one the allowlist proves from
+/// its landing instead (M2-K26 (d)).
+const fn in_flight(state: FiberState) -> bool {
+    matches!(state, FiberState::Loading | FiberState::Unloading)
 }
 
 /// An unload that ENDS this fiber's service rather than replacing it. A
