@@ -11,7 +11,7 @@ use jinnd_api::{DispatchMode, LedgerEventKind};
 
 use crate::peer::LedgerSink;
 
-use super::{EventTarget, Listener, LocalTopics};
+use super::{Delivery, EventTarget, Listener, LocalTopics};
 
 /// The kernel's RESERVED lifecycle topic (M2-K13; harness #40/#41): the
 /// kernel publishes every fiber transition it commits here, and nothing
@@ -157,12 +157,17 @@ impl LocalTopics {
                 .filter(|listener| listener.topic == topic);
             for Listener {
                 lane,
-                target,
+                delivery,
                 token,
                 budget,
                 ..
             } in selected
             {
+                // A tombstone (M2-K26) has no instance to accept: neither
+                // reached nor dropped, exactly as the withdrawn row was.
+                let Delivery::Live(target) = delivery else {
+                    continue;
+                };
                 let opened = match lane {
                     Some(lane) => Some(&*lane),
                     None => Lane::open(target, *token, topic, *budget, sink.clone())

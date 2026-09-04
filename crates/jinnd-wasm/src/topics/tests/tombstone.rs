@@ -64,7 +64,10 @@ async fn a_tombstone_is_selected_and_refused_exactly_as_its_registration_was() {
             }),
             "{mode:?}: the tombstone is refused with the oracle's answer"
         );
-        assert!(report.outputs.is_empty(), "{mode:?}: never answered unmodified");
+        assert!(
+            report.outputs.is_empty(),
+            "{mode:?}: never answered unmodified"
+        );
         assert_eq!(replaced.0.load(Ordering::SeqCst), 0, "{mode:?}");
         assert_eq!(
             sink.recorded(),
@@ -94,10 +97,21 @@ async fn an_emit_mode_walk_skips_a_tombstone_and_traces_as_today() {
     topics.entomb(id, consumer(), 7);
 
     let report = topics
-        .emit(1, "t", DispatchMode::Emit, &Selector::All, Vec::new(), None, &NoRealms)
+        .emit(
+            1,
+            "t",
+            DispatchMode::Emit,
+            &Selector::All,
+            Vec::new(),
+            None,
+            &NoRealms,
+        )
         .await;
 
-    assert!(report.refused.is_none(), "emit is never refused for a tombstone");
+    assert!(
+        report.refused.is_none(),
+        "emit is never refused for a tombstone"
+    );
     assert_eq!(
         sink.recorded(),
         vec![(
@@ -123,12 +137,26 @@ async fn a_tombstone_the_oracle_cannot_explain_is_refused_stalled() {
     let topics = LocalTopics::traced(Arc::clone(&sink) as Arc<dyn LedgerSink>);
     topics.watch_restarts(doomed(FiberId(1)) as Arc<dyn RestartOracle>);
     let healthy = Arc::new(Counted::default());
-    topics.listen("t", 1, 0, Some(FiberId(4)), Arc::clone(&healthy) as Arc<dyn EventTarget>);
+    topics.listen(
+        "t",
+        1,
+        0,
+        Some(FiberId(4)),
+        Arc::clone(&healthy) as Arc<dyn EventTarget>,
+    );
     let id = topics.listen("t", 2, 0, Some(FiberId(9)), Arc::new(Counted::default()));
     topics.entomb(id, consumer(), 3);
 
     let report = topics
-        .emit(7, "t", DispatchMode::Waterfall, &Selector::All, b"x".to_vec(), None, &NoRealms)
+        .emit(
+            7,
+            "t",
+            DispatchMode::Waterfall,
+            &Selector::All,
+            b"x".to_vec(),
+            None,
+            &NoRealms,
+        )
         .await;
 
     assert_eq!(
@@ -139,10 +167,21 @@ async fn a_tombstone_the_oracle_cannot_explain_is_refused_stalled() {
             owed: Owed::Stalled,
         })
     );
-    assert_eq!(healthy.0.load(Ordering::SeqCst), 0, "decided, then dispatched: nobody ran");
+    assert_eq!(
+        healthy.0.load(Ordering::SeqCst),
+        0,
+        "decided, then dispatched: nobody ran"
+    );
     assert!(matches!(
         sink.recorded().as_slice(),
-        [(LedgerEventKind::DispatchRefused { owed: Owed::Stalled, incarnation: 3, .. }, None)]
+        [(
+            LedgerEventKind::DispatchRefused {
+                owed: Owed::Stalled,
+                incarnation: 3,
+                ..
+            },
+            None
+        )]
     ));
 }
 
@@ -167,7 +206,11 @@ async fn rebind_replaces_a_fibers_tombstones_with_its_staged_listens() {
     assert!(topics.entombed(FiberId(5)).is_empty());
 
     let successor = Arc::new(Counted::default());
-    let ids: Vec<u64> = topics.entombed(FiberId(9)).into_iter().map(|(id, _)| id).collect();
+    let ids: Vec<u64> = topics
+        .entombed(FiberId(9))
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
     topics.rebind(
         &ids,
         vec![Rebind {
@@ -179,7 +222,10 @@ async fn rebind_replaces_a_fibers_tombstones_with_its_staged_listens() {
             target: Arc::clone(&successor) as Arc<dyn EventTarget>,
         }],
     );
-    assert!(topics.entombed(FiberId(9)).is_empty(), "no tombstone survives the commit");
+    assert!(
+        topics.entombed(FiberId(9)).is_empty(),
+        "no tombstone survives the commit"
+    );
     // Skipped by a walk (still doomed by the oracle in this fixture) means
     // the row is LIVE again: use an oracle that owes nothing to prove the
     // delivery lands on the successor.
@@ -198,7 +244,15 @@ async fn rebind_replaces_a_fibers_tombstones_with_its_staged_listens() {
         }],
     );
     let report = fresh
-        .emit(1, "t", DispatchMode::Serial, &Selector::All, Vec::new(), None, &NoRealms)
+        .emit(
+            1,
+            "t",
+            DispatchMode::Serial,
+            &Selector::All,
+            Vec::new(),
+            None,
+            &NoRealms,
+        )
         .await;
     assert!(report.refused.is_none());
     assert_eq!(successor.0.load(Ordering::SeqCst), 1);
@@ -216,12 +270,26 @@ async fn withdrawing_a_fibers_tombstones_leaves_no_row_and_names_their_topics() 
     topics.entomb(a, consumer(), 7);
     assert_eq!(topics.entombed_incarnation(&consumer()), Some(7));
     topics.entomb(b, consumer(), 7);
-    assert_eq!(topics.withdraw_tombstones(FiberId(9)), vec!["t".to_owned(), "u".to_owned()]);
+    assert_eq!(
+        topics.withdraw_tombstones(FiberId(9)),
+        vec!["t".to_owned(), "u".to_owned()]
+    );
     assert!(topics.entombed(FiberId(9)).is_empty());
     assert_eq!(topics.entombed_incarnation(&consumer()), None);
-    assert!(topics.withdraw_tombstones(FiberId(9)).is_empty(), "idempotent");
+    assert!(
+        topics.withdraw_tombstones(FiberId(9)).is_empty(),
+        "idempotent"
+    );
     let report = topics
-        .emit(1, "t", DispatchMode::Serial, &Selector::All, Vec::new(), None, &NoRealms)
+        .emit(
+            1,
+            "t",
+            DispatchMode::Serial,
+            &Selector::All,
+            Vec::new(),
+            None,
+            &NoRealms,
+        )
         .await;
     assert!(report.refused.is_none() && report.outputs.is_empty());
 }

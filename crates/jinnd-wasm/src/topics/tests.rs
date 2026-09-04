@@ -19,12 +19,12 @@ use super::{EventTarget, RestartOracle, Unserved};
 use crate::peer::LedgerSink;
 
 mod budget;
-mod tombstone;
 mod cycle_restart;
 mod dispositions;
 mod race;
 mod refusal;
 mod registry;
+mod tombstone;
 
 #[derive(Default)]
 pub(in crate::topics) struct RecordingSink(Mutex<Vec<(LedgerEventKind, Option<FiberId>)>>);
