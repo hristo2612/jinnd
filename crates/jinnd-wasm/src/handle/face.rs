@@ -116,3 +116,13 @@ pub(crate) fn peer_face(handle: &InstanceHandle) -> Arc<InstancePeer> {
         handle: handle.clone(),
     })
 }
+
+impl InstanceHandle {
+    /// The seat is committed (M2-K26 amendment 2): every registration from
+    /// here on routes live, and the supervisor routes the ones recorded
+    /// while staging. Sync and infallible — run inside the commit's
+    /// critical section (R8).
+    pub(crate) fn commit_seat(&self) {
+        self.staging.send_replace(false);
+    }
+}

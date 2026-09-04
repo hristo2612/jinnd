@@ -152,13 +152,6 @@ pub struct InstanceHandle {
 }
 
 impl InstanceHandle {
-    /// The seat is committed: every registration from here on routes live,
-    /// and the supervisor routes the ones recorded while staging. Sync and
-    /// infallible — run inside the commit's critical section (R8).
-    pub(crate) fn commit_seat(&self) {
-        self.staging.send_replace(false);
-    }
-
     /// Watches the retained terminal error when this live instance dies
     /// after activation (M2-K25). The lane uses it to fault the owning
     /// fiber without polling.
