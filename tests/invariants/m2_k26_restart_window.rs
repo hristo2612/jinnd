@@ -13,6 +13,7 @@ mod harness;
 #[path = "string_lane_injects/ledger.rs"]
 mod ledger;
 
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -186,6 +187,98 @@ async fn wait_for_state(daemon: &Daemon, entry: &str, wanted: FiberState) {
         assert!(Instant::now() < deadline, "{entry} reaches {wanted:?}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+fn write_clock_chain_profile(home: &dispatch::Home, hash: &str, revision: u64) {
+    let profile = serde_json::json!({
+        "entries": [{
+            "id": "waker",
+            "package": "demo/counter-plugin",
+            "version": "0.0.1",
+            "hash": hash,
+            "config": {
+                "grants": ["jinn:clock"],
+                "data": "clock-chain",
+                "revision": revision,
+            },
+        }]
+    });
+    std::fs::write(
+        home.0.join("profile.json"),
+        serde_json::to_string_pretty(&profile).unwrap_or_else(|error| panic!("{error}")),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}
+
+async fn wait_for_two_alarm_registrations(
+    daemon: &Daemon,
+    fiber: FiberId,
+    from: usize,
+    phase: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let records = dispatch::events(daemon).await;
+        let alarms = records
+            .iter()
+            .skip(from)
+            .filter(|record| record.fiber == Some(fiber))
+            .filter_map(|record| match record.kind {
+                LedgerEventKind::AlarmWake { alarm } => Some(alarm),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if alarms.len() >= 2 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{phase}: the alarm registered after activation fires; observed {alarms:?}: {records:#?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replacement_seat_is_installed_at_commit_and_its_alarms_fire() {
+    let home = dispatch::home("m2-k26-commit-alarm");
+    let mut entry = dispatch::entry("waker", serde_json::json!(["jinn:clock"]), "clock-chain");
+    entry["config"]["revision"] = serde_json::json!(1);
+    let paths = dispatch::paths(&home, vec![entry]);
+    let hash = serde_json::from_slice::<serde_json::Value>(
+        &std::fs::read(&paths.profile).unwrap_or_else(|error| panic!("profile read: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("profile json: {error}"))["entries"][0]["hash"]
+        .as_str()
+        .unwrap_or_else(|| panic!("fixture hash is present"))
+        .to_owned();
+    let daemon = dispatch::booted(paths).await;
+    let fiber = daemon
+        .entry_fiber("waker")
+        .unwrap_or_else(|| panic!("the entry has a fiber"));
+    wait_for_two_alarm_registrations(&daemon, fiber, 0, "first activation").await;
+
+    write_clock_chain_profile(&home, &hash, 2);
+    let report = daemon
+        .reload()
+        .await
+        .unwrap_or_else(|error| panic!("reload: {error:?}"));
+    assert_eq!(report.restarted.len(), 1, "exactly one replacement commits");
+    let records = dispatch::events(&daemon).await;
+    let commit = records
+        .iter()
+        .position(|record| {
+            record.fiber == Some(fiber)
+                && matches!(
+                    &record.kind,
+                    LedgerEventKind::FiberTransition(transition)
+                        if transition.to == FiberState::Active
+                            && transition.cause == jinnd_api::TransitionCause::ConfigChanged
+                )
+        })
+        .unwrap_or_else(|| panic!("the replacement commits Active: {records:#?}"));
+    wait_for_two_alarm_registrations(&daemon, fiber, commit, "replacement").await;
+    shutdown(&daemon).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
