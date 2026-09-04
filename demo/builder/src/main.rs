@@ -105,7 +105,7 @@ fn profile(clock: &str, greeter: &str, scribe: &str) -> String {
         { "id": "scribe", "package": "demo/scribe", "hash": scribe,
           "config": { "grants": ["demo:announce", "jinn:fs"], "data": "journal.txt" } },
         { "id": "greeter", "package": "demo/greeter", "hash": greeter,
-          "config": { "grants": ["demo:greeting", "demo:clock"], "data": "world" } },
+          "config": { "grants": ["demo:greeting", "demo:announce", "demo:clock"], "data": "world" } },
     ]});
     serde_json::to_string_pretty(&document).expect("profile encoding")
 }

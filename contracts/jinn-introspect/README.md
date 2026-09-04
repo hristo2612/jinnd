@@ -135,6 +135,13 @@ unchanged version is not additive (R12).
 
 ## 0.6.0 (M2-K24, harness findings 7, 45 and 46)
 
+Fix under this version (M2-K26 (d), no schema change): `entry.unserved`
+answers `restarting` for the WHOLE of a replacement's window — a load in
+flight included. The one source both surfaces read (the refusal and this
+field) answered `stalled` for a committed `loading` before, so an
+operator reading an entry mid-restart was told "nothing is coming" while
+the replacement's activation was running.
+
 Additive: `entry` gains `injects` and `unmet`. A wasm entry may declare,
 beside its grants, the string-lane contracts it injects at activation
 (`config.injects`, constitution 04 §Format). The kernel then keeps §3's

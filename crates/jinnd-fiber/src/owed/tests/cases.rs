@@ -9,16 +9,19 @@ use super::{aim, desired, unsatisfied};
 use crate::owed::owed;
 use crate::plan::{Committed, Desired};
 
-/// The round-4 inversion, stated as the closure of the ALLOWLIST: a
-/// committed state the allowlist does not name owes a STALL, whatever else
-/// is true of it. `Loading` and `Unloading` are the states standing in for
-/// "not named" here — the supervisor commits neither, so nothing about them
-/// can be proved from the planner, and the conservative answer is the only
-/// honest one. Rounds 1-3 each answered `Reload` from an unnamed state
-/// because the fall-through was optimistic; after the inversion an unnamed
-/// state cannot reach `Reload` at all.
+/// The in-flight arm (M2-K26 (d)): a transition already RUNNING is a
+/// replacement the planner cannot re-plan — it answers `None` mid-flight
+/// — but its landing is not a mystery: a clean landing rests on
+/// [`Committed::unloaded`] (an unload) or serves outright (a load), and
+/// from there the planner loads for a satisfiable target. Before this
+/// arm both states fell past the allowlist and answered `Stalled` while a
+/// load was in flight — so `jinn:introspect` told an operator "nothing is
+/// coming" for the whole of a restart's activation, and a walk that
+/// selected the replacement's listener (harness FINDINGS #47's second
+/// half) was told the same. The allowlist stays closed: the arm carries
+/// its proof in the planner's own answer over the landing's projection.
 #[test]
-fn a_state_the_allowlist_does_not_name_owes_a_stall() {
+fn an_in_flight_transition_owes_the_reload_its_landing_reaches() {
     for state in [FiberState::Loading, FiberState::Unloading] {
         for target in [aim(0, 0), aim(0, 1)] {
             let committed = Committed {
@@ -28,10 +31,34 @@ fn a_state_the_allowlist_does_not_name_owes_a_stall() {
             };
             assert_eq!(
                 owed(&committed, &desired(target)),
-                Some(Owed::Stalled),
-                "{state:?} is not on the allowlist and promised a replacement"
+                Some(Owed::Reload),
+                "{state:?} is a replacement in flight and must promise it"
             );
         }
+    }
+}
+
+/// The arm's other edge: an in-flight transition whose landing the
+/// planner will NOT load from still stalls — a fault reported for the
+/// incarnation (M2-K25: the landing is `Failed`, never retried under the
+/// same aim) and a withdrawn dependency (next case) both fall past it.
+#[test]
+fn an_in_flight_transition_with_a_faulted_incarnation_owes_a_stall() {
+    for state in [FiberState::Loading, FiberState::Unloading] {
+        let committed = Committed {
+            state,
+            active_for: Some(aim(0, 0)),
+            ..Committed::new()
+        };
+        let faulted = Desired {
+            faulted: true,
+            ..desired(aim(0, 0))
+        };
+        assert_eq!(
+            owed(&committed, &faulted),
+            Some(Owed::Stalled),
+            "{state:?} with a dead incarnation promised a replacement"
+        );
     }
 }
 

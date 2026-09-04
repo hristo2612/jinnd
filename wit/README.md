@@ -1,4 +1,4 @@
-# The plugin world — `jinn:plugin@0.11.0`
+# The plugin world — `jinn:plugin@0.12.0`
 
 Version history (additive within 0.x, R12): 0.1.0 M1-P8 world; 0.2.0 M2-K3
 `fs` finalized to its bundle; 0.3.0 M2-K4 lifecycle semantics (suspend ≠

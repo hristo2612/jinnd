@@ -523,7 +523,9 @@ async fn a_walk_parks_the_emitter_while_the_listener_spends_its_deadline() {
     );
     assert!(probe.failures.is_empty(), "listener probe: {probe:?}");
 
-    let (_, emitter_seat) = rig.seat(2, Duration::from_millis(80));
+    let (emitter_peer, emitter_seat) = rig.seat(2, Duration::from_millis(80));
+    // The walk is covered by the topic's grant (M2-K26 (e)).
+    rig.broker.grant(emitter_peer, EVENT_TOPIC);
     let emitter = rig.host.instantiate(&rig.component, emitter_seat);
     let started = std::time::Instant::now();
     emitter
@@ -560,6 +562,8 @@ async fn a_listener_that_emits_a_nested_walk_is_not_charged_as_the_emitter() {
     // card (a) says its clock does not run while it is the emitter.
     let (peer, seat) = rig.seat(3, Duration::from_millis(150));
     rig.broker.grant(peer, EVENT_TOPIC);
+    // Its nested walk is covered by the nested topic's grant (M2-K26 (e)).
+    rig.broker.grant(peer, NESTED_TOPIC);
     let middle = rig.host.instantiate(&rig.component, seat);
     middle
         .activate(b"nested-emitter".to_vec())
@@ -1299,7 +1303,7 @@ async fn a_sealed_seat_refuses_registrations_and_the_instance_no_entries() {
 }
 
 /// M2-K4 ruling 4: suspension releases kernel registrations — the listener
-/// unlistens, the provision withdraws, each ledgered — and hands the world
+/// is entombed (M2-K26), the provision withdraws, each ledgered — and hands the world
 /// effects back once each, in registration order; guest inverses do not
 /// run (they are instance-bound, and the instance disposes).
 #[tokio::test]
@@ -1334,6 +1338,7 @@ async fn suspend_releases_registrations_and_hands_back_world_effects() {
             &rig.alarms,
             peer,
             Some((rig.ledger.as_ref() as &dyn LedgerSink, FiberId(1))),
+            (jinnd_api::EntryId("scribe".to_owned()), 3),
         )
         .await;
     let ids: Vec<u64> = retained.iter().map(|record| record.effect).collect();
@@ -1342,17 +1347,26 @@ async fn suspend_releases_registrations_and_hands_back_world_effects() {
         vec![41, 42],
         "world effects hand back once each, in order"
     );
-    assert!(
-        rig.topics.unlisten(listen_id).is_none(),
-        "the listener released"
+    // M2-K26 (a): the listen is ENTOMBED, not released — the row stays
+    // selectable under the incarnation it was minted under, and its
+    // withdrawal row lands when the subscription actually ends.
+    assert_eq!(
+        rig.topics.entombed(FiberId(1)),
+        vec![(listen_id, "jinn:test/topic".to_owned())],
+        "the listener became a tombstone"
+    );
+    assert_eq!(
+        rig.topics
+            .entombed_incarnation(&jinnd_api::EntryId("scribe".to_owned())),
+        Some(3)
     );
     let trail = &rig.ledger.kinds()[before..];
     assert!(
-        trail.contains(&LedgerEventKind::EffectWithdrawn {
+        !trail.contains(&LedgerEventKind::EffectWithdrawn {
             label: "listen jinn:test/topic".to_owned(),
             clean: true,
         }),
-        "the release is ledgered: {trail:?}"
+        "the subscription did not end at the suspension: {trail:?}"
     );
     assert!(
         trail.contains(&LedgerEventKind::ServiceWithdrawn {
@@ -1367,4 +1381,79 @@ async fn suspend_releases_registrations_and_hands_back_world_effects() {
         )),
         "no guest inverse ran or was ledgered as withdrawn: {trail:?}"
     );
+}
+
+/// #49 (M2-K26 (e); Law 1, constitution 01 §Grants): an `events.emit`
+/// is covered by the grant of the topic's own name exactly as a
+/// subscription is. Without it the walk is refused BEFORE selection —
+/// the broker's own `GrantRefused` row, `grant-refused` to the guest,
+/// no `DispatchTrace`, and the listener never entered. The same emitter
+/// with the grant is unchanged.
+#[tokio::test]
+async fn an_emit_without_the_topics_grant_is_refused_on_the_record() {
+    struct Entered(std::sync::atomic::AtomicUsize);
+    impl jinnd_wasm::EventTarget for Entered {
+        fn deliver(
+            &self,
+            _: u64,
+            _: &str,
+            _: Vec<u8>,
+            _: Option<std::num::NonZeroU64>,
+        ) -> jinnd_api::KernelFuture<'static, Vec<u8>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+    let rig = rig();
+    let topics = Arc::new(LocalTopics::traced(
+        rig.ledger.clone() as Arc<dyn LedgerSink>
+    ));
+    let entered = Arc::new(Entered(std::sync::atomic::AtomicUsize::new(0)));
+    topics.listen(
+        EVENT_TOPIC,
+        1,
+        0,
+        None,
+        Arc::clone(&entered) as Arc<dyn jinnd_wasm::EventTarget>,
+    );
+    for granted in [false, true] {
+        let (peer, mut seat) = rig.seat(2, Duration::from_secs(5));
+        seat.topics = Arc::clone(&topics);
+        if granted {
+            rig.broker.grant(peer, EVENT_TOPIC);
+        }
+        let before = rig.ledger.kinds().len();
+        let emitter = rig.host.instantiate(&rig.component, seat);
+        let (outcome, _) = emitter.activate(b"emitter".to_vec()).await;
+        let trail = &rig.ledger.kinds()[before..];
+        let refused = trail.iter().any(|kind| {
+            matches!(kind, LedgerEventKind::GrantRefused { contract, .. } if contract == EVENT_TOPIC)
+        });
+        let traced = trail
+            .iter()
+            .any(|kind| matches!(kind, LedgerEventKind::DispatchTrace { .. }));
+        if granted {
+            assert!(
+                outcome.is_ok(),
+                "the granted emitter is unchanged: {outcome:?}"
+            );
+            assert!(!refused && traced, "granted: walked and traced: {trail:?}");
+            assert_eq!(entered.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        } else {
+            assert!(
+                outcome.is_err(),
+                "the ungranted emit is refused to the guest"
+            );
+            assert!(refused, "the broker's own GrantRefused row: {trail:?}");
+            assert!(
+                !traced,
+                "no DispatchTrace for a walk that never selected: {trail:?}"
+            );
+            assert_eq!(
+                entered.0.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "the listener never ran"
+            );
+        }
+    }
 }

@@ -6,7 +6,7 @@
 // connections. Listeners and connections are KERNEL REGISTRATIONS (metadata
 // `lifecycle`): closed and ledgered on suspend and on dispose; a plugin
 // re-listens in `activate`. Every call is non-blocking (R1). The plugin
-// world's `net` import (wit/plugin.wit, 0.11.0) carries this interface
+// world's `net` import (wit/plugin.wit, 0.12.0) carries this interface
 // verbatim with the broker wire beside each operation; this bundle is the
 // contract of record (R12).
 //

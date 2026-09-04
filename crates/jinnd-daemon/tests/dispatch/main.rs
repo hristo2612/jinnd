@@ -42,6 +42,9 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
                 "provider",
                 serde_json::json!([
                     "jinn:test/settings",
+                    // The provider's walk is covered by the topic's grant
+                    // (M2-K26 (e)).
+                    "jinn:test/settings-changed",
                     "jinn:introspect",
                     "jinn:fs",
                     "jinn:clock",

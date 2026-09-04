@@ -2,7 +2,7 @@
 //! `suspend` (release kernel registrations, retain world effects; M2-K4).
 //! Split from `slot.rs` by responsibility (R10 file hygiene).
 
-use jinnd_api::{FiberId, KernelError, LedgerEventKind};
+use jinnd_api::{EntryId, FiberId, KernelError, LedgerEventKind};
 
 use crate::alarms::Alarms;
 use crate::broker::Broker;
@@ -129,8 +129,14 @@ impl SeatState {
 
     /// Suspends exactly this seat (M2-K4; decision log 2026-08-28): ONE
     /// LIFO pass over the same journal that RELEASES kernel registrations
-    /// — listeners unlisten, alarms cancel, provisions withdraw, each
-    /// ledgered as it runs — and RETAINS world mutations: the host-provider
+    /// — alarms cancel, provisions withdraw, each ledgered as it runs —
+    /// ENTOMBS its listens (M2-K26 (a)): each stays a selectable row under
+    /// `tomb` (the entry and the incarnation it was minted under) with no
+    /// delivery target, so a reply-expecting walk in the restart window is
+    /// refused instead of answering its own payload; the subscription is
+    /// replaced at the successor's commit or withdrawn on the fiber's
+    /// rest, and its withdrawal row lands THEN, when it actually ends —
+    /// and RETAINS world mutations: the host-provider
     /// effects are handed back, in registration order, for the entry's live
     /// journal. Guest-owned inverses are instance-bound by nature (their
     /// undo lives in the store that disposes here) and run no more than the
@@ -143,6 +149,7 @@ impl SeatState {
         alarms: &Alarms,
         peer: PeerId,
         ledger: Option<(&dyn LedgerSink, FiberId)>,
+        tomb: (EntryId, u64),
     ) -> Vec<HostRecord> {
         // The world effects, in registration order, once each (a keyed
         // replay journaled its id again) — identity is (contract, effect):
@@ -168,15 +175,8 @@ impl SeatState {
                     release(broker, record, ledger, &mut first).await;
                 }
                 Registration::Listen(record) => {
-                    let topic = record.id.and_then(|id| topics.unlisten(id));
-                    if let (Some((sink, fiber)), Some(topic)) = (ledger, topic) {
-                        sink.append(
-                            LedgerEventKind::EffectWithdrawn {
-                                label: format!("listen {topic}"),
-                                clean: true,
-                            },
-                            Some(fiber),
-                        );
+                    if let Some(id) = record.id {
+                        topics.entomb(id, tomb.0.clone(), tomb.1);
                     }
                 }
                 Registration::Alarm(record) => {

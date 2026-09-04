@@ -4,7 +4,7 @@
 // Base host-provider contract implemented by the kernel (01 §Mechanical closure).
 // Demonstrates the scoped-grant pattern: grants carry a path-prefix scope with a
 // decidable subset predicate (01 §Contract anatomy), enforced per call on the
-// fully resolved path. The plugin world's `fs` import (wit/plugin.wit, 0.11.0)
+// fully resolved path. The plugin world's `fs` import (wit/plugin.wit, 0.12.0)
 // carries this interface verbatim — operations, `fs-error`, idempotency keys.
 package jinn:fs@0.2.0;
 

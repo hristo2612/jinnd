@@ -845,6 +845,8 @@ dependencies = [
  "jinnd-adapter",
  "jinnd-api",
  "jinnd-daemon",
+ "jinnd-effects",
+ "jinnd-fiber",
  "jinnd-wasm",
  "proptest",
  "serde_json",

@@ -98,7 +98,12 @@ where
                 guest_trail,
             });
             let fiber = track(Arc::clone(&body), signal);
-            core.track_states(fiber.id(), fiber.states());
+            core.track_states(
+                fiber.id(),
+                fiber.states(),
+                request.entry.clone(),
+                guest_trail,
+            );
             let decode = decode.clone();
             let declare = declare.clone();
             let restate = move |body: &WasmBody, config: C| {

@@ -24,13 +24,13 @@ use crate::alarms::clock_floor;
 use crate::broker_state::refusal;
 pub use crate::grants::{Grant, SeatSpec};
 use crate::grants::{admission, attenuate, authority};
-use crate::handle::Registration;
 use crate::host::LoadedComponent;
 use crate::instance::Seat;
 use crate::selector::NoRealms;
-use crate::slot::{SeatState, SharedSlot};
+use crate::slot::SharedSlot;
 
 mod closing;
+mod commit;
 mod injects;
 mod journal;
 mod spawn;
@@ -158,6 +158,13 @@ impl FiberBody for WasmBody {
             // A fresh incarnation opens a fresh journal: the previous
             // seat's seal landed before this activation was planned.
             self.slot.unseal();
+            // A REPLACEMENT activates as a staging seat (M2-K26 (b); R8):
+            // its listens and provisions are recorded, not routed, and land
+            // atomically at the commit below in place of the tombstones the
+            // suspension left — a walk selects tombstones (refused) before
+            // the lock and live listeners after, never neither. A first
+            // activation is unchanged: nothing is being replaced.
+            let replacing = self.slot.ever_installed();
             let component = lock(&self.component).clone();
             let handle = core.host.instantiate(
                 &component,
@@ -172,7 +179,7 @@ impl FiberBody for WasmBody {
                     deadline: DEADLINE,
                     clock_floor_ms,
                     slot: Some(Arc::clone(&self.slot)),
-                    staging: false,
+                    staging: replacing,
                 },
             );
             // Host-provider wakes (M2-K7 `jinn:net/readable`) deliver to
@@ -237,8 +244,16 @@ impl FiberBody for WasmBody {
                     if let Some(seat) = closing.close().await {
                         let ledger = trail.then_some((closing.owner.sink.as_ref(), fiber));
                         let owner = &closing.owner;
+                        let tomb = (closing.entry.clone(), closing.slot_id);
                         let retained = seat
-                            .suspend(&owner.broker, &owner.topics, &owner.alarms, peer, ledger)
+                            .suspend(
+                                &owner.broker,
+                                &owner.topics,
+                                &owner.alarms,
+                                peer,
+                                ledger,
+                                tomb,
+                            )
                             .await;
                         let count = retained.len() as u64;
                         owner.inherit(&closing.entry, retained);
@@ -255,33 +270,23 @@ impl FiberBody for WasmBody {
             )?;
             // The body runs once per fiber; its contribution commits into
             // the seat, success or failure alike — a failing activation
-            // still owes its inverses (I1). With the trail on, each landed
-            // registration is a ledger event (Law 2).
+            // still owes its inverses (I1). Where it lands — a replacement's
+            // atomic commit in place of the tombstones, or an uncommitted
+            // install — is `commit.rs` (M2-K26 (b)/(c)).
             let (outcome, contributed) = handle.activate(config).await;
-            if self.guest_trail {
-                for registration in &contributed.registrations {
-                    let label = match registration {
-                        Registration::Effect { label, .. } => label.clone(),
-                        Registration::Listen(listen) => format!("listen {}", listen.topic),
-                        // An alarm request IS an effect (M2-K2, R5); its
-                        // registration is a ledger event like any other.
-                        Registration::Alarm(alarm) => alarm.label.clone(),
-                        // The broker ledgered the provide crossing itself
-                        // (R6); the host provider ledgered its own effect
-                        // registration with this fiber's attribution (M2-K3;
-                        // a kernel registration's spawn/listen line, M2-K6).
-                        Registration::Provision { .. }
-                        | Registration::Host(_)
-                        | Registration::Kernel(_) => continue,
-                    };
-                    core.sink
-                        .append(LedgerEventKind::EffectRegistered { label }, Some(fiber));
-                }
-            }
+            self.trail(&core, &contributed, fiber);
             let watched = handle.clone();
-            if let Some(previous) = self.slot.install(SeatState::live(handle, contributed)) {
-                previous.instance.dispose().await;
-            }
+            let committing = replacing && outcome.is_ok();
+            self.land(
+                &core,
+                handle,
+                contributed,
+                committing,
+                fiber,
+                peer,
+                at.id().0,
+            )
+            .await;
             if outcome.is_ok() {
                 core.track_death(Arc::clone(&self.slot), watched, fault_sink);
             }

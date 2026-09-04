@@ -1,4 +1,4 @@
-/// jinn:plugin@0.11.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
+/// jinn:plugin@0.12.0 — the Tier A plugin world (M1-P8; constitution 01, R7, R12).
 ///
 /// This file is the product: it is designed to outlive any particular kernel
 /// implementation or host OS (R12). Versioned; within a major version every
@@ -35,6 +35,16 @@
 /// included: the kernel awaits every listener delivery end to end, so
 /// fire-and-forget discards the answer, never the wait.
 /// Additive: no existing case, signature, or meaning changes.
+/// 0.12.0 (M2-K26): the restart window is closed to reply-expecting
+/// walks. An incarnation replacement releases the instance's listeners
+/// AT THE REPLACEMENT'S COMMIT, never at its suspension: each survives
+/// meanwhile as a refusing registration (see `lifecycle.activate` and
+/// `events.listen`), so a walk that selects one is refused `restarting`
+/// for the whole window instead of answering its own payload. And
+/// `events.emit` is covered by the grant of the topic's own name exactly
+/// as a subscription is, the refusal a ledger event (harness finding 49).
+/// Prose only; additive: no signature, case, or meaning of a granted
+/// call changes.
 /// 0.11.0 (M2-K25): `events.listen-within` adds a deterministic
 /// per-delivery fuel bound. Event walks park the emitter's guest deadline;
 /// every delivery spends only its listener's declared fuel or deadline.
@@ -66,7 +76,7 @@
 /// can be made — mechanical closure at the single dispatch point (decision log
 /// 2026-08-25: grant check → ledger append → dispatch, transport-agnostic).
 /// Law 2: every crossing of these surfaces is a ledger event.
-package jinn:plugin@0.11.0;
+package jinn:plugin@0.12.0;
 
 /// Shared vocabulary of the plugin world (R3: typed, not stringly — the
 /// stringly lanes here are the declared dynamic-plugin lane, never the
@@ -263,6 +273,21 @@ interface events {
   /// exactly as in `serial`. The whole walk is refused with `cycle`
   /// before any listener runs.
   ///
+  /// The walk is COVERED BY THE GRANT of the topic's own name, exactly as
+  /// a subscription is (M2-K26; Law 1, constitution 01 §Grants): without
+  /// it the walk is refused `grant-refused` before any listener is
+  /// selected, the refusal a ledger event, and no dispatch is traced. A
+  /// kernel-reserved topic is subscribed under its owning contract's
+  /// grant and never emitted at all (below).
+  ///
+  /// A listener whose instance is being REPLACED — suspended for a config
+  /// restart, its successor not yet committed (M2-K26) — is still SELECTED
+  /// here and refused `restarting` for the whole window, `pending` and
+  /// `loading` alike: the registration is replaced at the successor's
+  /// commit, never absent, so a `before-*` waterfall is never answered its
+  /// own payload for want of a listener. `emit` skips such a registration
+  /// and is lost in the window as before.
+  ///
   /// A KERNEL-RESERVED topic is REFUSED here in every mode (M2-K13): the
   /// kernel is its only publisher. A guest that could write to one could
   /// hand a consumer a transition the kernel never committed, and the
@@ -281,6 +306,15 @@ interface events {
   /// Registers this instance as a listener of `topic`. Registration is just
   /// an effect (LAW §3); withdrawal is `lifecycle.undo` like any other.
   /// Deliveries arrive as `lifecycle.handle-event(token, ...)`.
+  ///
+  /// A registration SURVIVES its instance's suspension (M2-K26): while the
+  /// entry's replacement activates, the row stays selectable as a refusing
+  /// registration — a reply-expecting walk that selects it is refused
+  /// `restarting` — until the successor's own `listen` commits in its
+  /// place atomically, or the entry rests without a successor (a failed
+  /// replacement, a disposal), when it is withdrawn on the record. The
+  /// record therefore shows when a subscription actually ended, never
+  /// when its instance died.
   ///
   /// A subscription is covered by the grant of the topic's own name, with
   /// ONE class of exception (M2-K13): a KERNEL-RESERVED topic is covered
@@ -674,6 +708,13 @@ interface lifecycle {
   /// is instance-bound: it runs on withdrawal, never on suspension.
   /// Once the instance's journal seals for withdrawal or suspension, every
   /// further registration is refused (`inactive-context`, ledgered).
+  /// An incarnation REPLACEMENT (a config restart, a dependency change, an
+  /// explicit restart) releases the suspended instance's listeners AT THE
+  /// REPLACEMENT'S COMMIT (M2-K26): the successor's `activate` runs with
+  /// its own `listen`s recorded, and they are routed — and the
+  /// predecessor's withdrawn — atomically, inside this call, before the
+  /// fiber commits `active`. A reply-expecting walk that selects one of
+  /// the predecessor's registrations meanwhile is refused `restarting`.
   activate: func(config: list<u8>) -> result<_, guest-fault>;
 
   /// Per-consumer vitality check (decision log 2026-08-25, C3 binding): the
