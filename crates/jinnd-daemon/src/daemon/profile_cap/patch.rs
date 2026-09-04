@@ -47,15 +47,17 @@ pub(crate) fn validate(
     if !config.is_object() {
         return Err("the patched config is not an object".to_owned());
     }
-    if config.get("grants") != committed.get("grants") {
-        return Err("grants are jinn:profile-admin's".to_owned());
-    }
     let seat = seat_config(config);
     if let Some(fault) = seat.faults.first() {
         return Err(format!("grant entry refused: {fault}"));
     }
     if let Some(refused) = grant_refusals(&seat.grants).first() {
         return Err(refused.message.clone());
+    }
+    // Admission is judged first so a malformed grant is named as such;
+    // a grants change that WOULD admit is the (d) refusal.
+    if config.get("grants") != committed.get("grants") {
+        return Err("grants are jinn:profile-admin's".to_owned());
     }
     Ok(())
 }
