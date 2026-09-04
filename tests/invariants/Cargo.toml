@@ -117,3 +117,7 @@ path = "m2_k25_fault.rs"
 [[test]]
 name = "m2_k26_restart_window"
 path = "m2_k26_restart_window.rs"
+
+[[test]]
+name = "m2_k23_profile_admin"
+path = "m2_k23_profile_admin.rs"
