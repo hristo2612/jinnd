@@ -21,6 +21,9 @@ use crate::loader::{LaneConfig, Loader};
 use crate::state::{error, lock};
 use crate::tree::EntryIndex;
 
+#[cfg(all(test, not(feature = "loom")))]
+mod tests;
+
 /// One operator intent on the composition's shape. A grants change is a
 /// config change and rides [`Loader::update_entry_deferred`]; a disable
 /// rides [`Loader::dispose_entry`] — neither needs a second mechanism.

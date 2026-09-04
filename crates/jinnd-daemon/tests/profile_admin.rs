@@ -506,3 +506,189 @@ async fn refusals_write_nothing_and_a_grants_patch_through_patch_entry_is_refuse
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
 }
+
+/// Waits until `records` holds a row `matches` accepts, and returns them.
+async fn records_until(
+    daemon: &Daemon,
+    what: &str,
+    matches: impl Fn(&LedgerRecord) -> bool,
+) -> Vec<LedgerRecord> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let records = events(daemon).await;
+        if records.iter().any(&matches) {
+            return records;
+        }
+        assert!(Instant::now() < deadline, "{what} lands");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Law 2 (COO ruling 4): the `ProfileAdministered` row is the INTENT and
+/// lands BEFORE the commit; a commit that then fails is refused `conflict`
+/// with an `AmendmentRefused` row naming the intent's sequence, the file
+/// unchanged and the target never disposed. The guest retries a conflict
+/// each tick, so once the directory is writable again the same write
+/// lands: every earlier intent is answered by its refusal, the last one by
+/// the file's digest and the target's disposal AFTER it — an applied write
+/// can never be unrecorded, and a recorded intent that did not land says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_whose_commit_fails_records_the_intent_and_then_its_refusal() {
+    let home = home("intent");
+    let (mut paths, _) = paths(
+        &home,
+        vec![
+            entry(
+                "admin",
+                serde_json::json!([
+                    "jinn:fs",
+                    "jinn:clock",
+                    { "contract": "jinn:profile-admin", "scope": ["*"] }
+                ]),
+                "admin:i",
+            ),
+            entry("target", serde_json::json!(["jinn:fs"]), "plain"),
+        ],
+    );
+    // The document lives in a directory of its own, so the write-back's
+    // stage + rename can be made to fail without touching the ledger.
+    let doc = home.0.join("doc");
+    std::fs::create_dir_all(&doc).unwrap_or_else(|error| panic!("{error}"));
+    let moved = doc.join("profile.json");
+    std::fs::rename(&paths.profile, &moved).unwrap_or_else(|error| panic!("{error}"));
+    paths.profile = moved;
+    let daemon = booted(paths.clone()).await;
+    let original = disk_digest(&paths);
+    let target = daemon
+        .entry_fiber("target")
+        .unwrap_or_else(|| panic!("target live"));
+    let writable = std::fs::metadata(&doc)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .permissions();
+    let mut sealed = writable.clone();
+    sealed.set_readonly(true);
+    std::fs::set_permissions(&doc, sealed).unwrap_or_else(|error| panic!("{error}"));
+    // The script lands only once the directory is sealed: the first
+    // attempt cannot commit.
+    script(&paths, "i", &["set-disabled\ttarget\ttrue"]);
+    let names_intent = |record: &LedgerRecord| {
+        matches!(&record.kind, LedgerEventKind::AmendmentRefused { detail } if detail.contains("intent "))
+    };
+    let records = records_until(&daemon, "the refusal of the intent", names_intent).await;
+    assert_eq!(disk_digest(&paths), original, "the file is untouched");
+    let first = administered(&records);
+    assert!(!first.is_empty(), "the intent is on the record: {records:?}");
+    assert!(
+        !records.iter().any(|record| matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.fiber == target && transition.to == FiberState::Disposed)),
+        "the target was never disposed by a refused commit: {records:?}"
+    );
+    std::fs::set_permissions(&doc, writable).unwrap_or_else(|error| panic!("{error}"));
+    let answer = wait_for(&paths.data.join("admin-i-0.out")).await;
+    assert_eq!(answer.first(), Some(&2), "the retry lands: {answer:?}");
+    let records = records_until(&daemon, "the target's disposal", |record| {
+        matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.fiber == target && transition.to == FiberState::Disposed)
+    })
+    .await;
+    let rows = administered(&records);
+    let (landed, refused) = rows.split_last().unwrap_or_else(|| panic!("rows: {records:?}"));
+    assert!(!refused.is_empty(), "at least one intent was refused");
+    for intent in refused {
+        let refusal = records.iter().find(|record| matches!(&record.kind, LedgerEventKind::AmendmentRefused { detail } if detail.contains(&format!("intent {}", intent.sequence))));
+        let refusal = refusal.unwrap_or_else(|| panic!("intent {} is answered: {records:?}", intent.sequence));
+        assert!(refusal.sequence > intent.sequence, "intent first, then its refusal");
+    }
+    let LedgerEventKind::ProfileAdministered { after, .. } = &landed.kind else {
+        unreachable!()
+    };
+    assert_eq!(*after, disk_digest(&paths), "the landed row's after is the file");
+    let disposed = records.iter().find(|record| matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.fiber == target && transition.to == FiberState::Disposed));
+    assert!(
+        disposed.is_some_and(|record| record.sequence > landed.sequence),
+        "intent recorded, then applied: {records:?}"
+    );
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
+
+/// (e) — the STATED LIMIT of this kernel version, pinned until M2-K27: a
+/// `swap-plugin` applies `Replace` as dispose-then-spawn. The old
+/// incarnation rests `Disposed` under `ExplicitDispose` — never `Suspend`,
+/// no `FiberSuspended` row, so its world journal is withdrawn rather than
+/// inherited — and the successor is a NEW fiber whose activation was not
+/// staged, so the window between the two is open to reply-expecting walks.
+/// When M2-K27 lands, this test flips: the old incarnation suspends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swap_disposes_the_old_incarnation_a_stated_limit_until_m2_k27() {
+    let home = home("swap-limit");
+    let (paths, hash) = paths(
+        &home,
+        vec![
+            entry(
+                "admin",
+                serde_json::json!([
+                    "jinn:fs",
+                    "jinn:clock",
+                    { "contract": "jinn:profile-admin", "scope": ["*"] }
+                ]),
+                "admin:w",
+            ),
+            entry("target", serde_json::json!(["jinn:fs"]), "plain"),
+            serde_json::json!({
+                "id": "anchor", "package": "demo/counter-copy", "version": "0.0.1",
+                "hash": "", "config": { "grants": ["jinn:fs"], "data": "plain" }
+            }),
+        ],
+    );
+    script(
+        &paths,
+        "w",
+        &[&format!(
+            "swap-plugin\ttarget\tdemo/counter-copy\t0.0.1\t{hash}"
+        )],
+    );
+    let daemon = booted(paths.clone()).await;
+    let old = daemon
+        .entry_fiber("target")
+        .unwrap_or_else(|| panic!("target live"));
+    let answer = wait_for(&paths.data.join("admin-w-0.out")).await;
+    assert_eq!(answer.first(), Some(&2), "swap accepted: {answer:?}");
+    let records = records_until(&daemon, "the old incarnation's rest", |record| {
+        matches!(&record.kind, LedgerEventKind::FiberTransition(transition) if transition.fiber == old && transition.to == FiberState::Disposed)
+    })
+    .await;
+    let rest = records.iter().find_map(|record| match &record.kind {
+        LedgerEventKind::FiberTransition(transition)
+            if transition.fiber == old && transition.to == FiberState::Disposed =>
+        {
+            Some(transition.cause.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(
+        rest,
+        Some(TransitionCause::ExplicitDispose),
+        "the limit: disposed, not suspended"
+    );
+    assert!(
+        !records.iter().any(|record| matches!(&record.kind, LedgerEventKind::FiberSuspended { .. }) && record.entry == Some(EntryId("target".to_owned()))),
+        "no seat was suspended for the swap: {records:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let successor = loop {
+        if let Some(fiber) = daemon.entry_fiber("target")
+            && fiber != old
+            && daemon.fiber_state(fiber) == Some(FiberState::Active)
+        {
+            break fiber;
+        }
+        assert!(Instant::now() < deadline, "the successor activates");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_ne!(successor, old, "a new fiber, not the same incarnation");
+    daemon
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+}
