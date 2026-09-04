@@ -96,7 +96,9 @@ Rules:
   or pin) is an incarnation replacement of the SAME entry — the M2-K4 ruling:
   the successor inherits the entry's live effect journal and the swap window is
   closed to reply-expecting walks (M2-K23 (e); where a kernel version has not
-  yet closed it, its bundle README names the limit).
+  yet closed it, its bundle README names the limit — at M2-K23 the loader's
+  `Replace` still disposes then spawns, pinned by the daemon suite and carded
+  as M2-K27 with its loom model).
 - Reconciliation maintains **committed vs target views** per fiber (the paper's
   calculus): a leaving provider stops admitting new consumers *before* its inverses
   run, while committed consumers keep their existing handle until their teardown

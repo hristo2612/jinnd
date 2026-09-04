@@ -36,8 +36,11 @@ interface admin {
   // The write's outcome. `accepted(seq)`: both views committed — the
   // document on disk and the runtime — and the restart, activation or
   // disposal's consequences are SCHEDULED, never awaited inside the call;
-  // `seq` is the `ProfileAdministered` row's ledger sequence. `refused`:
-  // nothing was written anywhere, and the class says why.
+  // `seq` is the `ProfileAdministered` row's ledger sequence — the row is
+  // the INTENT and lands before the commit (Law 2). `refused`: nothing
+  // was written anywhere, and the class says why — except a commit that
+  // failed after its intent row, refused `conflict` with an
+  // `AmendmentRefused` row naming that intent's sequence.
   variant outcome { accepted(u64), refused(tuple<refusal, string>) }
 
   // The closed refusal classes. `unauthorized`: an id (or, on add, the new
