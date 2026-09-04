@@ -557,7 +557,7 @@ fn operator_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
             let last = operator_call("jinn:ledger", "last-seq", &[])?;
             fs::write("/ledger-last", &last, "").map_err(fs_fault)
         }
-        "profile-patch" | "profile-patch-bad" => {
+        "profile-patch" | "profile-patch-bad" | "profile-patch-grants" => {
             clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
             Ok(())
         }
@@ -1018,19 +1018,20 @@ fn patch_tick(mode: &str, id: &str) -> Result<(), GuestFault> {
     fs::write("/patch.out", &answer, "").map_err(fs_fault)
 }
 
-/// The M2-K23 `jinn:profile-admin` mode (`admin`): from a tick, once the
-/// boot reconcile has landed, runs the writes listed in `/admin-script.txt`
-/// — one per line, `op<TAB>segment<TAB>segment…` — in order, and writes
-/// each RAW wire answer to `/admin-<n>.out`; a `conflict` refusal (tag 1,
+/// The M2-K23 `jinn:profile-admin` mode (`admin:<name>`): from a tick, once
+/// the boot reconcile has landed, runs the writes listed in
+/// `/admin-<name>-script.txt` — one per line, `op<TAB>segment<TAB>segment…`
+/// — in order, one per tick, and writes each RAW wire answer to
+/// `/admin-<name>-<n>.out`; a `conflict` refusal (tag 1,
 /// class 3) is retried next tick, so the daemon test reads exactly what the
 /// guest saw and the writes never race the boot.
-fn admin_tick() -> Result<(), GuestFault> {
-    let Ok(script) = fs::read("/admin-script.txt") else {
+fn admin_tick(name: &str) -> Result<(), GuestFault> {
+    let Ok(script) = fs::read(&format!("/admin-{name}-script.txt")) else {
         return Ok(());
     };
     let script = String::from_utf8_lossy(&script).into_owned();
     for (index, line) in script.lines().enumerate() {
-        let out = format!("/admin-{index}.out");
+        let out = format!("/admin-{name}-{index}.out");
         if fs::meta(&out).is_ok() {
             continue;
         }
@@ -1516,8 +1517,8 @@ impl Guest for Fixture {
             if mode == "cycle-trigger" {
                 cycle_tick("/cycle.out")?;
             }
-            if mode == "admin" {
-                admin_tick()?;
+            if let Some(name) = mode.strip_prefix("admin:") {
+                admin_tick(name)?;
             }
             if mode == "cycle-caller" {
                 cycle_tick("/caller.out")?;
