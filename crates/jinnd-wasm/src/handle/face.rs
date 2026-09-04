@@ -81,10 +81,18 @@ pub(crate) type NoticeRx = watch::Receiver<Option<KernelError>>;
 
 pub(crate) fn pair(
     deadline: std::time::Duration,
-) -> (InstanceHandle, NoticeTx, NoticeRx, mpsc::Receiver<Command>) {
+    staging: bool,
+) -> (
+    InstanceHandle,
+    NoticeTx,
+    NoticeRx,
+    mpsc::Receiver<Command>,
+    watch::Receiver<bool>,
+) {
     let (tx, rx) = mpsc::channel(16);
     let (death_tx, deaths) = watch::channel(None);
     let (abort, aborts) = watch::channel(None);
+    let (staging, staged) = watch::channel(staging);
     (
         InstanceHandle {
             tx,
@@ -92,10 +100,12 @@ pub(crate) fn pair(
             abort,
             deadline,
             horizon: DeadlineControl::new(),
+            staging,
         },
         death_tx,
         aborts,
         rx,
+        staged,
     )
 }
 

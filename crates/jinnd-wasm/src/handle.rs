@@ -145,9 +145,20 @@ pub struct InstanceHandle {
     /// per-entry horizon and the caller-side delivery horizon both run on
     /// it, so a walk the instance parks on pauses both at once.
     pub(crate) horizon: DeadlineControl,
+    /// Whether the instance is still a STAGING seat (M2-K26 (b), amendment
+    /// 2 / harness #53): true from instantiation until the commit flips it
+    /// — a watch (R1), so the supervisor routes what was recorded meanwhile.
+    pub(crate) staging: tokio::sync::watch::Sender<bool>,
 }
 
 impl InstanceHandle {
+    /// The seat is committed: every registration from here on routes live,
+    /// and the supervisor routes the ones recorded while staging. Sync and
+    /// infallible — run inside the commit's critical section (R8).
+    pub(crate) fn commit_seat(&self) {
+        self.staging.send_replace(false);
+    }
+
     /// Watches the retained terminal error when this live instance dies
     /// after activation (M2-K25). The lane uses it to fault the owning
     /// fiber without polling.

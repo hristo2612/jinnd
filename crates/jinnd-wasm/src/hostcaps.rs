@@ -189,7 +189,7 @@ fn alarm(
     // how fine a timer an entry may hold, never assembly-wide.
     crate::alarms::validate(&spec, state.seat.clock_floor_ms).map_err(bindings::wire_error)?;
     let label = spec.label();
-    if state.seat.staging {
+    if state.staging() {
         state
             .outcome
             .registrations
