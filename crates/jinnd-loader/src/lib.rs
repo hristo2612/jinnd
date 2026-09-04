@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+mod administer;
 mod amend;
 mod apply;
 mod cycles;
@@ -30,6 +31,7 @@ mod state;
 mod store;
 mod tree;
 
+pub use administer::Administration;
 pub use diff::{Attestation, Plan, Step, StepKind, plan};
 pub use document::{Document, DocumentEntry, RawEntry};
 pub use file_store::FileStore;

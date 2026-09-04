@@ -10,11 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DispatchMode, EffectId, EntryId, FiberId, KernelError, Owed, Transition};
 
+mod classes;
 mod record;
 
 // Re-exported so every path stays exactly what it was. The revert
 // vocabulary deliberately does NOT move: `LedgerEventKind::RevertResolved`
 // carries a `RevertResolution`, so the two belong in one file.
+pub use classes::{ProfileWrite, RefusalReason, SwapPhaseKind};
 pub use record::{LedgerQuery, LedgerRecord, Receipt};
 
 /// The typed kernel-boundary event families of v0.1 (R3; constitution 02).
@@ -146,6 +148,24 @@ pub enum LedgerEventKind {
     /// intent — no fs inverse, no fiber journal entry. `entry` is the
     /// patched entry; `by` names the editing entry (or the calling peer).
     ProfilePatched { entry: EntryId, by: String },
+    /// One `jinn:profile-admin` write landed (M2-K23, harness #37; Laws
+    /// 2/3, constitution 04): an operator INTENT applied by reconcile-by-id
+    /// under the CALLING entry's attribution. `entry` is the administered
+    /// entry; `by` the caller entry (or `peer:<id>`); `write` which of the
+    /// five; `before`/`after` the SHA-256 hex digests of the RENDERED
+    /// document, so `after` equals the file's digest on disk; `prior` the
+    /// entry's record before the write (the 0.2.0 `entry` JSON), `None`
+    /// on an add — the inverse write's payload, so the prior document is
+    /// reconstructible from the ledger alone. No fiber journal entry.
+    /// (Authorized M2-K23 additive facade delta.)
+    ProfileAdministered {
+        entry: EntryId,
+        by: String,
+        write: ProfileWrite,
+        before: String,
+        after: String,
+        prior: Option<String>,
+    },
     /// One `jinn:keystore` crossing (M2-K8, harness #5 remainder; Law 2,
     /// constitution 02 §Redaction — sensitivity class SECRET): the record
     /// carries the KEY NAME and the value's SHA-256 digest, never the
@@ -248,39 +268,6 @@ pub enum LedgerEventKind {
         artifact: String,
         phase: SwapPhaseKind,
     },
-}
-
-/// Why a grant check refused (M2-K7, harness #19; R3): the closed set of
-/// refusal classes every granted surface answers with — the broker's own
-/// check and the base providers' per-call scope enforcement alike.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum RefusalReason {
-    /// The caller holds no grant for the contract at all.
-    NotGranted,
-    /// A granted contract, but the call's target lies outside the declared
-    /// scope: an fs path beside every granted prefix, a port outside the
-    /// granted range, a command under no granted exec prefix, a profile
-    /// entry the `entry-ids` scope does not admit.
-    ScopeMismatch,
-    /// `jinn:net`: a bind address that is not loopback (v0.1 binds
-    /// loopback only).
-    NotLoopback,
-    /// `jinn:fs`: a path that cannot be resolved to a containment verdict
-    /// (an unreadable ancestor) — refused, never lexically guessed.
-    Unresolvable,
-    /// A handle minted for another peer: valid only for its owner (R4).
-    ForeignHandle,
-}
-
-/// The ledgered phases of one Mode-1 hot-swap batch (R8; authorized M1-P8
-/// additive delta): begun → per-entry healthy → committed, or rolled back
-/// with the old instances still warm.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum SwapPhaseKind {
-    Began,
-    InstanceHealthy,
-    Committed,
-    RolledBack,
 }
 
 /// The idempotency key of one revert operation: a same-key retry of a

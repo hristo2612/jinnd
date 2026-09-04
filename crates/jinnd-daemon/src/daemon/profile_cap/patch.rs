@@ -36,10 +36,19 @@ pub(super) fn merge_patch(target: &mut serde_json::Value, patch: &serde_json::Va
 /// The profile schema the daemon can decide before committing (04): a
 /// config is an object whose `grants` read as grants and would ADMIT at
 /// activation — a patch that would only fault the entry is refused whole,
-/// nothing written.
-pub(super) fn validate(config: &serde_json::Value) -> Result<(), String> {
+/// nothing written. (d), M2-K23: the patched `grants` must equal the
+/// committed `grants` by value — a grants change is `jinn:profile-admin`'s
+/// (04 §Write-back is confined), never `patch-entry`'s; `injects` stays
+/// patchable (a declaration gates and never widens).
+pub(crate) fn validate(
+    committed: &serde_json::Value,
+    config: &serde_json::Value,
+) -> Result<(), String> {
     if !config.is_object() {
         return Err("the patched config is not an object".to_owned());
+    }
+    if config.get("grants") != committed.get("grants") {
+        return Err("grants are jinn:profile-admin's".to_owned());
     }
     let seat = seat_config(config);
     if let Some(fault) = seat.faults.first() {
@@ -94,19 +103,22 @@ mod tests {
         assert!(validate(&committed, &narrowed).is_err(), "a narrowing too");
         let mut same = committed.clone();
         merge_patch(&mut same, &serde_json::json!({ "data": "b" }));
-        assert!(validate(&committed, &same).is_ok(), "config.data stays patchable");
+        assert!(
+            validate(&committed, &same).is_ok(),
+            "config.data stays patchable"
+        );
     }
 
     /// The decidable schema: an object whose grants would admit; a grant
     /// that would refuse at activation refuses the patch whole.
     #[test]
     fn validation_refuses_what_activation_would_refuse() {
-        assert!(validate(&serde_json::json!({ "grants": ["jinn:fs"], "data": "noop" })).is_ok());
-        assert!(validate(&serde_json::json!("noop")).is_err());
-        assert!(validate(&serde_json::json!({ "grants": [7] })).is_err());
-        assert!(
-            validate(&serde_json::json!({ "grants": [{ "contract": "jinn:fs", "scope": 9 }] }))
-                .is_err()
-        );
+        let good = serde_json::json!({ "grants": ["jinn:fs"], "data": "noop" });
+        assert!(validate(&good, &good).is_ok());
+        assert!(validate(&good, &serde_json::json!("noop")).is_err());
+        let bad = serde_json::json!({ "grants": [7] });
+        assert!(validate(&bad, &bad).is_err());
+        let bad = serde_json::json!({ "grants": [{ "contract": "jinn:fs", "scope": 9 }] });
+        assert!(validate(&bad, &bad).is_err());
     }
 }

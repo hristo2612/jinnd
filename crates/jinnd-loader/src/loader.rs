@@ -259,7 +259,7 @@ impl Loader {
     }
 
     /// The applied document reconstructed from entry runtimes.
-    fn applied<C: LaneConfig>(&self) -> Result<Option<Profile<C>>, KernelError> {
+    pub(crate) fn applied<C: LaneConfig>(&self) -> Result<Option<Profile<C>>, KernelError> {
         let state = lock(&self.state);
         if let Some(existing) = state.config_type
             && existing != TypeId::of::<C>()

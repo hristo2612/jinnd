@@ -70,6 +70,20 @@ pub(crate) struct Persistence {
 }
 
 impl Persistence {
+    /// The baseline rendered: the bytes the last save wrote (M2-K23).
+    pub(crate) fn rendered(&self) -> String {
+        lock(&self.baseline).render()
+    }
+
+    /// The ids of the baseline's preserved raw entries (M2-K23).
+    pub(crate) fn raw_ids(&self) -> Vec<EntryId> {
+        lock(&self.baseline)
+            .raw
+            .iter()
+            .map(crate::raw::RawEntry::entry_id)
+            .collect()
+    }
+
     /// Saves one pre-encoded committed profile over the baseline document.
     /// Mechanical throughout — plain values merged and written, no
     /// caller-supplied code — so the persist permit may span it (R1). The

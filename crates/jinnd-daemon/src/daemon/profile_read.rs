@@ -89,7 +89,7 @@ impl HostProfile {
 
 /// The bundle's `entry` record (0.2.0, #25): the document's authority
 /// fields — identity, pinned package, grants as written — and the config.
-fn entry_record(entry: &ProfileEntry<serde_json::Value>) -> serde_json::Value {
+pub(super) fn entry_record(entry: &ProfileEntry<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({
         "id": entry.id.0,
         "package": entry.plugin.package,
