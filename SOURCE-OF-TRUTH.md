@@ -264,8 +264,10 @@ within a major version.
   Decision Log). Both CLOSED 2026-09-02 — kept here as the record of what M3 needed
   and where each was delivered. A THIRD, discovered by the harness UI packet and
   recorded 2026-09-02, LANDED 2026-09-03 (item 3). A FOURTH and a FIFTH, discovered
-  by the harness extension-tier packet and recorded 2026-09-03, are OPEN (items 4
-  and 5).**
+  by the harness extension-tier packet and recorded 2026-09-03, LANDED 2026-09-03
+  and 2026-09-04 (items 4 and 5; the CLOSED markings are the COO's to confirm). A
+  SIXTH, discovered by the harness plugins seam (FINDINGS #37) and carded from the
+  UI arc's KG-1, is OPEN (item 6).**
   1. **No outbound anything.** `jinn:net` v0.1 has no `request`, no TLS and no
      non-loopback listen, at every pin so far. Slack, Stripe, Linear, GitHub, the
      vendor engine APIs and every webhook are therefore *structurally impossible* in
@@ -334,6 +336,10 @@ within a major version.
      OWN fiber on the record (`Failed`, its own error row, its kernel registrations
      released), resting there per R9 until a declared input moves (M2-K24 (c)).
      Sequenced first of the two cards from UI-2 round 1, before M2-K26 and M2-K23.
+     **Landed 2026-09-03:** M2-K25 merged (`b1dbe8f` — the implementation and the
+     verifier's `invariants/m2-k25` lane, PR #21); harness pin-bump 8 adopted it and
+     FINDINGS #48 closed. Recorded by kernel-dev on the PLA-348 dispatch; the item's
+     CLOSED marking is the COO's to confirm.
   5. **A listener's config restart withdraws its listen BEFORE the replacement
      commits, so a reply-expecting walk inside the window selects nobody and
      answers the payload UNMODIFIED.** A `ConfigChanged` restart suspends the
@@ -358,6 +364,48 @@ within a major version.
      `restarting` for an in-flight load at the one source, and #49 rides with it
      (`emit` covered by the topic's grant, with the reasons stated on the card).
      Sequenced after M2-K25 and before M2-K23.
+     **Landed 2026-09-04:** the M2-K26 implementation merged (`655f07e`, PLA-360);
+     the verifier's `invariants/m2-k26` lane and the adopting pin-bump are in
+     flight. Recorded by kernel-dev on the PLA-348 dispatch; the item's CLOSED
+     marking is the COO's to confirm.
+  6. **The composition's SHAPE is reachable through no kernel contract: adding,
+     removing, disabling, re-granting or re-pinning an entry is a file edit.**
+     `jinn:profile.patch-entry` (M2-K7/K8) writes ONE entry's `config` subtree;
+     `package`, `hash`, `disabled`, `parent` and presence are its siblings, so
+     through the surface a person or an agent actually uses an operator can change
+     what a plugin is CONFIGURED with and never what a plugin IS, whether it is
+     present, or whether it runs (harness FINDINGS #37, with a transcript at pin
+     `3a8e5c0`; UI arc KG-1). Constitution 04 names the capability — *"grants,
+     identity, nesting … require a separate operator-authorized control capability
+     (`jinn:profile-admin`)"* — and no such contract exists at any pin; the loader
+     already plans every one of those moves (`Create`/`Remove`/`Disable`/`Enable`/
+     `Replace`) and can only be reached by editing the file behind the daemon. An
+     instance whose composition only a text editor can reshape cannot run "a full
+     day on jinnd alone" once an agent operates it (§1), and "install an extension
+     from the UI" — UI-7's headline — is impossible without it. A second half,
+     found by the card's reading of `655f07e`: `patch-entry`'s validator checks
+     that a patched `config.grants` would ADMIT and not that it is UNCHANGED, so a
+     grants WIDENING is reachable through the one contract 04 says may never carry
+     one — a Law-1 side door, to be confirmed by the packet's first red test. And a
+     third: the loader's document-led `Replace` step DISPOSES the old fiber (world
+     journal withdrawn, listens released, no tombstone) where the M2-K4 ruling
+     says an incarnation replacement hands the successor the entry's journal, so a
+     provider swap loses the entry's contribution and reopens the FINDINGS #47
+     window for the one swap every seam proves. **OPEN — carded as M2-K23
+     (`docs/packets/M2-K23.md`, PLA-348):** a `jinn:profile-admin` contract of
+     five writes (add, remove, `disabled`, grants, plugin identity), authorized by
+     a separate grant on the calling entry (the R12-small answer; per-call
+     principal propagation from `jinn:auth` rejected with reasons, the same-uid
+     limit stated in the contract), each an operator intent applied by
+     reconcile-by-id (the M2-K7 precedent), each a `ProfileAdministered` row with
+     the caller entry and the before/after document digest, each reversible by the
+     inverse write the row records, refused typed for a missing grant, a malformed
+     record or an unrecordable inverse, no bypass; `patch-entry` closes to grants
+     changes; a plugin-identity swap becomes a replacement of the same entry with
+     M2-K26's window semantics, or STOPs with the fiber-engine cost priced.
+     Sequenced third, after M2-K25 and M2-K26, on the kernel lane after the
+     2026-09-04 audit; harness pin-bump 10 adopts it and flips the plugins page's
+     five disabled pills.
   The M2 port delivered the SHAPES faithfully; the two capabilities that separate a
   faithful shape from a thing that can run a business followed as seven kernel packets
   and two harness packets in the two days after, and the third blocker surfaced the
@@ -366,7 +414,9 @@ within a major version.
   starts from an instance that can reach out and can refuse a stranger, whose plugins
   can depend on each other without a coin toss, and waits on one whose walks are
   bounded by the listener that spends them and whose restarts are closed to
-  unvalidated traffic. §7(b)'s week of duty is still owed (audit 2026-09-04).
+  unvalidated traffic — and whose composition an agent can reshape through a
+  contract, on the record, and not through a text editor. §7(b)'s week of duty is
+  still owed (audit 2026-09-04).
 - **M4 — Cutover.** Old gateway retired per the cutover rule. jinnOS work (desktop
   session, mobile ROM) begins only after M4 — as bigger profiles, not new projects.
 
@@ -381,6 +431,30 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-09-04** — **A sixth M3 structural blocker is named in §7: the
+  composition's shape is reachable through no kernel contract (roadmap amendment,
+  recorded by kernel-dev on the COO's dispatch, PLA-348; COO veto window open).**
+  Found by the harness plugins seam at pin `3a8e5c0` with a transcript (FINDINGS
+  #37) and carded from the UI malleability arc's KG-1: `jinn:profile.patch-entry`
+  writes one entry's `config` and nothing else, so adding, removing, disabling,
+  re-granting or re-pinning an entry is a file edit behind the daemon — the one
+  composition change the ledger sees only as consequences and never as an intent
+  with an author. The direction is carded, not decided here: M2-K23
+  (`docs/packets/M2-K23.md`) supplies `jinn:profile-admin`, the capability
+  constitution 04 already names — five writes as operator intents applied by
+  reconcile-by-id, authorized by a separate grant on the calling entry (per-call
+  principal propagation from `jinn:auth` rejected with reasons; the same-uid limit
+  stated as `jinn:auth` states it), each a ledger row with the caller and both
+  document digests, each reversible by the inverse write the row records. Two
+  readings of `655f07e` ride on the card, each to be confirmed by a red test before
+  it is acted on: `patch-entry` admits a `config.grants` widening (a Law-1 side
+  door closed on the same seam), and the document-led `Replace` step disposes
+  where the M2-K4 ruling says an incarnation replacement inherits (ruled a
+  replacement, with a STOP rule if the fiber engine must move). §7's item 6
+  records the blocker and points at the card; items 4 and 5 are marked landed the
+  same day. Sequenced after M2-K25 and M2-K26. Nothing about M2's acceptance
+  changes — §7(a) is met, §7(b) is still owed.
 
 - **2026-09-03** — **A fifth M3 structural blocker is named in §7: a listener's
   config restart opens a fail-open window to every reply-expecting walk (roadmap
