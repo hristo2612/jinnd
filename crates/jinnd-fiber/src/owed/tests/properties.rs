@@ -157,3 +157,30 @@ fn a_stall_is_never_given_where_the_planner_would_load_right_now() {
     }
     assert!(stalled > 0, "the enumeration never exercised a stall");
 }
+
+/// The second guard from the other side (M2-K26 (d)): a stall is
+/// forbidden wherever a transition is IN FLIGHT and the optimistic reading
+/// still reaches a load — a load already running, or an unload whose clean
+/// landing plans one. Without it the inversion's floor could quietly
+/// swallow the whole of a restart's activation, exactly the reading
+/// harness FINDINGS #47 caught on `jinn:introspect`.
+#[test]
+fn a_stall_is_never_given_mid_flight_where_the_landing_reaches_a_load() {
+    let mut checked = 0u32;
+    for (committed, desired) in every_pair() {
+        let in_flight = matches!(
+            committed.state,
+            FiberState::Loading | FiberState::Unloading
+        );
+        if in_flight && reaches_load(&committed, &desired) {
+            checked += 1;
+            assert_ne!(
+                owed(&committed, &desired),
+                Some(Owed::Stalled),
+                "stalled a caller mid-flight while the landing reaches a load: \
+                 {committed:?} / {desired:?}"
+            );
+        }
+    }
+    assert!(checked > 0, "the enumeration never exercised an in-flight pair");
+}
