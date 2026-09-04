@@ -42,7 +42,9 @@ impl Restarts {
         lane.topics.watch_restarts(Arc::clone(&oracle));
         oracle
     }
+}
 
+impl Restarts {
     /// WHAT `fiber` owes, and for which entry: the fiber's own typed
     /// answer, read atomically with its rest bit. An untracked fiber owes
     /// nothing this daemon can see — honest jurisdiction, never a guess.
@@ -71,12 +73,33 @@ impl RestartOracle for Restarts {
     /// earns the promise rather than defaulting to it: [`Owed::Reload`] is
     /// answered from a closed allowlist of provably scheduled states, and
     /// anything outside it stalls by construction (round 4).
+    ///
+    /// Every answer is TRACED with its inputs at selection time (M2-K26,
+    /// PLA-360 ruling 3): whether the fiber is tracked, its rest bit,
+    /// what it owes, and the lane's incarnation for its entry — so a
+    /// `None` is attributable to the input that produced it, never a
+    /// mystery reconstructed from the rows around it.
     fn unserved(&self, fiber: FiberId) -> Option<Unserved> {
-        let (entry, owed) = self.owes(fiber)?;
-        let incarnation = self.lane.upgrade()?.incarnation(&entry)?;
+        let resting = lock(&self.fibers)
+            .get(&fiber)
+            .map(|tracked| tracked.fiber.resting());
+        let owes = self.owes(fiber);
+        let incarnation = owes
+            .as_ref()
+            .and_then(|(entry, _)| self.lane.upgrade()?.incarnation(entry));
+        tracing::debug!(
+            fiber = fiber.0,
+            tracked = resting.is_some(),
+            resting,
+            owed = ?owes.as_ref().map(|(_, owed)| *owed),
+            entry = owes.as_ref().map(|(entry, _)| entry.0.as_str()),
+            incarnation,
+            "restart oracle consulted"
+        );
+        let (entry, owed) = owes?;
         Some(Unserved {
             entry,
-            incarnation,
+            incarnation: incarnation?,
             owed,
         })
     }
