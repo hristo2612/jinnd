@@ -28,7 +28,7 @@ use crate::handle::Registration;
 use crate::host::LoadedComponent;
 use crate::instance::Seat;
 use crate::selector::NoRealms;
-use crate::slot::{SeatState, SharedSlot};
+use crate::slot::{SeatState, SharedSlot, commit_staged};
 
 mod closing;
 mod injects;
@@ -158,6 +158,13 @@ impl FiberBody for WasmBody {
             // A fresh incarnation opens a fresh journal: the previous
             // seat's seal landed before this activation was planned.
             self.slot.unseal();
+            // A REPLACEMENT activates as a staging seat (M2-K26 (b); R8):
+            // its listens and provisions are recorded, not routed, and land
+            // atomically at the commit below in place of the tombstones the
+            // suspension left — a walk selects tombstones (refused) before
+            // the lock and live listeners after, never neither. A first
+            // activation is unchanged: nothing is being replaced.
+            let replacing = self.slot.ever_installed();
             let component = lock(&self.component).clone();
             let handle = core.host.instantiate(
                 &component,
@@ -172,7 +179,7 @@ impl FiberBody for WasmBody {
                     deadline: DEADLINE,
                     clock_floor_ms,
                     slot: Some(Arc::clone(&self.slot)),
-                    staging: false,
+                    staging: replacing,
                 },
             );
             // Host-provider wakes (M2-K7 `jinn:net/readable`) deliver to
@@ -237,8 +244,16 @@ impl FiberBody for WasmBody {
                     if let Some(seat) = closing.close().await {
                         let ledger = trail.then_some((closing.owner.sink.as_ref(), fiber));
                         let owner = &closing.owner;
+                        let tomb = (closing.entry.clone(), closing.slot_id);
                         let retained = seat
-                            .suspend(&owner.broker, &owner.topics, &owner.alarms, peer, ledger)
+                            .suspend(
+                                &owner.broker,
+                                &owner.topics,
+                                &owner.alarms,
+                                peer,
+                                ledger,
+                                tomb,
+                            )
                             .await;
                         let count = retained.len() as u64;
                         owner.inherit(&closing.entry, retained);
@@ -279,7 +294,46 @@ impl FiberBody for WasmBody {
                 }
             }
             let watched = handle.clone();
-            if let Some(previous) = self.slot.install(SeatState::live(handle, contributed)) {
+            let displaced = if replacing && outcome.is_ok() {
+                // Mode 0 gets Mode 1's commit (R8): under the topic table's
+                // one lock the tombstones go and the staged listens land;
+                // the old subscription's withdrawal row lands HERE, when it
+                // actually ended (Law 2) — replaced, never absent.
+                let entombed = core.topics.entombed(fiber);
+                let displaced = commit_staged(
+                    &self.slot,
+                    handle,
+                    contributed,
+                    &core.broker,
+                    &core.topics,
+                    &core.alarms,
+                    peer,
+                    Some(fiber),
+                    at.id().0,
+                    core.sink.as_ref(),
+                );
+                if self.guest_trail {
+                    for (_, topic) in entombed {
+                        core.sink.append(
+                            LedgerEventKind::EffectWithdrawn {
+                                label: format!("listen {topic}"),
+                                clean: true,
+                            },
+                            Some(fiber),
+                        );
+                    }
+                }
+                displaced
+            } else {
+                // A failed staged activation installs uncommitted, exactly
+                // as a failed first one: its recorded listens and
+                // provisions were never routed (ids absent, so the replay
+                // skips them) and its effects still owe their inverses
+                // (I1); the tombstones leave with the fiber's `Failed`
+                // rest (M2-K26 (c)).
+                self.slot.install(SeatState::live(handle, contributed))
+            };
+            if let Some(previous) = displaced {
                 previous.instance.dispose().await;
             }
             if outcome.is_ok() {

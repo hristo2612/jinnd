@@ -42,7 +42,13 @@ pub fn commit_staged(
     context: u64,
     ledger: &dyn LedgerSink,
 ) -> Option<SeatState> {
-    let (old_provisions, old_listens, old_alarms) = slot.registrations();
+    let (old_provisions, mut old_listens, old_alarms) = slot.registrations();
+    // A config restart commits through this same call (M2-K26 (b)): the
+    // rows to replace are then the fiber's TOMBSTONES, left by the
+    // suspension, not a displaced seat's live listens.
+    if let Some(fiber) = fiber {
+        old_listens.extend(topics.entombed(fiber).into_iter().map(|(id, _)| id));
+    }
     let face = peer_face(&staged);
     let rebinds: Vec<Rebind> = outcome
         .listens()

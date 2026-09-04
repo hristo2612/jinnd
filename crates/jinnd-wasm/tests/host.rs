@@ -1299,7 +1299,7 @@ async fn a_sealed_seat_refuses_registrations_and_the_instance_no_entries() {
 }
 
 /// M2-K4 ruling 4: suspension releases kernel registrations — the listener
-/// unlistens, the provision withdraws, each ledgered — and hands the world
+/// is entombed (M2-K26), the provision withdraws, each ledgered — and hands the world
 /// effects back once each, in registration order; guest inverses do not
 /// run (they are instance-bound, and the instance disposes).
 #[tokio::test]
@@ -1334,6 +1334,7 @@ async fn suspend_releases_registrations_and_hands_back_world_effects() {
             &rig.alarms,
             peer,
             Some((rig.ledger.as_ref() as &dyn LedgerSink, FiberId(1))),
+            (jinnd_api::EntryId("scribe".to_owned()), 3),
         )
         .await;
     let ids: Vec<u64> = retained.iter().map(|record| record.effect).collect();
@@ -1342,17 +1343,26 @@ async fn suspend_releases_registrations_and_hands_back_world_effects() {
         vec![41, 42],
         "world effects hand back once each, in order"
     );
-    assert!(
-        rig.topics.unlisten(listen_id).is_none(),
-        "the listener released"
+    // M2-K26 (a): the listen is ENTOMBED, not released — the row stays
+    // selectable under the incarnation it was minted under, and its
+    // withdrawal row lands when the subscription actually ends.
+    assert_eq!(
+        rig.topics.entombed(FiberId(1)),
+        vec![(listen_id, "jinn:test/topic".to_owned())],
+        "the listener became a tombstone"
+    );
+    assert_eq!(
+        rig.topics
+            .entombed_incarnation(&jinnd_api::EntryId("scribe".to_owned())),
+        Some(3)
     );
     let trail = &rig.ledger.kinds()[before..];
     assert!(
-        trail.contains(&LedgerEventKind::EffectWithdrawn {
+        !trail.contains(&LedgerEventKind::EffectWithdrawn {
             label: "listen jinn:test/topic".to_owned(),
             clean: true,
         }),
-        "the release is ledgered: {trail:?}"
+        "the subscription did not end at the suspension: {trail:?}"
     );
     assert!(
         trail.contains(&LedgerEventKind::ServiceWithdrawn {

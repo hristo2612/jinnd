@@ -11,14 +11,15 @@
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use jinnd_api::{DispatchMode, FiberId, KernelError, KernelFuture, LedgerEventKind};
+use jinnd_api::{DispatchMode, EntryId, FiberId, KernelError, KernelFuture, LedgerEventKind};
 
 use crate::peer::LedgerSink;
-use crate::selector::{RealmOracle, Selector, selects};
+use crate::selector::{RealmOracle, Selector};
 use crate::waits::{Cycle, WaitGraph, WaitTicket};
 
 mod publish;
 mod restarting;
+mod tombstone;
 
 pub use publish::{TRANSITIONS_TOPIC, grant_for, reserved};
 use restarting::expects_reply;
@@ -45,11 +46,20 @@ struct Listener {
     /// identity a reply-expecting walk asks the restart oracle about.
     fiber: Option<FiberId>,
     budget: Option<NonZeroU64>,
-    target: Arc<dyn EventTarget>,
+    delivery: Delivery,
     /// This listener's private delivery lane (M2-K13), opened on its first
     /// kernel publish and dropped with the registration — a withdrawn
     /// listener's lane task ends when its queue closes.
     lane: Option<publish::Lane>,
+}
+
+/// Where one registration delivers: to the instance that minted it, or —
+/// between a replacement's suspension and its commit (M2-K26) — nowhere:
+/// a TOMBSTONE, the same row with no target, still selected so a
+/// reply-expecting walk is refused instead of answering its own payload.
+enum Delivery {
+    Live(Arc<dyn EventTarget>),
+    Tombstone { entry: EntryId, incarnation: u64 },
 }
 
 type Selected = (
@@ -210,7 +220,7 @@ impl LocalTopics {
             token,
             fiber,
             budget,
-            target,
+            delivery: Delivery::Live(target),
             lane: None,
         });
         id
@@ -230,7 +240,10 @@ impl LocalTopics {
 
     /// Atomically withdraws `old` and registers `new`, under ONE lock: no
     /// emit ever selects a half-swapped listener set — the Mode-1 commit
-    /// shape (R8 atomic replacement).
+    /// shape (R8 atomic replacement). A config restart commits through
+    /// the same call (M2-K26 (b)): `old` is then the entry's tombstones,
+    /// so a walk sees tombstones before the lock and live listeners after
+    /// — never neither.
     pub fn rebind(&self, old: &[u64], new: Vec<Rebind>) -> Vec<u64> {
         let mut inner = self.lock();
         inner
@@ -247,7 +260,7 @@ impl LocalTopics {
                     token: registration.token,
                     fiber: registration.fiber,
                     budget: registration.budget,
-                    target: registration.target,
+                    delivery: Delivery::Live(registration.target),
                     lane: None,
                 });
                 id
@@ -258,12 +271,9 @@ impl LocalTopics {
     /// The first selected listener whose incarnation already owes a
     /// transition, in selection order (M2-K9). Answered by the oracle from
     /// kernel-owned state alone; without one, never.
-    fn doomed(&self, selected: &[Selected]) -> Option<Unserved> {
+    fn doomed(&self, fibers: &[FiberId]) -> Option<Unserved> {
         let oracle = self.restarts.get()?;
-        selected
-            .iter()
-            .filter_map(|(fiber, _, _, _)| *fiber)
-            .find_map(|fiber| oracle.unserved(fiber))
+        fibers.iter().find_map(|fiber| oracle.unserved(*fiber))
     }
 
     /// Dispatches one payload: listeners are selected kernel-side from a
@@ -284,23 +294,8 @@ impl LocalTopics {
         fiber: Option<FiberId>,
         oracle: &dyn RealmOracle,
     ) -> EmitReport {
-        let selected: Vec<Selected> = {
-            let inner = self.lock();
-            inner
-                .listeners
-                .iter()
-                .filter(|listener| listener.topic == topic)
-                .filter(|listener| selects(selector, oracle, emitter, listener.context))
-                .map(|listener| {
-                    (
-                        listener.fiber,
-                        listener.token,
-                        listener.budget,
-                        Arc::clone(&listener.target),
-                    )
-                })
-                .collect()
-        };
+        let selection = self.select(emitter, topic, mode, selector, oracle);
+        let selected = selection.live;
         // A walk that would close a wait cycle is refused FIRST (M2-K10):
         // it is the one refusal no amount of waiting cures, so a caller is
         // never told to retry a crossing that can only ever deadlock.
@@ -329,8 +324,21 @@ impl LocalTopics {
         // walk, so a dispatch is never half-landed and never lands in an
         // incarnation the kernel is already taking down. The refusal is
         // the ledger row; a walk that dispatched nothing traces nothing.
+        // A selected TOMBSTONE (M2-K26) is decided the same way — by the
+        // oracle's answer for its fiber — and one the oracle no longer
+        // explains is refused `stalled` from the row's own identity: the
+        // instant between a rest commit and the withdrawal is never a
+        // delivery to nobody (R9). Attributable on the trace (ruling 3).
+        let unexplained = selection.tombstone.inspect(|tombstone| {
+            tracing::warn!(
+                topic,
+                entry = %tombstone.entry.0,
+                incarnation = tombstone.incarnation,
+                "restart oracle did not explain a selected tombstone; refusing stalled"
+            );
+        });
         if expects_reply(mode)
-            && let Some(target) = self.doomed(&selected)
+            && let Some(target) = self.doomed(&selection.fibers).or(unexplained)
         {
             if let Some(sink) = &self.sink {
                 sink.append(

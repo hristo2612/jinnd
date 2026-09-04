@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use jinnd_api::{EntryId, FiberId, FiberState, KernelError};
+use jinnd_api::{EntryId, FiberId, FiberState, KernelError, LedgerEventKind};
 use jinnd_fiber::FaultSink;
 use tokio::sync::watch;
 
@@ -109,11 +109,17 @@ impl LaneCore {
     /// lane's transition edge on every change and ending — its row with
     /// it — when the fiber's cell is gone. The edge moves once at
     /// subscription too, so a gate computed before this fiber was visible
-    /// re-reads it.
+    /// re-reads it. The same forwarder ends the entry's tombstones
+    /// (M2-K26 (c)): a fiber that rests `Failed` or `Disposed` has no
+    /// successor to commit them away, so they are withdrawn on that rest
+    /// — a watch, never a poll (R1) — each an `EffectWithdrawn` row under
+    /// the trail, AFTER the transition row the commit already wrote.
     pub(crate) fn track_states(
         self: &Arc<Self>,
         fiber: FiberId,
         mut states: watch::Receiver<FiberState>,
+        entry: EntryId,
+        trail: bool,
     ) {
         lock(&self.states).insert(fiber, states.clone());
         self.transitions.send_modify(|edge| *edge += 1);
@@ -121,10 +127,34 @@ impl LaneCore {
         tokio::spawn(async move {
             while states.changed().await.is_ok() {
                 lane.transitions.send_modify(|edge| *edge += 1);
+                let rested = matches!(*states.borrow(), FiberState::Failed | FiberState::Disposed);
+                if rested {
+                    lane.end_tombstones(fiber, &entry, trail);
+                }
             }
+            lane.end_tombstones(fiber, &entry, trail);
             lock(&lane.states).remove(&fiber);
             lane.transitions.send_modify(|edge| *edge += 1);
         });
+    }
+
+    /// Withdraws whatever tombstones `fiber` still holds, on the record
+    /// (M2-K26 (c); I4): the quiescent state after a failed replacement
+    /// or a disposal is an entry with no listener, as a fresh boot of the
+    /// same profile would have it.
+    fn end_tombstones(&self, fiber: FiberId, entry: &EntryId, trail: bool) {
+        for topic in self.topics.withdraw_tombstones(fiber) {
+            if trail {
+                self.sink.append_for(
+                    LedgerEventKind::EffectWithdrawn {
+                        label: format!("listen {topic}"),
+                        clean: true,
+                    },
+                    Some(entry.clone()),
+                    Some(fiber),
+                );
+            }
+        }
     }
 
     /// Watches one committed instance's retained death notice. A staged
@@ -170,19 +200,27 @@ impl LaneCore {
     /// replacement arriving to take its place once teardown has taken it.
     /// Either way it is the incarnation the refused caller must wait past.
     ///
-    /// `None` when the entry has no roster row, and — the load-bearing
-    /// case — when NO incarnation has ever been installed: an entry
-    /// arriving for the first time owes its first transition too, but
-    /// nothing is being replaced, so it is never refused as restarting. A
+    /// `None` when NO incarnation has ever been installed — the
+    /// load-bearing case: an entry arriving for the first time owes its
+    /// first transition too, but nothing is being replaced, so it is never
+    /// refused as restarting. Between a suspension and the replacement's
+    /// roster row (M2-K26 (c)) the entry's TOMBSTONES answer with the
+    /// incarnation they were entombed under, so the oracle never lapses
+    /// to "nothing owed" while a refusing row is still selectable. A
     /// snapshot under the roster and slot locks; no guest is called (R1).
     #[must_use]
     pub fn incarnation(&self, entry: &EntryId) -> Option<u64> {
-        let (slot, incarnation) = {
+        let rostered = {
             let roster = lock(&self.roster);
-            let row = roster.get(entry)?;
-            (Arc::clone(&row.slot), row.slot_id)
+            roster
+                .get(entry)
+                .map(|row| (Arc::clone(&row.slot), row.slot_id))
         };
-        slot.ever_installed().then_some(incarnation)
+        match rostered {
+            Some((slot, incarnation)) if slot.ever_installed() => Some(incarnation),
+            Some(_) => None,
+            None => self.topics.entombed_incarnation(entry),
+        }
     }
 
     #[must_use]

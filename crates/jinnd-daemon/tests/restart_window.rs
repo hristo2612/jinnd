@@ -61,7 +61,10 @@ fn paths(home: &Home) -> (DaemonPaths, String) {
         .unwrap_or_else(|error| panic!("{error}"));
     write_profile(
         home,
-        serde_json::json!([consumer(&hash, serde_json::json!({ "data": "notify-consumer" }))]),
+        serde_json::json!([consumer(
+            &hash,
+            serde_json::json!({ "data": "notify-consumer" })
+        )]),
     );
     (
         DaemonPaths {
@@ -132,17 +135,17 @@ fn trail(records: &[LedgerRecord], fiber: FiberId, to: FiberState) -> Trail {
 async fn wait_until(daemon: &Daemon, fiber: FiberId, state: FiberState) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let rested = events(daemon)
-            .await
-            .iter()
-            .any(|record| {
-                record.fiber == Some(fiber)
-                    && matches!(&record.kind, LedgerEventKind::FiberTransition(t) if t.to == state)
-            });
+        let rested = events(daemon).await.iter().any(|record| {
+            record.fiber == Some(fiber)
+                && matches!(&record.kind, LedgerEventKind::FiberTransition(t) if t.to == state)
+        });
         if rested {
             return;
         }
-        assert!(Instant::now() < deadline, "the consumer never rested {state:?}");
+        assert!(
+            Instant::now() < deadline,
+            "the consumer never rested {state:?}"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -172,19 +175,28 @@ async fn a_replacement_ends_the_old_subscription_at_its_commit_not_at_the_suspen
         .reload()
         .await
         .unwrap_or_else(|error| panic!("reload: {error:?}"));
-    assert_eq!(report.restarted.len(), 1, "exactly the edited entry restarted");
+    assert_eq!(
+        report.restarted.len(),
+        1,
+        "exactly the edited entry restarted"
+    );
     wait_until(&daemon, fiber, FiberState::Active).await;
     // The restart's own Active: the second one on the record.
     let records = events(&daemon).await;
     let seen = trail(&records, fiber, FiberState::Active);
-    assert_eq!(seen.registered.len(), 2, "two incarnations listened: {records:?}");
+    assert_eq!(
+        seen.registered.len(),
+        2,
+        "two incarnations listened: {records:?}"
+    );
     assert_eq!(seen.suspended.len(), 1, "one suspension: {records:?}");
     assert_eq!(
         seen.withdrawn.len(),
         1,
         "the old subscription ended exactly once: {records:?}"
     );
-    let (withdrawn, suspended, successor) = (seen.withdrawn[0], seen.suspended[0], seen.registered[1]);
+    let (withdrawn, suspended, successor) =
+        (seen.withdrawn[0], seen.suspended[0], seen.registered[1]);
     assert!(
         withdrawn > suspended,
         "the subscription outlived its suspension (row {withdrawn} vs {suspended}): {records:?}"
@@ -217,8 +229,16 @@ async fn a_failed_replacement_withdraws_its_tombstones_after_it_rests_failed() {
     wait_until(&daemon, fiber, FiberState::Failed).await;
     let records = events(&daemon).await;
     let seen = trail(&records, fiber, FiberState::Failed);
-    assert_eq!(seen.registered.len(), 1, "the trap never listened: {records:?}");
-    assert_eq!(seen.withdrawn.len(), 1, "withdrawn exactly once: {records:?}");
+    assert_eq!(
+        seen.registered.len(),
+        1,
+        "the trap never listened: {records:?}"
+    );
+    assert_eq!(
+        seen.withdrawn.len(),
+        1,
+        "withdrawn exactly once: {records:?}"
+    );
     assert_eq!(seen.rested.len(), 1, "rested Failed once: {records:?}");
     assert!(
         seen.withdrawn[0] > seen.rested[0],
