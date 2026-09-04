@@ -22,7 +22,7 @@ use jinnd_ledger::Ledger;
 use jinnd_loader::Loader;
 use jinnd_wasm::{Broker, PROFILE_CONTRACT, Peer, PeerId};
 
-mod patch;
+pub(super) mod patch;
 
 use patch::{merge_patch, validate};
 
@@ -118,7 +118,7 @@ impl HostProfile {
                 ));
             }
         };
-        let Some(mut config) = self
+        let Some(committed) = self
             .loader
             .persisted::<serde_json::Value>()
             .and_then(|profile| {
@@ -131,8 +131,10 @@ impl HostProfile {
         else {
             return Ok(self.refuse(&entry, by, fiber, "no such entry in the document of record"));
         };
+        let mut config = committed.clone();
         merge_patch(&mut config, &patch);
-        if let Err(reason) = validate(&config) {
+        // (d), M2-K23: the result's grants must equal the committed ones.
+        if let Err(reason) = validate(&committed, &config) {
             return Ok(self.refuse(&entry, by, fiber, &reason));
         }
         // Deferred amendment (M2-K8 #26): both views commit and the
@@ -195,7 +197,7 @@ impl HostProfile {
 
 /// The bundle's `refused(reason)` outcome as the wire carries it: every
 /// refusal, the scope's included, is this answer — never an outer error.
-fn refused_wire(reason: &str) -> Vec<u8> {
+pub(super) fn refused_wire(reason: &str) -> Vec<u8> {
     let mut wire = vec![TAG_REFUSED];
     wire.extend(reason.as_bytes());
     wire

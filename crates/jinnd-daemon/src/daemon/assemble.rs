@@ -20,8 +20,8 @@ use jinnd_wasm::{
 };
 
 use super::{
-    Daemon, DaemonPaths, Lifecycle, Readiness, auth_cap, introspect, ledger_cap, profile_cap,
-    restarts, storage, waits,
+    Daemon, DaemonPaths, Lifecycle, Readiness, auth_cap, introspect, ledger_cap, profile_admin_cap,
+    profile_cap, restarts, storage, waits,
 };
 use crate::support::{SharedFibers, Sink, error};
 
@@ -123,6 +123,15 @@ impl Daemon {
         // credential beside the data root, every decision a ledger row.
         auth_cap::HostAuth::register(&lane.broker, ledger.clone(), paths.credential())?;
         profile_cap::HostProfile::register(
+            &lane.broker,
+            Arc::clone(&loader),
+            ledger.clone(),
+            Arc::clone(&fibers),
+            Arc::clone(&lifecycle),
+        )?;
+        // The composition-administration contract (M2-K23, harness #37):
+        // the five shape writes as operator intents, on the record.
+        profile_admin_cap::HostProfileAdmin::register(
             &lane.broker,
             Arc::clone(&loader),
             ledger.clone(),

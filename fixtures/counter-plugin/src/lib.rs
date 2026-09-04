@@ -557,7 +557,7 @@ fn operator_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
             let last = operator_call("jinn:ledger", "last-seq", &[])?;
             fs::write("/ledger-last", &last, "").map_err(fs_fault)
         }
-        "profile-patch" | "profile-patch-bad" => {
+        "profile-patch" | "profile-patch-bad" | "profile-patch-grants" => {
             clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
             Ok(())
         }
@@ -1004,10 +1004,11 @@ fn patch_tick(mode: &str, id: &str) -> Result<(), GuestFault> {
     if fs::meta("/patch.out").is_ok() {
         return Ok(());
     }
-    let patch = if mode == "profile-patch-bad" {
-        r#"{"grants":[7]}"#
-    } else {
-        r#"{"data":"noop"}"#
+    let patch = match mode {
+        "profile-patch-bad" => r#"{"grants":[7]}"#,
+        // M2-K23 (d): a grants WIDENING that would admit at activation.
+        "profile-patch-grants" => r#"{"grants":["jinn:fs","jinn:clock"]}"#,
+        _ => r#"{"data":"noop"}"#,
     };
     let answer = operator_call("jinn:profile", "patch-entry", &patch_payload(id, patch))?;
     let reason = String::from_utf8_lossy(&answer[1.min(answer.len())..]).into_owned();
@@ -1015,6 +1016,63 @@ fn patch_tick(mode: &str, id: &str) -> Result<(), GuestFault> {
         return Ok(());
     }
     fs::write("/patch.out", &answer, "").map_err(fs_fault)
+}
+
+/// The M2-K23 `jinn:profile-admin` mode (`admin:<name>`): from a tick, once
+/// the boot reconcile has landed, runs the writes listed in
+/// `/admin-<name>-script.txt` — one per line, `op<TAB>segment<TAB>segment…`
+/// — in order, one per tick, and writes each RAW wire answer to
+/// `/admin-<name>-<n>.out`; a `conflict` refusal (tag 1,
+/// class 3) is retried next tick, so the daemon test reads exactly what the
+/// guest saw and the writes never race the boot.
+fn admin_tick(name: &str) -> Result<(), GuestFault> {
+    let Ok(script) = fs::read(&format!("/admin-{name}-script.txt")) else {
+        return Ok(());
+    };
+    let script = String::from_utf8_lossy(&script).into_owned();
+    for (index, line) in script.lines().enumerate() {
+        let out = format!("/admin-{name}-{index}.out");
+        if fs::meta(&out).is_ok() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let op = fields.next().unwrap_or_default();
+        let mut wire = Vec::new();
+        for segment in fields {
+            wire.extend((segment.len() as u32).to_le_bytes());
+            wire.extend(segment.as_bytes());
+        }
+        let answer = operator_call("jinn:profile-admin", op, &wire)?;
+        if answer.first() == Some(&1) && answer.get(1) == Some(&3) {
+            return Ok(());
+        }
+        fs::write(&out, &answer, "").map_err(fs_fault)?;
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// One M2-K23 (e) probe tick: a Serial walk on the topic, its outcome
+/// written down as ONE tag byte — `d` delivered (an answer came back),
+/// `n` nobody (`Ok` and empty: the walk selected no listener, the harness
+/// #47 shape), `r` restarting, `g` gone, `s` suspended, `t` stalled, `e`
+/// any other kernel error. What the kernel answered, never a sentence.
+fn probe_tick() -> Result<(), GuestFault> {
+    let tag = match jinn::plugin::events::emit(
+        TOPIC,
+        jinn::plugin::types::DispatchMode::Serial,
+        &jinn::plugin::types::Selector::All,
+        b"probe",
+    ) {
+        Ok(outputs) if outputs.is_empty() => b'n',
+        Ok(_) => b'd',
+        Err(jinn::plugin::types::KernelError::Restarting(_)) => b'r',
+        Err(jinn::plugin::types::KernelError::Gone(_)) => b'g',
+        Err(jinn::plugin::types::KernelError::Suspended(_)) => b's',
+        Err(jinn::plugin::types::KernelError::Stalled(_)) => b't',
+        Err(_) => b'e',
+    };
+    fs::append("/probe.log", &[tag], "").map_err(fs_fault)
 }
 
 struct Fixture;
@@ -1032,6 +1090,10 @@ impl Guest for Fixture {
         }
         if mode == "introspect" || mode == "ledger-read" || mode.starts_with("profile-patch") {
             return operator_mode(mode, arg);
+        }
+        if mode == "admin" {
+            clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+            return Ok(());
         }
         if mode == "auth" {
             return auth_mode(arg);
@@ -1290,6 +1352,22 @@ impl Guest for Fixture {
                     "a period finer than the floor was not refused".into(),
                 )),
             },
+            // M2-K23 (e) limit pin: a listener whose readiness is SLOW BY
+            // CONSTRUCTION — it dawdles `arg` ms BEFORE its listen, so a
+            // successor spawned in its place leaves the topic without a
+            // listener for that long: the swap window forced by the
+            // fixture, never waited for.
+            "listener-late" => {
+                dawdle(arg.parse().unwrap_or(2500))?;
+                jinn::plugin::events::listen(TOPIC, 7).map_err(fault)?;
+                Ok(())
+            }
+            // M2-K23 (e): a ticking reply-expecting walk on the topic;
+            // each tick's outcome is one byte in `/probe.log`.
+            "probe-walk" => {
+                clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
+                Ok(())
+            }
             // One bus emit through the daemon path — the DispatchTrace probe.
             "emitter" => {
                 jinn::plugin::events::emit(
@@ -1478,11 +1556,17 @@ impl Guest for Fixture {
             if mode == "cycle-trigger" {
                 cycle_tick("/cycle.out")?;
             }
+            if let Some(name) = mode.strip_prefix("admin:") {
+                admin_tick(name)?;
+            }
             if mode == "cycle-caller" {
                 cycle_tick("/caller.out")?;
             }
             if mode == "introspect" {
                 introspect_tick()?;
+            }
+            if mode == "probe-walk" {
+                probe_tick()?;
             }
             if mode == "clock-chain" && !CHAINED.swap(true, Ordering::SeqCst) {
                 clock::alarm_at(0, AT_TOKEN).map_err(fault)?;

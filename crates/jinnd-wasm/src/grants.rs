@@ -31,6 +31,9 @@ pub const INTROSPECT_CONTRACT: &str = "jinn:introspect";
 pub const PROFILE_CONTRACT: &str = "jinn:profile";
 /// The operator-authentication contract's name (M2-K21).
 pub const AUTH_CONTRACT: &str = "jinn:auth";
+/// The composition-administration contract's name (M2-K23, harness #37):
+/// scope type `entry-ids`, the one table, fail-closed like every other.
+pub const PROFILE_ADMIN_CONTRACT: &str = "jinn:profile-admin";
 
 /// One scope value as the profile document wrote it (constitution 04
 /// §Format): the decoder preserves the written shape — including one it
@@ -133,7 +136,7 @@ fn declared(contract: &str) -> Declared {
         FS_CONTRACT => Declared::PathPrefix,
         PROCESS_CONTRACT => Declared::ProcessPolicy,
         NET_CONTRACT => Declared::NetPolicy,
-        PROFILE_CONTRACT => Declared::EntryIds,
+        PROFILE_CONTRACT | PROFILE_ADMIN_CONTRACT => Declared::EntryIds,
         KEYSTORE_CONTRACT => Declared::KeyPrefix,
         "jinn:ledger" | INTROSPECT_CONTRACT | AUTH_CONTRACT => Declared::NoScope,
         _ => Declared::Undeclared,

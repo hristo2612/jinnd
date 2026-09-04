@@ -1,0 +1,67 @@
+# Contract-bundle metadata for jinn:profile-admin@0.1.0 (M2-K23, harness
+# #37): the composition's shape as operator intent, on the record.
+
+[contract]
+name    = "jinn:profile-admin"
+version = "0.1.0"
+
+[scope]
+type   = "entry-ids"
+# Decidable subset predicate the kernel evaluates for attenuation (01
+# §Grants), VERBATIM the `jinn:profile` predicate: a scope is a non-empty
+# list of entry ids; subset(a, b) := a ⊆ b, where `"*"` (every entry) is
+# the top and is admitted only when WRITTEN. FAIL-CLOSED (M2-K2 law): any
+# other shape refuses the grant with a ledgered per-entry error; a grant
+# with no scope administers NOTHING. On `add-entry` the scope must admit
+# the NEW id and its parent. Profile syntax (04 §Format): `{ contract =
+# "jinn:profile-admin", scope = ["*"] }`.
+subset = "entry-id-set-containment"
+# Operation-class attenuation (M2-K8): `ops = ["set-disabled"]` is a
+# switch-only delegate; see contracts/README.md.
+ops    = "declared-operation-subset"
+
+[operations.add-entry]
+effect      = "operator-intent"
+settle      = "deferred-restart-scheduled-never-awaited"
+sensitivity = "personal"
+
+[operations.remove-entry]
+effect      = "operator-intent"
+settle      = "deferred-restart-scheduled-never-awaited"
+sensitivity = "personal"
+
+[operations.set-disabled]
+effect      = "operator-intent"
+settle      = "deferred-restart-scheduled-never-awaited"
+sensitivity = "personal"
+
+[operations.set-grants]
+effect      = "operator-intent"
+settle      = "deferred-restart-scheduled-never-awaited"
+sensitivity = "personal"
+
+[operations.swap-plugin]
+effect      = "operator-intent"
+settle      = "deferred-restart-scheduled-never-awaited"
+sensitivity = "personal"
+
+[equality]
+# Observational equivalence: the document of record (04) — two profiles
+# are equal iff their entry trees are equal by id; the running system
+# converges on the document (LAW §3, I4).
+relation = "document-of-record-by-entry-id"
+
+[notes]
+# Every write is a `ProfileAdministered { entry, by, write, before, after,
+# prior }` row under the caller: `before`/`after` are SHA-256 hex digests
+# of the RENDERED document, so `after` equals the file's digest read with
+# nothing but the file; `prior` is the entry's 0.2.0 record before the
+# write and the inverse write's payload — the prior document is
+# reconstructible from the ledger alone. No inverse in any fiber's journal;
+# nothing rolled back by anyone's teardown; history is the ledger's. The
+# `prior` field carries JSON text inside a typed kind: `personal` class
+# (02 §Redaction) — the profile carries no secret (04). Authority is a
+# grant on the calling entry and nothing else: no environment variable,
+# no build feature, no profile field disables the check.
+lifecycle = "operator-intent-no-inverse"
+redaction = "personal-no-secret-crosses"

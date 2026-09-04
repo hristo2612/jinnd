@@ -1,9 +1,10 @@
-# Contract-bundle metadata for jinn:profile@0.2.0 (M2-K7; 0.2.0 M2-K8:
-# non-blocking `patch-entry`, `entry`/`document` reads — additive, R12)
+# Contract-bundle metadata for jinn:profile@0.3.0 (M2-K7; 0.2.0 M2-K8:
+# non-blocking `patch-entry`, `entry`/`document` reads — additive, R12;
+# 0.3.0 M2-K23: a patch changing `grants` refuses — prose law to refusal)
 
 [contract]
 name    = "jinn:profile"
-version = "0.2.0"
+version = "0.3.0"
 
 [scope]
 type   = "entry-ids"

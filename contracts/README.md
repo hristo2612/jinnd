@@ -27,7 +27,8 @@ nothing in the table is typed by hand.
 | `contracts/jinn-ledger` | `jinn:ledger@0.1.0` | none |
 | `contracts/jinn-net` | `jinn:net@0.3.0` | net-policy |
 | `contracts/jinn-process` | `jinn:process@0.1.0` | process-policy |
-| `contracts/jinn-profile` | `jinn:profile@0.2.0` | entry-ids |
+| `contracts/jinn-profile` | `jinn:profile@0.3.0` | entry-ids |
+| `contracts/jinn-profile-admin` | `jinn:profile-admin@0.1.0` | entry-ids |
 <!-- contract-index: end -->
 
 ## Operation-class attenuation (M2-K8)
@@ -45,8 +46,12 @@ exactly as path scopes accumulate.
 ## Operator contracts (M2-K7)
 
 `jinn:introspect` (read-only composition), `jinn:ledger` (paged reads with
-consumption receipts), and `jinn:profile` (a patch as operator intent,
-applied by the loader, no fiber inverse) are kernel-supplied providers
+consumption receipts), `jinn:profile` (a patch as operator intent,
+applied by the loader, no fiber inverse) and `jinn:profile-admin` (M2-K23:
+the composition's shape — add, remove, `disabled`, grants, plugin
+identity — as operator intent applied by reconcile-by-id, one
+`ProfileAdministered` row per write naming the caller and both document
+digests) are kernel-supplied providers
 reached over the string-keyed handle lane (`services.resolve` +
 `services.call`), granted like any contract and ledgered per call.
 
