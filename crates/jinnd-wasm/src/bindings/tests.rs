@@ -14,6 +14,8 @@ use jinnd_contract_lens::{bundle, world};
 
 #[test]
 fn world_is_versioned_for_suspend_semantics() {
+    // 0.12.0 (M2-K26): the restart window closed to reply-expecting walks
+    // and `emit` covered by the topic grant — prose only, additive.
     // 0.11.0 (M2-K25): listener-owned delivery budgets and clocks;
     // 0.10.0 (M2-K15): `net-error` gains `untrusted`;
     // 0.9.0 (M2-K14): `net.request` is provided and reshaped;
@@ -21,7 +23,7 @@ fn world_is_versioned_for_suspend_semantics() {
     // 0.7.0 (M2-K10) gave `kernel-error` the typed `cycle` refusal, and
     // 0.6.0 (M2-K9) the typed `restarting` one.
     let wit = world().wit();
-    assert_eq!(wit.package_id(), "jinn:plugin@0.11.0");
+    assert_eq!(wit.package_id(), "jinn:plugin@0.12.0");
     assert!(
         wit.interface("lifecycle")
             .func_docs("activate")

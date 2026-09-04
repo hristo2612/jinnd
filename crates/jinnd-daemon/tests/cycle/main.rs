@@ -38,7 +38,13 @@ async fn a_call_that_would_close_a_cycle_refuses_typed_and_ledgered() {
         vec![
             entry(
                 "provider",
-                serde_json::json!(["jinn:test/settings", "jinn:fs", "jinn:clock"]),
+                // Its notify walk is covered by the topic's grant (M2-K26 (e)).
+                serde_json::json!([
+                    "jinn:test/settings",
+                    "jinn:test/cycle-notice",
+                    "jinn:fs",
+                    "jinn:clock"
+                ]),
                 "cycle-provider",
             ),
             entry(
@@ -189,7 +195,13 @@ async fn a_dispatch_that_would_close_a_cycle_refuses_whole() {
         vec![
             entry(
                 "provider",
-                serde_json::json!(["jinn:test/settings", "jinn:fs", "jinn:clock"]),
+                // Its notify walk is covered by the topic's grant (M2-K26 (e)).
+                serde_json::json!([
+                    "jinn:test/settings",
+                    "jinn:test/cycle-notice",
+                    "jinn:fs",
+                    "jinn:clock"
+                ]),
                 "cycle-provider",
             ),
             entry(

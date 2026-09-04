@@ -78,7 +78,8 @@ async fn a_profile_entry_holds_a_periodic_alarm_ledgered_wake_by_wake() {
     let home = home("alarm");
     let daemon = Daemon::open(paths(
         &home,
-        serde_json::json!(["jinn:clock", "jinn:test/counter"]),
+        // The emit is covered by the topic's grant (M2-K26 (e)).
+        serde_json::json!(["jinn:clock", "jinn:test/counter", "jinn:test/topic"]),
         "clock-alarm",
     ))
     .unwrap_or_else(|error| panic!("open: {error:?}"));
@@ -249,8 +250,13 @@ async fn a_wrong_typed_scope_refuses_on_the_record_and_never_widens() {
 #[tokio::test]
 async fn a_bus_emit_through_the_daemon_path_lands_exactly_one_dispatch_trace() {
     let home = home("trace");
-    let daemon = Daemon::open(paths(&home, serde_json::json!([]), "emitter"))
-        .unwrap_or_else(|error| panic!("open: {error:?}"));
+    // The emit is covered by the topic's grant (M2-K26 (e)).
+    let daemon = Daemon::open(paths(
+        &home,
+        serde_json::json!(["jinn:test/topic"]),
+        "emitter",
+    ))
+    .unwrap_or_else(|error| panic!("open: {error:?}"));
     let report = daemon
         .boot()
         .await
