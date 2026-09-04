@@ -19,6 +19,7 @@ use jinnd_ledger::Ledger;
 use jinnd_loader::{Administration, Loader};
 use jinnd_wasm::{Broker, PROFILE_ADMIN_CONTRACT, Peer, PeerId, hex_digest};
 
+mod decode;
 mod writes;
 
 use writes::{Change, Class, Refusal};
@@ -77,7 +78,7 @@ impl HostProfileAdmin {
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, KernelError> {
         let (fiber, by) = self.callers.attribution(caller);
-        let request = match writes::decode(operation, &payload) {
+        let request = match decode::decode(operation, &payload) {
             Ok(request) => request,
             Err(refusal) => return Ok(self.refuse(operation, None, by, fiber, &refusal)),
         };
