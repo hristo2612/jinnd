@@ -254,9 +254,33 @@ within a major version.
   *Acceptance, BOTH halves required and neither retired:* (a) every named seam proven by
   the real-composition suite against the pinned daemon, provider swappable by profile
   alone; and (b) **the original bar, unchanged — a slice does its production job for a
-  week without touching the old gateway's data.** (b) is currently carried by the cron
-  soak (PLA-297). Widening the port does not lower the bar for calling M2 done; it only
+  week without touching the old gateway's data.** (b) was carried by the cron soak
+  (PLA-297). Widening the port does not lower the bar for calling M2 done; it only
   changes what is built before the week is run.
+  **ACCEPTED 2026-09-04 (the COO's decision on the criterion above; Decision Log
+  entry of the same date).** (a) was met on 2026-09-01. (b) was paid by the cron soak
+  on its own data root beside the old gateway, which kept all production throughout,
+  and audited on 2026-09-04 (PLA-297; the full audit is on the Todo): fires 653
+  expected / 653 recorded / 0 missing over the 163-hour window, the only two
+  non-fires being day-1 boot catch-ups of the FINDINGS #13 shape; duty 7 d 01 h 20 m
+  over a 7 d 01 h 54 m span with 33 m 51 s of gaps, every gap accounted for (a 24 m
+  host reboot, the unproven 08-29 SIGTERM at 8 m, supervised bumps under a minute
+  each); the ledger flat at exactly 2,112 rows/day (96 wakes × 22 rows) for three
+  consecutive days; RSS 9.8 MB after 3 d 14 h at the audit; undo retention growing
+  2.6 MB/day. **Caveat, stated as the audit stated it:** no single pin carried the
+  week. The soak ran pin `3a8e5c03` (M2-K9) throughout while the harness shipped
+  `a53a352` and then `b1dbe8f` under it, so the week proves the SLICE — which is
+  what the criterion asks — and not the shipping kernel. Mid-week bumps were
+  anticipated as soak events; that they were never made is the defect, and the
+  soak rule below exists so it cannot recur. Recorded by kernel-dev on the PLA-297
+  dispatch in the form the M2-K24 landing used; the operator's veto window is open,
+  as it was for M1.
+  **Soak rule (law, 2026-09-04): the soak tracks the harness pin.** A pin-bump land
+  is not complete until the soak has been bumped, supervised, to the new pin and
+  its `jinnd.build` records it. Until then the pin-bump is a landing in progress,
+  the harness and the soak are on different kernels, and no duty the soak accrues
+  counts for the pin the harness ships. The bump is a soak event, logged in the
+  soak's duty record like any restart, so the next audit can read duty per pin.
 - **M3 — Profiles & parity.** The `company` profile takes over slices of production
   one at a time; web UI runs against the kernel API. *Acceptance: an instance runs a
   full day on jinnd alone.*
@@ -364,10 +388,12 @@ within a major version.
      `restarting` for an in-flight load at the one source, and #49 rides with it
      (`emit` covered by the topic's grant, with the reasons stated on the card).
      Sequenced after M2-K25 and before M2-K23.
-     **Landed 2026-09-04:** the M2-K26 implementation merged (`655f07e`, PLA-360);
-     the verifier's `invariants/m2-k26` lane and the adopting pin-bump are in
-     flight. Recorded by kernel-dev on the PLA-348 dispatch; the item's CLOSED
-     marking is the COO's to confirm.
+     **Landed 2026-09-04:** the M2-K26 implementation merged (`655f07e`, PLA-360)
+     and the verifier's `invariants/m2-k26` lane merged after it (`138fdce`, PR
+     #23; PLA-360 closed); harness pin-bump 9 (PLA-364) adopts `138fdce` and is in
+     flight at the M2 acceptance — it flips UI-2 proof 5 and closes FINDINGS #47
+     and #49. Recorded by kernel-dev on the PLA-348 and PLA-297 dispatches; the
+     item's CLOSED marking is the COO's to confirm.
   6. **The composition's SHAPE is reachable through no kernel contract: adding,
      removing, disabling, re-granting or re-pinning an entry is a file edit.**
      `jinn:profile.patch-entry` (M2-K7/K8) writes ONE entry's `config` subtree;
@@ -405,7 +431,15 @@ within a major version.
      M2-K26's window semantics, or STOPs with the fiber-engine cost priced.
      Sequenced third, after M2-K25 and M2-K26, on the kernel lane after the
      2026-09-04 audit; harness pin-bump 10 adopts it and flips the plugins page's
-     five disabled pills.
+     five disabled pills. **Carded and approved 2026-09-04:** the card at
+     `fa70399` (`aa1b89a` plus the COO's rulings folded in, PLA-348) is approved
+     for dispatch after pin-bump 9 lands; nothing of it is implemented yet.
+  **State of the six at M2's acceptance (2026-09-04):** 1 CLOSED (M2-K14/K15,
+  pin-bump 6); 2 CLOSED (M2-K21 plus harness 2.8, PR #20); 3 LANDED (M2-K24
+  `a53a352`, pin-bump 7); 4 LANDED (M2-K25 `b1dbe8f`, pin-bump 8); 5 LANDED
+  (M2-K26 `655f07e` plus lane `138fdce`, pin-bump 9 in flight); 6 OPEN, carded
+  (M2-K23 `fa70399`, dispatch after pin-bump 9). The CLOSED markings on 3–5 remain
+  the COO's to confirm.
   The M2 port delivered the SHAPES faithfully; the two capabilities that separate a
   faithful shape from a thing that can run a business followed as seven kernel packets
   and two harness packets in the two days after, and the third blocker surfaced the
@@ -415,8 +449,9 @@ within a major version.
   can depend on each other without a coin toss, and waits on one whose walks are
   bounded by the listener that spends them and whose restarts are closed to
   unvalidated traffic — and whose composition an agent can reshape through a
-  contract, on the record, and not through a text editor. §7(b)'s week of duty is
-  still owed (audit 2026-09-04).
+  contract, on the record, and not through a text editor. §7(b)'s week of duty was
+  paid and audited on 2026-09-04; M2 is accepted with the pin-drift caveat stated
+  under it, and the soak now follows the harness pin.
 - **M4 — Cutover.** Old gateway retired per the cutover rule. jinnOS work (desktop
   session, mobile ROM) begins only after M4 — as bigger profiles, not new projects.
 
@@ -431,6 +466,32 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-09-04** — **M2 ACCEPTED on the §7(b) soak audit; the soak now follows the
+  harness pin (COO decision, option (c) of three; recorded by kernel-dev on the
+  PLA-297 dispatch; operator veto window open).** The 2026-09-04 audit (cron
+  `jinnd-program-watch`; the full audit is a comment on PLA-297) passed every
+  criterion the Todo states: 653 fires expected, 653 recorded, 0 missing, the two
+  day-1 catch-ups of the FINDINGS #13 shape; 7 d 01 h 20 m of duty over a
+  7 d 01 h 54 m span, 33 m 51 s of gaps each attributed (host reboot 24 m, the
+  unproven 08-29 SIGTERM 8 m, supervised bumps under a minute); the ledger at
+  exactly 2,112 rows/day for three days; RSS 9.8 MB at 3 d 14 h; undo retention
+  2.6 MB/day. One defect, and it is named here rather than smoothed: the soak ran
+  pin `3a8e5c03` (M2-K9) for the whole week while the harness shipped `a53a352`
+  and then `b1dbe8f`, so no single pin carried the week — the week proves the
+  slice, not the shipping kernel. Of the three options the COO weighed, (c) was
+  chosen: accept on the criterion as written — "the slice does its production job
+  for a week" — because mid-week bumps were anticipated as soak events when the
+  soak was planned, the slice never stopped doing its job across them, and the
+  defect is procedural (the bumps were not made), not evidential. The procedural
+  defect is closed by LAW rather than by a rerun: §7 gains the
+  soak rule — the soak tracks the harness pin; a pin-bump land is not complete
+  until the soak has been bumped, supervised, to the new pin and its
+  `jinnd.build` records it. First application: the soak is bumped to `138fdce`
+  once pin-bump 9 (PLA-364) lands, as a separate task. The M1 acceptance's form
+  is followed (dated, numbered, caveated, veto window open); §7 records the six
+  M3 blockers' state at the moment of acceptance. The cutover rule is untouched —
+  the old gateway keeps all production until M4.
 
 - **2026-09-04** — **A sixth M3 structural blocker is named in §7: the
   composition's shape is reachable through no kernel contract (roadmap amendment,
