@@ -19,6 +19,7 @@ use super::{EventTarget, RestartOracle, Unserved};
 use crate::peer::LedgerSink;
 
 mod budget;
+mod tombstone;
 mod cycle_restart;
 mod dispositions;
 mod race;
