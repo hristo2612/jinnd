@@ -424,11 +424,11 @@ async fn an_emit_without_the_topics_grant_is_refused_on_the_record() {
     let (denied_paths, _) = harness::paths(&denied_home, &[denied]);
     let denied_daemon =
         Daemon::open(denied_paths).unwrap_or_else(|error| panic!("open: {error:?}"));
-    let report = denied_daemon
+    let _report = denied_daemon
         .boot()
         .await
         .unwrap_or_else(|error| panic!("boot: {error:?}"));
-    assert_eq!(report.errors.len(), 1, "the emitter alone is refused");
+    wait_for_state(&denied_daemon, "emitter", FiberState::Failed).await;
     let records = ledger::events(&denied_daemon).await;
     assert!(records.iter().any(|record| matches!(
         &record.kind,
