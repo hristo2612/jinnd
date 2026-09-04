@@ -24,13 +24,13 @@ use crate::alarms::clock_floor;
 use crate::broker_state::refusal;
 pub use crate::grants::{Grant, SeatSpec};
 use crate::grants::{admission, attenuate, authority};
-use crate::handle::Registration;
 use crate::host::LoadedComponent;
 use crate::instance::Seat;
 use crate::selector::NoRealms;
-use crate::slot::{SeatState, SharedSlot, commit_staged};
+use crate::slot::SharedSlot;
 
 mod closing;
+mod commit;
 mod injects;
 mod journal;
 mod spawn;
@@ -270,72 +270,23 @@ impl FiberBody for WasmBody {
             )?;
             // The body runs once per fiber; its contribution commits into
             // the seat, success or failure alike — a failing activation
-            // still owes its inverses (I1). With the trail on, each landed
-            // registration is a ledger event (Law 2).
+            // still owes its inverses (I1). Where it lands — a replacement's
+            // atomic commit in place of the tombstones, or an uncommitted
+            // install — is `commit.rs` (M2-K26 (b)/(c)).
             let (outcome, contributed) = handle.activate(config).await;
-            if self.guest_trail {
-                for registration in &contributed.registrations {
-                    let label = match registration {
-                        Registration::Effect { label, .. } => label.clone(),
-                        Registration::Listen(listen) => format!("listen {}", listen.topic),
-                        // An alarm request IS an effect (M2-K2, R5); its
-                        // registration is a ledger event like any other.
-                        Registration::Alarm(alarm) => alarm.label.clone(),
-                        // The broker ledgered the provide crossing itself
-                        // (R6); the host provider ledgered its own effect
-                        // registration with this fiber's attribution (M2-K3;
-                        // a kernel registration's spawn/listen line, M2-K6).
-                        Registration::Provision { .. }
-                        | Registration::Host(_)
-                        | Registration::Kernel(_) => continue,
-                    };
-                    core.sink
-                        .append(LedgerEventKind::EffectRegistered { label }, Some(fiber));
-                }
-            }
+            self.trail(&core, &contributed, fiber);
             let watched = handle.clone();
-            let displaced = if replacing && outcome.is_ok() {
-                // Mode 0 gets Mode 1's commit (R8): under the topic table's
-                // one lock the tombstones go and the staged listens land;
-                // the old subscription's withdrawal row lands HERE, when it
-                // actually ended (Law 2) — replaced, never absent.
-                let entombed = core.topics.entombed(fiber);
-                let displaced = commit_staged(
-                    &self.slot,
-                    handle,
-                    contributed,
-                    &core.broker,
-                    &core.topics,
-                    &core.alarms,
-                    peer,
-                    Some(fiber),
-                    at.id().0,
-                    core.sink.as_ref(),
-                );
-                if self.guest_trail {
-                    for (_, topic) in entombed {
-                        core.sink.append(
-                            LedgerEventKind::EffectWithdrawn {
-                                label: format!("listen {topic}"),
-                                clean: true,
-                            },
-                            Some(fiber),
-                        );
-                    }
-                }
-                displaced
-            } else {
-                // A failed staged activation installs uncommitted, exactly
-                // as a failed first one: its recorded listens and
-                // provisions were never routed (ids absent, so the replay
-                // skips them) and its effects still owe their inverses
-                // (I1); the tombstones leave with the fiber's `Failed`
-                // rest (M2-K26 (c)).
-                self.slot.install(SeatState::live(handle, contributed))
-            };
-            if let Some(previous) = displaced {
-                previous.instance.dispose().await;
-            }
+            let committing = replacing && outcome.is_ok();
+            self.land(
+                &core,
+                handle,
+                contributed,
+                committing,
+                fiber,
+                peer,
+                at.id().0,
+            )
+            .await;
             if outcome.is_ok() {
                 core.track_death(Arc::clone(&self.slot), watched, fault_sink);
             }
