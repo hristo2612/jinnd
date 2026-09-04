@@ -27,6 +27,10 @@ pub(super) async fn serve(
     let guest = plugin.jinn_plugin_lifecycle();
     let mut sealed = false;
     let mut active = false;
+    // The seat's staging watch (M2-K26 amendment 2): the commit's flip
+    // wakes this loop once, to route what was recorded while staged.
+    let mut staging = store.data().staging.clone();
+    let mut staged = *staging.borrow_and_update();
     loop {
         let command = tokio::select! {
             biased;
@@ -37,6 +41,13 @@ pub(super) async fn serve(
                 if let Some(error) = aborts.borrow_and_update().clone() {
                     die(store, deaths, active, error);
                     return;
+                }
+                continue;
+            }
+            flipped = staging.changed(), if staged => {
+                staged = flipped.is_ok() && *staging.borrow_and_update();
+                if !staged {
+                    commit_late(store);
                 }
                 continue;
             }

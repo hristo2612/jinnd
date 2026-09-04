@@ -81,10 +81,18 @@ pub(crate) type NoticeRx = watch::Receiver<Option<KernelError>>;
 
 pub(crate) fn pair(
     deadline: std::time::Duration,
-) -> (InstanceHandle, NoticeTx, NoticeRx, mpsc::Receiver<Command>) {
+    staging: bool,
+) -> (
+    InstanceHandle,
+    NoticeTx,
+    NoticeRx,
+    mpsc::Receiver<Command>,
+    watch::Receiver<bool>,
+) {
     let (tx, rx) = mpsc::channel(16);
     let (death_tx, deaths) = watch::channel(None);
     let (abort, aborts) = watch::channel(None);
+    let (staging, staged) = watch::channel(staging);
     (
         InstanceHandle {
             tx,
@@ -92,10 +100,12 @@ pub(crate) fn pair(
             abort,
             deadline,
             horizon: DeadlineControl::new(),
+            staging,
         },
         death_tx,
         aborts,
         rx,
+        staged,
     )
 }
 
@@ -105,4 +115,14 @@ pub(crate) fn peer_face(handle: &InstanceHandle) -> Arc<InstancePeer> {
     Arc::new(InstancePeer {
         handle: handle.clone(),
     })
+}
+
+impl InstanceHandle {
+    /// The seat is committed (M2-K26 amendment 2): every registration from
+    /// here on routes live, and the supervisor routes the ones recorded
+    /// while staging. Sync and infallible — run inside the commit's
+    /// critical section (R8).
+    pub(crate) fn commit_seat(&self) {
+        self.staging.send_replace(false);
+    }
 }

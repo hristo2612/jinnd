@@ -145,6 +145,10 @@ pub struct InstanceHandle {
     /// per-entry horizon and the caller-side delivery horizon both run on
     /// it, so a walk the instance parks on pauses both at once.
     pub(crate) horizon: DeadlineControl,
+    /// Whether the instance is still a STAGING seat (M2-K26 (b), amendment
+    /// 2 / harness #53): true from instantiation until the commit flips it
+    /// — a watch (R1), so the supervisor routes what was recorded meanwhile.
+    pub(crate) staging: tokio::sync::watch::Sender<bool>,
 }
 
 impl InstanceHandle {

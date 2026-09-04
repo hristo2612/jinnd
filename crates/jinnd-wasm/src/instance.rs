@@ -59,9 +59,10 @@ pub struct Seat {
     /// deliveries never route here: each registration targets the delivery
     /// face of the instance that minted its token (round-2 blocker-4).
     pub slot: Option<Arc<crate::slot::SharedSlot>>,
-    /// A staging instance (the not-yet-committed side of a Mode-1 swap):
-    /// its provide/listen registrations are RECORDED but not routed — the
-    /// old instance stays warm and fully routed until commit (R8).
+    /// Instantiated as a STAGING seat (the not-yet-committed side of a
+    /// Mode-1 swap, or a config restart's replacement — M2-K26 (b)): its
+    /// provide/listen/alarm registrations are RECORDED but not routed until
+    /// the commit flips the instance live (R8; amendment 2, harness #53).
     pub staging: bool,
 }
 
@@ -73,6 +74,16 @@ pub(crate) struct HostState {
     pub(crate) face: Arc<crate::handle::InstancePeer>,
     pub(crate) outcome: ActivationOutcome,
     pub(crate) horizon: DeadlineControl,
+    /// The seat's staging state, flipped by the commit (M2-K26 (b)).
+    pub(crate) staging: watch::Receiver<bool>,
+}
+
+impl HostState {
+    /// True while the seat is staged: a registration made now is recorded
+    /// for the commit to route, never routed itself.
+    pub(crate) fn staging(&self) -> bool {
+        *self.staging.borrow()
+    }
 }
 
 /// Spawns the supervisor for one instance of a world-typechecked component
@@ -83,10 +94,12 @@ pub(crate) fn spawn(
     pre: PluginPre<HostState>,
     seat: Seat,
 ) -> InstanceHandle {
-    let (handle, deaths, aborts, rx) = pair(seat.deadline);
+    let (handle, deaths, aborts, rx, staging) = pair(seat.deadline, seat.staging);
     let face = peer_face(&handle);
     let horizon = handle.horizon.clone();
-    tokio::spawn(run(engine, pre, seat, face, horizon, deaths, aborts, rx));
+    tokio::spawn(run(
+        engine, pre, seat, face, horizon, deaths, aborts, rx, staging,
+    ));
     handle
 }
 
@@ -100,6 +113,7 @@ async fn run(
     deaths: watch::Sender<Option<KernelError>>,
     aborts: watch::Receiver<Option<KernelError>>,
     mut rx: mpsc::Receiver<Command>,
+    staging: watch::Receiver<bool>,
 ) {
     let deadline = seat.deadline;
     let mut store = Store::new(
@@ -109,6 +123,7 @@ async fn run(
             face,
             outcome: ActivationOutcome::default(),
             horizon: horizon.clone(),
+            staging,
         },
     );
     let fueled = store

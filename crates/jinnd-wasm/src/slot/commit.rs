@@ -49,6 +49,7 @@ pub fn commit_staged(
     if let Some(fiber) = fiber {
         old_listens.extend(topics.entombed(fiber).into_iter().map(|(id, _)| id));
     }
+    let live = staged.clone();
     let face = peer_face(&staged);
     let rebinds: Vec<Rebind> = outcome
         .listens()
@@ -118,5 +119,11 @@ pub fn commit_staged(
             broker.withdraw(peer, contract);
         }
     }
+    // LAST: the seat is installed and routed, so the instance goes live —
+    // a registration it makes from here on routes itself, and whatever it
+    // recorded while staged is routed by its supervisor on this flip
+    // (M2-K26 amendment 2, harness #53; R9: nothing recorded is ever
+    // silently left unarmed).
+    live.commit_seat();
     displaced
 }

@@ -72,7 +72,7 @@ impl HostState {
         self.seat
             .broker
             .check_grant(self.seat.peer, crate::topics::grant_for(&topic))?;
-        let id = if self.seat.staging {
+        let id = if self.staging() {
             None
         } else {
             Some(self.seat.topics.listen_within(
@@ -132,7 +132,7 @@ impl bindings::services::Host for HostState {
     async fn provide(&mut self, contract: String) -> Result<u64, bindings::types::KernelError> {
         self.admit("provide").map_err(bindings::wire_error)?;
         let index = self.outcome.provisions().count() as u64;
-        if self.seat.staging {
+        if self.staging() {
             // A staged provision is recorded, not routed (R8) — but it is
             // grant-checked NOW, exactly as a live one: refusal fails the
             // health gate instead of surfacing at commit (Law 1).
