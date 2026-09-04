@@ -1378,3 +1378,69 @@ async fn suspend_releases_registrations_and_hands_back_world_effects() {
         "no guest inverse ran or was ledgered as withdrawn: {trail:?}"
     );
 }
+
+/// #49 (M2-K26 (e); Law 1, constitution 01 §Grants): an `events.emit`
+/// is covered by the grant of the topic's own name exactly as a
+/// subscription is. Without it the walk is refused BEFORE selection —
+/// the broker's own `GrantRefused` row, `grant-refused` to the guest,
+/// no `DispatchTrace`, and the listener never entered. The same emitter
+/// with the grant is unchanged.
+#[tokio::test]
+async fn an_emit_without_the_topics_grant_is_refused_on_the_record() {
+    struct Entered(std::sync::atomic::AtomicUsize);
+    impl jinnd_wasm::EventTarget for Entered {
+        fn deliver(
+            &self,
+            _: u64,
+            _: &str,
+            _: Vec<u8>,
+            _: Option<std::num::NonZeroU64>,
+        ) -> jinnd_api::KernelFuture<'static, Vec<u8>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+    let rig = rig();
+    let topics = Arc::new(LocalTopics::traced(
+        rig.ledger.clone() as Arc<dyn LedgerSink>,
+    ));
+    let entered = Arc::new(Entered(std::sync::atomic::AtomicUsize::new(0)));
+    topics.listen(
+        EVENT_TOPIC,
+        1,
+        0,
+        None,
+        Arc::clone(&entered) as Arc<dyn jinnd_wasm::EventTarget>,
+    );
+    for granted in [false, true] {
+        let (peer, mut seat) = rig.seat(2, Duration::from_secs(5));
+        seat.topics = Arc::clone(&topics);
+        if granted {
+            rig.broker.grant(peer, EVENT_TOPIC);
+        }
+        let before = rig.ledger.kinds().len();
+        let emitter = rig.host.instantiate(&rig.component, seat);
+        let (outcome, _) = emitter.activate(b"emitter".to_vec()).await;
+        let trail = &rig.ledger.kinds()[before..];
+        let refused = trail.iter().any(|kind| {
+            matches!(kind, LedgerEventKind::GrantRefused { contract, .. } if contract == EVENT_TOPIC)
+        });
+        let traced = trail
+            .iter()
+            .any(|kind| matches!(kind, LedgerEventKind::DispatchTrace { .. }));
+        if granted {
+            assert!(outcome.is_ok(), "the granted emitter is unchanged: {outcome:?}");
+            assert!(!refused && traced, "granted: walked and traced: {trail:?}");
+            assert_eq!(entered.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        } else {
+            assert!(outcome.is_err(), "the ungranted emit is refused to the guest");
+            assert!(refused, "the broker's own GrantRefused row: {trail:?}");
+            assert!(!traced, "no DispatchTrace for a walk that never selected: {trail:?}");
+            assert_eq!(
+                entered.0.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "the listener never ran"
+            );
+        }
+    }
+}
