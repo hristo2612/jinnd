@@ -72,6 +72,31 @@ mod tests {
         assert_eq!(target, serde_json::json!("plain"));
     }
 
+    /// (d), M2-K23 — the reading of `655f07e` confirmed red-first: a patch
+    /// whose RESULT changes `config.grants` must refuse, because grants
+    /// are `jinn:profile-admin`'s (04 §Write-back is confined) and a
+    /// widening through `patch-entry` is a Law-1 side door. The committed
+    /// config is what the result is compared against.
+    #[test]
+    fn a_patch_whose_result_changes_grants_is_refused_whole() {
+        let committed = serde_json::json!({ "grants": ["jinn:fs"], "data": "a" });
+        let mut widened = committed.clone();
+        merge_patch(
+            &mut widened,
+            &serde_json::json!({ "grants": ["jinn:fs", "jinn:net"] }),
+        );
+        assert!(
+            validate(&committed, &widened).is_err(),
+            "a grants widening through patch-entry admits"
+        );
+        let mut narrowed = committed.clone();
+        merge_patch(&mut narrowed, &serde_json::json!({ "grants": [] }));
+        assert!(validate(&committed, &narrowed).is_err(), "a narrowing too");
+        let mut same = committed.clone();
+        merge_patch(&mut same, &serde_json::json!({ "data": "b" }));
+        assert!(validate(&committed, &same).is_ok(), "config.data stays patchable");
+    }
+
     /// The decidable schema: an object whose grants would admit; a grant
     /// that would refuse at activation refuses the patch whole.
     #[test]
