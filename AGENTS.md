@@ -34,10 +34,14 @@ It is LAW; this file translates it into direct instructions for you.
 - **TDD**: the failing test exists before your implementation. If you're implementing
   and no test covers your change, write the missing test FIRST in the crate's own
   test module (never in `tests/invariants/` — that's the verifier's territory).
-- **Verify before claiming done**: `cargo fmt --check && cargo clippy --workspace
-  --all-targets -- -D warnings && cargo test --workspace`. Paste the tail of real
-  output in your report. Loom tests (`cargo test --release -p jinnd-fiber --features
-  loom` when that crate exists) for any lifecycle concurrency change.
+- **Verify before claiming done.** Follow the required CI gates: `cargo fmt --all
+  --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace --exclude jinnd-invariants`,
+  `tests/invariants/check-ratchet.sh`, and `cargo build --workspace --locked`.
+  Expected-red invariant cases are judged by the verifier-owned ratchet, not
+  ordinary workspace test success. Run the required loom/miri jobs for affected
+  concurrency/unsafe behavior. Record full commit SHA, commands and actual tails.
+  Current PR and post-merge Linux CI remain required; skipped proof is not green.
 - **Concurrency changes** to the fiber engine require a loom model test exercising
   the interleaving you claim to handle.
 - **LOC budgets** are declared and read on the canonical meter
@@ -95,3 +99,21 @@ STOP, commit nothing, preserve everything, escalate for an ownership ruling.
 resolving a conflict there must take the verifier's side byte-for-byte or STOP
 and escalate. (Added after merge 36333fe silently deleted a verifier case; caught
 and restored in f400acc.)
+
+## Scoped verification evidence
+
+For new work after this amendment, full gates remain the default. An independent
+reviewer may reuse a previously successful independent gate result for unchanged
+inputs: record both complete SHAs, the full intervening diff, original command and
+output, platform/toolchain, dependency locks and build/config inputs. For the
+harness also record the exact kernel pin and loader/profile/plugin identity.
+Prove that the changed files cannot affect that gate's behavior, including generated
+assets and indirect inputs. Label the result reused, not newly executed.
+
+A docs/comment-only or web-only delta can qualify; file extension alone is not
+proof. Rerun all affected behavior and acceptance checks on the new head, including
+live UI checks and real-loader composition for affected integration behavior.
+Changes to Rust/runtime/contract/pin, profiles, loaders, dependencies or build
+machinery require the relevant full Rust/composition gates. Missing, ambiguous or
+non-independent prior evidence requires full validation. Source-of-truth invariants,
+verifier ownership and every required PR/post-merge CI gate remain binding.
