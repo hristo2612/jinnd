@@ -105,7 +105,7 @@ and restored in f400acc.)
 For new work after this amendment, full gates remain the default. An independent
 reviewer may reuse a previously successful independent gate result for unchanged
 inputs: record both complete SHAs, the full intervening diff, original command and
-output, platform/toolchain, dependency locks and build/config inputs. For the
+output, platform/toolchain, dependency locks, build scripts/config and features. For the
 harness also record the exact kernel pin and loader/profile/plugin identity.
 Prove that the changed files cannot affect that gate's behavior, including generated
 assets and indirect inputs. Label the result reused, not newly executed.
