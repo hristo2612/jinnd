@@ -12,6 +12,8 @@ use crate::bindings::lifecycle;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod schedules;
 
 pub(crate) fn trapped(trap: &wasmtime::Error) -> KernelError {
     KernelError {
