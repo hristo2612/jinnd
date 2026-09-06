@@ -92,10 +92,10 @@ pub(super) async fn finish(daemon: &Daemon, paths: &DaemonPaths, attempt: &str) 
         {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "the replacement commits Active: {log}"
-        );
+        if Instant::now() >= deadline {
+            super::diagnostics::snapshot(daemon, paths, "replacement Active timeout").await;
+            panic!("the replacement commits Active: {log}");
+        }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     let document =

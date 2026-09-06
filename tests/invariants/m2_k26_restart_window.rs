@@ -18,6 +18,8 @@ mod harness;
 mod ledger;
 #[path = "m2_k26_restart_window/proof.rs"]
 mod restart_proof;
+#[path = "m2_k26_restart_window/withdrawal.rs"]
+mod withdrawal;
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
@@ -347,7 +349,7 @@ async fn the_commit_is_atomic_no_walk_sees_neither() {
     assert_eq!(old.calls.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_replacement_withdraws_its_tombstones_on_the_record() {
     let home = harness::home("m2-k26-failed");
     let initial = [harness::entry(
@@ -369,74 +371,15 @@ async fn a_failed_replacement_withdraws_its_tombstones_on_the_record() {
         )],
         &hash,
     );
-    let monitor = async {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if daemon
-                .entry_fiber("consumer")
-                .and_then(|fiber| daemon.fiber_state(fiber))
-                == Some(FiberState::Failed)
-            {
-                break;
-            }
-            assert!(Instant::now() < deadline, "failure commits");
-            tokio::task::yield_now().await;
-        }
-        // Freeze only this controlled daemon runtime's task queue while
-        // the independent ledger writer services the read. No row is forged.
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap_or_else(|error| panic!("reader runtime: {error}"))
-                        .block_on(ledger::events(&daemon))
-                })
-                .join()
-                .unwrap_or_else(|error| panic!("reader thread: {error:?}"))
-        })
-    };
-    let (records, _) = tokio::join!(biased; monitor, daemon.reload());
-    println!(
-        "K26-WITHDRAWAL-INITIAL {}",
-        serde_json::to_string(&records).unwrap_or_else(|error| panic!("{error}"))
-    );
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let later = ledger::events(&daemon).await;
-        if later.iter().any(|record| matches!(&record.kind,
-            LedgerEventKind::EffectWithdrawn { label, .. } if label == &format!("listen {NOTICE}")
-        )) {
-            println!("K26-WITHDRAWAL-LATER {}", serde_json::to_string(&later).unwrap_or_else(|error| panic!("{error}")));
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "withdrawal eventually occurs: {later:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let failed = records
-        .iter()
-        .position(|record| {
-            matches!(
-                &record.kind,
-                LedgerEventKind::FiberTransition(transition) if transition.to == FiberState::Failed
-            )
-        })
-        .unwrap_or_else(|| panic!("Failed is recorded: {records:?}"));
-    let withdrawn = records
-        .iter()
-        .position(|record| matches!(
-            &record.kind,
-            LedgerEventKind::EffectWithdrawn { label, .. } if label == &format!("listen {NOTICE}")
-        ))
-        .unwrap_or_else(|| panic!("the tombstone withdrawal is recorded: {records:?}"));
-    assert!(
-        withdrawn > failed,
-        "withdrawal {withdrawn} follows Failed {failed}"
-    );
+    daemon.reload().await;
+    wait_for_state(&daemon, "consumer", FiberState::Failed).await;
+    let records = ledger::events(&daemon).await;
+    let fiber = daemon
+        .entry_fiber("consumer")
+        .unwrap_or_else(|| panic!("the failed consumer has a fiber"));
+    let failed = withdrawal::failed(&records, fiber);
+    let records = withdrawal::wait(&daemon, fiber, failed, records).await;
+    withdrawal::controls(&records, fiber, failed);
     shutdown(&daemon).await;
 }
 
