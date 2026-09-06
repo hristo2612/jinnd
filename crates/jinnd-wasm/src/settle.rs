@@ -6,14 +6,16 @@ use std::time::Duration;
 
 use jinnd_api::{ErrorCode, KernelError};
 use tokio::sync::watch;
-use tokio::time::{Instant, Sleep, sleep};
+use tokio::time::{Instant, sleep};
 
 use crate::bindings::lifecycle;
 
-#[cfg(test)]
-mod tests;
+#[cfg(all(test, feature = "loom"))]
+mod clock_model;
 #[cfg(test)]
 mod schedules;
+#[cfg(test)]
+mod tests;
 
 pub(crate) fn trapped(trap: &wasmtime::Error) -> KernelError {
     KernelError {
@@ -68,18 +70,18 @@ pub(crate) enum Settled<T> {
 /// so a listener never spends its emitter's containment horizon (M2-K25(a)).
 #[derive(Clone, Debug)]
 pub(crate) struct DeadlineControl {
-    parked: watch::Sender<u64>,
+    parked: watch::Sender<ActiveClock>,
 }
 
 impl DeadlineControl {
     pub(crate) fn new() -> Self {
         Self {
-            parked: watch::Sender::new(0),
+            parked: watch::Sender::new(ActiveClock::new(Instant::now())),
         }
     }
 
     pub(crate) fn park(&self) -> DeadlinePark {
-        self.parked.send_modify(|depth| *depth += 1);
+        self.parked.send_modify(|clock| clock.park(Instant::now()));
         DeadlinePark {
             control: self.clone(),
         }
@@ -96,7 +98,47 @@ impl Drop for DeadlinePark {
     fn drop(&mut self) {
         self.control
             .parked
-            .send_modify(|depth| *depth = depth.saturating_sub(1));
+            .send_modify(|clock| clock.resume(Instant::now()));
+    }
+}
+
+// A constant-size clock shared by the supervisor and caller-side horizon.
+// Watch notifications may coalesce: only boundary updates account time.
+#[derive(Debug)]
+struct ActiveClock {
+    depth: u64,
+    elapsed: Duration,
+    resumed: Instant,
+}
+
+impl ActiveClock {
+    fn new(now: Instant) -> Self {
+        Self {
+            depth: 0,
+            elapsed: Duration::ZERO,
+            resumed: now,
+        }
+    }
+
+    fn elapsed_at(&self, now: Instant) -> Duration {
+        self.elapsed
+            + if self.depth == 0 {
+                now - self.resumed
+            } else {
+                Duration::ZERO
+            }
+    }
+
+    fn park(&mut self, now: Instant) {
+        self.elapsed = self.elapsed_at(now);
+        self.depth += 1;
+    }
+
+    fn resume(&mut self, now: Instant) {
+        self.depth = self.depth.saturating_sub(1);
+        if self.depth == 0 {
+            self.resumed = now;
+        }
     }
 }
 
@@ -111,27 +153,30 @@ pub(crate) async fn within<T>(
     call: impl Future<Output = T>,
 ) -> Result<T, DeadlineElapsed> {
     let mut parked = control.parked.subscribe();
-    let mut since = (*parked.borrow() > 0).then(Instant::now);
+    let baseline = parked.borrow().elapsed_at(Instant::now());
     let mut timer = Box::pin(sleep(deadline));
     let mut call = Box::pin(call);
     loop {
+        let (expires, running) = {
+            let clock = parked.borrow_and_update();
+            let now = Instant::now();
+            let remaining = deadline.saturating_sub(clock.elapsed_at(now) - baseline);
+            (now + remaining, clock.depth == 0 || remaining.is_zero())
+        };
+        timer.as_mut().reset(expires);
         tokio::select! {
             biased;
             changed = parked.changed() => {
                 debug_assert!(changed.is_ok(), "the call retains its deadline sender");
-                let depth = *parked.borrow_and_update();
-                match (since, depth) {
-                    (None, 1..) => since = Some(Instant::now()),
-                    (Some(started), 0) => {
-                        let resume_at = timer.deadline() + started.elapsed();
-                        Sleep::reset(timer.as_mut(), resume_at);
-                        since = None;
-                    }
-                    _ => {}
-                }
             }
             value = &mut call => return Ok(value),
-            () = &mut timer, if since.is_none() => return Err(DeadlineElapsed),
+            () = &mut timer, if running => {
+                // Polling the call can itself park/resume after `changed` was
+                // polled. Recheck the clock before accepting that stale timer.
+                if parked.borrow().elapsed_at(Instant::now()) - baseline >= deadline {
+                    return Err(DeadlineElapsed);
+                }
+            }
         }
     }
 }
