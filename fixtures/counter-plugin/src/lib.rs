@@ -660,10 +660,12 @@ fn profile_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
 /// starts the shape from a tick.
 fn notify_mode(mode: &str) -> Result<(), GuestFault> {
     match mode {
-        "notify-provider" | "notify-provider-observed" => {
-            services::provide(SETTINGS_CONTRACT).map(|_| ()).map_err(fault)
+        "notify-provider" | "notify-provider-observed" | "notify-provider-k26" => {
+            services::provide(SETTINGS_CONTRACT)
+                .map(|_| ())
+                .map_err(fault)
         }
-        "notify-consumer" => {
+        "notify-consumer" | "notify-consumer-k26" => {
             effects::register("consumer effect", CONSUMER_UNDO_TOKEN).map_err(fault)?;
             jinn::plugin::events::listen(CHANGED_TOPIC, NOTICE_TOKEN).map_err(fault)?;
             fs::append("/consumer.log", b"act\n", "").map_err(fs_fault)?;
@@ -671,7 +673,18 @@ fn notify_mode(mode: &str) -> Result<(), GuestFault> {
             // the fiber's restart is still in flight for the whole of it,
             // which is precisely the state a reply-expecting dispatch must
             // refuse — and long enough to observe instead of race for.
-            dawdle(600)
+            if mode == "notify-consumer-k26" {
+                // Only the K26 opt-in replacement waits for its verifier.
+                // Initial activation must not spend the trigger's call budget.
+                if MODE.lock().unwrap().ends_with(":v2") {
+                    while fs::meta("/k26-release").is_err() {
+                        dawdle(20)?;
+                    }
+                }
+                Ok(())
+            } else {
+                dawdle(600)
+            }
         }
         "notify-trigger" => {
             clock::alarm_every(250, WAKE_TOKEN).map_err(fault)?;
@@ -860,14 +873,23 @@ fn refusal(tag: u8, case: &str, target: &jinn::plugin::types::RefusedTarget) -> 
 /// was delivered (the listener-output count follows), 9 = the patch itself
 /// was refused (retryable; nothing was dispatched).
 fn notify(consumer: &str) -> Result<Vec<u8>, GuestFault> {
-    let observed = *MODE.lock().unwrap() == "notify-provider-observed";
+    let mode = MODE.lock().unwrap().clone();
+    let k26 = mode == "notify-provider-k26";
+    let observed = mode == "notify-provider-observed" || k26;
     if observed && !dispatch_observation::control()? {
         return Ok(vec![9]);
     }
     let accepted = operator_call(
         "jinn:profile",
         "patch-entry",
-        &patch_payload(consumer, r#"{"data":"notify-consumer:v2"}"#),
+        &patch_payload(
+            consumer,
+            if k26 {
+                r#"{"data":"notify-consumer-k26:v2"}"#
+            } else {
+                r#"{"data":"notify-consumer:v2"}"#
+            },
+        ),
     )?;
     if accepted.first() != Some(&2) {
         let mut wire = vec![9];

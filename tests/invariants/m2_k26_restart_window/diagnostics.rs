@@ -49,7 +49,6 @@ pub(super) async fn outcome(daemon: &Daemon, paths: &DaemonPaths) -> Vec<u8> {
         if let Ok(bytes) = std::fs::read(paths.data.join("notify.out"))
             && !bytes.is_empty()
         {
-            snapshot(daemon, paths, "notify.out").await;
             return bytes;
         }
         if Instant::now() >= deadline {

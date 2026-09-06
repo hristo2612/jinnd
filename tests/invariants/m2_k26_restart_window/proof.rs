@@ -78,6 +78,8 @@ fn assert_no_delivery(paths: &DaemonPaths, records: &[LedgerRecord], attempt: &s
 }
 
 pub(super) async fn finish(daemon: &Daemon, paths: &DaemonPaths, attempt: &str) {
+    std::fs::write(paths.data.join("k26-release"), b"release")
+        .unwrap_or_else(|error| panic!("release replacement: {error}"));
     let fiber = daemon
         .entry_fiber("consumer")
         .unwrap_or_else(|| panic!("consumer has a fiber"));
@@ -102,7 +104,7 @@ pub(super) async fn finish(daemon: &Daemon, paths: &DaemonPaths, attempt: &str) 
         .as_array()
         .and_then(|entries| entries.iter().find(|entry| entry["id"] == "consumer"))
         .map(|entry| entry["config"]["data"].clone());
-    assert_eq!(patched, Some(serde_json::json!("notify-consumer:v2")));
+    assert_eq!(patched, Some(serde_json::json!("notify-consumer-k26:v2")));
     shutdown(daemon).await;
     let records = dispatch::events(daemon).await;
     assert_no_delivery(paths, &records, attempt);

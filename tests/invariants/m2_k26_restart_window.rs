@@ -114,12 +114,12 @@ fn notify_entries() -> Vec<serde_json::Value> {
                 "jinn:clock",
                 { "contract": "jinn:profile", "scope": ["consumer"] }
             ]),
-            "notify-provider-observed",
+            "notify-provider-k26",
         ),
         dispatch::entry(
             "consumer",
             serde_json::json!(["jinn:test/settings", NOTICE, "jinn:fs", "jinn:clock"]),
-            "notify-consumer",
+            "notify-consumer-k26",
         ),
         dispatch::entry(
             "trigger",
@@ -347,7 +347,7 @@ async fn the_commit_is_atomic_no_walk_sees_neither() {
     assert_eq!(old.calls.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "current_thread")]
 async fn a_failed_replacement_withdraws_its_tombstones_on_the_record() {
     let home = harness::home("m2-k26-failed");
     let initial = [harness::entry(
@@ -371,7 +371,40 @@ async fn a_failed_replacement_withdraws_its_tombstones_on_the_record() {
     );
     let _ = daemon.reload().await;
     wait_for_state(&daemon, "consumer", FiberState::Failed).await;
-    let records = ledger::events(&daemon).await;
+    // Diagnostic schedule: keep the daemon's current-thread task queue
+    // paused while a separate reader asks the real ledger for its snapshot.
+    // The writer owns its own thread; no kernel source is replaced.
+    let records = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap_or_else(|error| panic!("reader runtime: {error}"))
+                    .block_on(ledger::events(&daemon))
+            })
+            .join()
+            .unwrap_or_else(|error| panic!("reader thread: {error:?}"))
+    });
+    println!(
+        "K26-WITHDRAWAL-INITIAL {}",
+        serde_json::to_string(&records).unwrap_or_else(|error| panic!("{error}"))
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let later = ledger::events(&daemon).await;
+        if later.iter().any(|record| matches!(&record.kind,
+            LedgerEventKind::EffectWithdrawn { label, .. } if label == &format!("listen {NOTICE}")
+        )) {
+            println!("K26-WITHDRAWAL-LATER {}", serde_json::to_string(&later).unwrap_or_else(|error| panic!("{error}")));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "withdrawal eventually occurs: {later:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     let failed = records
         .iter()
         .position(|record| {
