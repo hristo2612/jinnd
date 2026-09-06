@@ -20,6 +20,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
+mod dispatch_observation;
+
 wit_bindgen::generate!({
     path: "../../wit",
     world: "plugin",
@@ -657,7 +659,9 @@ fn profile_mode(mode: &str, arg: &str) -> Result<(), GuestFault> {
 /// starts the shape from a tick.
 fn notify_mode(mode: &str) -> Result<(), GuestFault> {
     match mode {
-        "notify-provider" => services::provide(SETTINGS_CONTRACT).map(|_| ()).map_err(fault),
+        "notify-provider" | "notify-provider-observed" => {
+            services::provide(SETTINGS_CONTRACT).map(|_| ()).map_err(fault)
+        }
         "notify-consumer" => {
             effects::register("consumer effect", CONSUMER_UNDO_TOKEN).map_err(fault)?;
             jinn::plugin::events::listen(CHANGED_TOPIC, NOTICE_TOKEN).map_err(fault)?;
@@ -855,6 +859,10 @@ fn refusal(tag: u8, case: &str, target: &jinn::plugin::types::RefusedTarget) -> 
 /// was delivered (the listener-output count follows), 9 = the patch itself
 /// was refused (retryable; nothing was dispatched).
 fn notify(consumer: &str) -> Result<Vec<u8>, GuestFault> {
+    let observed = *MODE.lock().unwrap() == "notify-provider-observed";
+    if observed && !dispatch_observation::control()? {
+        return Ok(vec![9]);
+    }
     let accepted = operator_call(
         "jinn:profile",
         "patch-entry",
@@ -871,12 +879,8 @@ fn notify(consumer: &str) -> Result<Vec<u8>, GuestFault> {
     // is retried until the kernel says something — bounded by the clock.
     let mut outcome = Vec::new();
     for _ in 0..40u32 {
-        match jinn::plugin::events::emit(
-            CHANGED_TOPIC,
-            jinn::plugin::types::DispatchMode::Serial,
-            &jinn::plugin::types::Selector::All,
-            b"changed",
-        ) {
+        let (attempt, answer) = dispatch_observation::emit(observed)?;
+        match answer {
             // A walk that selected nobody says nothing about the target
             // (the old listener withdrawn, the new one not yet
             // registered): dispatch again a moment later.
@@ -888,6 +892,9 @@ fn notify(consumer: &str) -> Result<Vec<u8>, GuestFault> {
             // The typed refusal: the case IS the next move, and the
             // record names who refused. Nothing here parses a sentence.
             Err(jinn::plugin::types::KernelError::Restarting(target)) => {
+                if observed {
+                    fs::write("/dispatch-refused", attempt.as_bytes(), "").map_err(fs_fault)?;
+                }
                 outcome = refusal(1, "restarting", &target);
                 break;
             }
@@ -1509,6 +1516,7 @@ impl Guest for Fixture {
                 return Err(GuestFault::Failed("a malformed notice arrived".into()));
             }
             fs::append("/consumer.log", b"notice\n", "").map_err(fs_fault)?;
+            dispatch_observation::received(&payload)?;
             let handle = services::resolve(SETTINGS_CONTRACT).map_err(fault)?;
             return services::call(handle, "get", b"").map_err(fault);
         }
