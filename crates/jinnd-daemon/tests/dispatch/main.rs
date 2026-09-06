@@ -178,7 +178,12 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
     let control = observation::attempt(&paths.data, "dispatch-control");
     assert_ne!(control, attempt);
     let control_walk = observation::walk(&records, &control);
-    assert!(control_walk.last().unwrap().sequence < walk.first().unwrap().sequence);
+    assert!(
+        control_walk
+            .last()
+            .zip(walk.first())
+            .is_some_and(|(earlier, later)| { earlier.sequence < later.sequence })
+    );
     assert_eq!(
         observation::no_delivery(&records, &paths.data, &control),
         Err("request reached a listener")
