@@ -130,7 +130,7 @@ pub(super) async fn finish(daemon: &Daemon, paths: &DaemonPaths, attempt: &str) 
         .rev()
         .find(|record| {
             record.sequence < refused.sequence && matches!(&record.kind,
-                LedgerEventKind::ProfilePatched { entry, by } if entry.0 == "consumer" && by.0 == "provider"
+                LedgerEventKind::ProfilePatched { entry, by } if entry.0 == "consumer" && by == "provider"
             )
         })
         .unwrap_or_else(|| panic!("the refusal follows the accepted config patch"));
