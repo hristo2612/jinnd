@@ -108,7 +108,7 @@ fn notify_entries() -> Vec<serde_json::Value> {
                 "jinn:clock",
                 { "contract": "jinn:profile", "scope": ["consumer"] }
             ]),
-            "notify-provider",
+            "notify-provider-observed",
         ),
         dispatch::entry(
             "consumer",
@@ -287,6 +287,10 @@ async fn a_reply_expecting_walk_inside_a_config_restart_is_refused_restarting_ne
     let (_home, daemon, paths, outcome, records) = observed_restart("m2-k26-refusal").await;
     assert_restart_refusal(&outcome, &records);
     let consumer_log = std::fs::read(paths.data.join("consumer.log")).unwrap_or_default();
+    println!("CONTROLLED outcome={:?} consumer_log={:?}", String::from_utf8_lossy(&outcome), String::from_utf8_lossy(&consumer_log));
+    println!("CONTROLLED ledger={}", serde_json::to_string(&records).unwrap_or_else(|error| panic!("{error}")));
+    println!("CONTROLLED refused={:?} control={:?}", std::fs::read_to_string(paths.data.join("dispatch-refused")), std::fs::read_to_string(paths.data.join("dispatch-control")));
+    shutdown(&daemon).await;
     assert!(
         !String::from_utf8_lossy(&consumer_log).contains("notice"),
         "the selected old incarnation never ran"
