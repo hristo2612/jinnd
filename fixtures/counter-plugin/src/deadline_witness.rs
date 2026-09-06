@@ -25,7 +25,7 @@ pub(super) fn run() -> Result<(), GuestFault> {
         .map_err(fault)?
         .checked_sub(before)
         .ok_or_else(|| GuestFault::Failed("clock moved backwards during walk".into()))?;
-    effects::register(&format!("deadline walk ms {walk_ms}"), 0).map_err(fault)?;
+    fs::write(&format!("/deadline-walk-ms-{walk_ms}"), b"walk", "").map_err(fs_fault)?;
     fs::write("/deadline-walk-end", b"end", "").map_err(fs_fault)?;
 
     // The unchanged guest clock read drives actual work, not an observer's
@@ -33,9 +33,9 @@ pub(super) fn run() -> Result<(), GuestFault> {
     // over-credit control before the final infinite spin. The correct
     // remaining five-second horizon kills this call inside the second spin.
     dawdle(4_500)?;
-    effects::register("deadline survived 4500ms", 0).map_err(fault)?;
+    fs::write("/deadline-survived-4500ms", b"survived", "").map_err(fs_fault)?;
     dawdle(1_000)?;
-    effects::register("deadline exceeded 5500ms", 0).map_err(fault)?;
+    fs::write("/deadline-exceeded-5500ms", b"exceeded", "").map_err(fs_fault)?;
     loop {
         std::hint::black_box(());
     }

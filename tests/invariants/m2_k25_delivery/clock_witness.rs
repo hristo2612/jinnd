@@ -40,8 +40,9 @@ pub(super) async fn prove() {
         .iter()
         .filter_map(|label| {
             label
-                .strip_prefix("deadline walk ms ")
-                .and_then(|ms| ms.parse().ok())
+                .strip_prefix("fs write deadline-walk-ms-")
+                .and_then(|suffix| suffix.split_once(" [effect "))
+                .and_then(|(ms, _)| ms.parse().ok())
         })
         .collect();
     assert_eq!(walks.len(), 1, "one completed walk: {labels:?}");
@@ -50,11 +51,15 @@ pub(super) async fn prove() {
         "the actual guest walk exceeds five seconds"
     );
     assert!(
-        labels.contains(&"deadline survived 4500ms"),
+        labels
+            .iter()
+            .any(|label| label.starts_with("fs write deadline-survived-4500ms [effect ")),
         "the guest executed 4.5 seconds of its remaining active budget: {labels:?}"
     );
     assert!(
-        !labels.contains(&"deadline exceeded 5500ms"),
+        !labels
+            .iter()
+            .any(|label| label.starts_with("fs write deadline-exceeded-5500ms [effect ")),
         "the walk did not grant the guest another active budget: {labels:?}"
     );
     let fatal: Vec<_> = records
