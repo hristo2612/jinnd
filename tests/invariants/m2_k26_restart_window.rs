@@ -4,14 +4,22 @@
 
 #![allow(dead_code)]
 
+#[path = "m2_k26_restart_window/diagnostics.rs"]
+mod diagnostics;
 #[path = "../../crates/jinnd-daemon/tests/dispatch/harness.rs"]
 mod dispatch_harness;
+#[path = "../../crates/jinnd-daemon/tests/dispatch/observation.rs"]
+mod dispatch_observation;
 #[path = "string_lane_injects/fixture.rs"]
 mod fixture;
 #[path = "string_lane_injects/harness.rs"]
 mod harness;
 #[path = "string_lane_injects/ledger.rs"]
 mod ledger;
+#[path = "m2_k26_restart_window/proof.rs"]
+mod restart_proof;
+#[path = "m2_k26_restart_window/withdrawal.rs"]
+mod withdrawal;
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
@@ -108,12 +116,12 @@ fn notify_entries() -> Vec<serde_json::Value> {
                 "jinn:clock",
                 { "contract": "jinn:profile", "scope": ["consumer"] }
             ]),
-            "notify-provider",
+            "notify-provider-k26",
         ),
         dispatch::entry(
             "consumer",
             serde_json::json!(["jinn:test/settings", NOTICE, "jinn:fs", "jinn:clock"]),
-            "notify-consumer",
+            "notify-consumer-k26",
         ),
         dispatch::entry(
             "trigger",
@@ -135,8 +143,7 @@ async fn observed_restart(
     let home = dispatch::home(name);
     let paths = dispatch::paths(&home, notify_entries());
     let daemon = dispatch::booted(paths.clone()).await;
-    let outcome =
-        dispatch::wait_for(&paths.data.join("notify.out"), |bytes| !bytes.is_empty()).await;
+    let outcome = diagnostics::outcome(&daemon, &paths).await;
     let records = dispatch::events(&daemon).await;
     (home, daemon, paths, outcome, records)
 }
@@ -146,31 +153,6 @@ async fn shutdown(daemon: &Daemon) {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
-}
-
-fn assert_restart_refusal(outcome: &[u8], records: &[LedgerRecord]) {
-    assert_eq!(
-        outcome.first(),
-        Some(&1),
-        "the guest received the typed restarting case: {outcome:?}"
-    );
-    assert!(records.iter().any(|record| matches!(
-        &record.kind,
-        LedgerEventKind::DispatchRefused {
-            topic,
-            mode: DispatchMode::Serial,
-            target,
-            owed: Owed::Reload,
-            ..
-        } if topic == NOTICE && target.0 == "consumer"
-    )));
-    assert!(
-        !records.iter().any(|record| matches!(
-            &record.kind,
-            LedgerEventKind::DispatchTrace { topic, listeners: 0, .. } if topic == NOTICE
-        )),
-        "the restart window never looks like an honestly empty topic: {records:?}"
-    );
 }
 
 async fn wait_for_state(daemon: &Daemon, entry: &str, wanted: FiberState) {
@@ -285,13 +267,7 @@ async fn a_replacement_seat_is_installed_at_commit_and_its_alarms_fire() {
 async fn a_reply_expecting_walk_inside_a_config_restart_is_refused_restarting_never_answered_unmodified()
  {
     let (_home, daemon, paths, outcome, records) = observed_restart("m2-k26-refusal").await;
-    assert_restart_refusal(&outcome, &records);
-    let consumer_log = std::fs::read(paths.data.join("consumer.log")).unwrap_or_default();
-    assert!(
-        !String::from_utf8_lossy(&consumer_log).contains("notice"),
-        "the selected old incarnation never ran"
-    );
-
+    let attempt = restart_proof::refusal(&paths, &outcome, &records);
     let sink = Arc::new(Recording::default());
     let topics = LocalTopics::traced(Arc::clone(&sink) as Arc<dyn LedgerSink>);
     topics.watch_restarts(Arc::new(Replacing(FiberId(9))));
@@ -322,7 +298,7 @@ async fn a_reply_expecting_walk_inside_a_config_restart_is_refused_restarting_ne
             _
         )]
     ));
-    shutdown(&daemon).await;
+    restart_proof::finish(&daemon, &paths, &attempt).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -398,26 +374,12 @@ async fn a_failed_replacement_withdraws_its_tombstones_on_the_record() {
     let _ = daemon.reload().await;
     wait_for_state(&daemon, "consumer", FiberState::Failed).await;
     let records = ledger::events(&daemon).await;
-    let failed = records
-        .iter()
-        .position(|record| {
-            matches!(
-                &record.kind,
-                LedgerEventKind::FiberTransition(transition) if transition.to == FiberState::Failed
-            )
-        })
-        .unwrap_or_else(|| panic!("Failed is recorded: {records:?}"));
-    let withdrawn = records
-        .iter()
-        .position(|record| matches!(
-            &record.kind,
-            LedgerEventKind::EffectWithdrawn { label, .. } if label == &format!("listen {NOTICE}")
-        ))
-        .unwrap_or_else(|| panic!("the tombstone withdrawal is recorded: {records:?}"));
-    assert!(
-        withdrawn > failed,
-        "withdrawal {withdrawn} follows Failed {failed}"
-    );
+    let fiber = daemon
+        .entry_fiber("consumer")
+        .unwrap_or_else(|| panic!("the failed consumer has a fiber"));
+    let failed = withdrawal::failed(&records, fiber);
+    let records = withdrawal::wait(&daemon, fiber, failed, records).await;
+    withdrawal::controls(&records, fiber, failed);
     shutdown(&daemon).await;
 }
 
@@ -457,7 +419,7 @@ async fn a_disposed_entry_leaves_no_tombstone() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_in_flight_load_answers_restarting_on_introspect_and_on_the_walk() {
     let (_home, daemon, paths, outcome, records) = observed_restart("m2-k26-introspect").await;
-    assert_restart_refusal(&outcome, &records);
+    let attempt = restart_proof::refusal(&paths, &outcome, &records);
     let entries = dispatch::json(
         &std::fs::read(paths.data.join("notify-introspect.json"))
             .unwrap_or_else(|error| panic!("introspect snapshot: {error}")),
@@ -468,7 +430,7 @@ async fn an_in_flight_load_answers_restarting_on_introspect_and_on_the_walk() {
         .unwrap_or_else(|| panic!("consumer is present: {entries}"));
     assert_eq!(consumer["state"], "loading");
     assert_eq!(consumer["unserved"], "restarting");
-    shutdown(&daemon).await;
+    restart_proof::finish(&daemon, &paths, &attempt).await;
 }
 
 #[tokio::test]
