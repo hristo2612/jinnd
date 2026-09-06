@@ -369,23 +369,35 @@ async fn a_failed_replacement_withdraws_its_tombstones_on_the_record() {
         )],
         &hash,
     );
-    let _ = daemon.reload().await;
-    wait_for_state(&daemon, "consumer", FiberState::Failed).await;
-    // Diagnostic schedule: keep the daemon's current-thread task queue
-    // paused while a separate reader asks the real ledger for its snapshot.
-    // The writer owns its own thread; no kernel source is replaced.
-    let records = std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap_or_else(|error| panic!("reader runtime: {error}"))
-                    .block_on(ledger::events(&daemon))
-            })
-            .join()
-            .unwrap_or_else(|error| panic!("reader thread: {error:?}"))
-    });
+    let monitor = async {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if daemon
+                .entry_fiber("consumer")
+                .and_then(|fiber| daemon.fiber_state(fiber))
+                == Some(FiberState::Failed)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "failure commits");
+            tokio::task::yield_now().await;
+        }
+        // Freeze only this controlled daemon runtime's task queue while
+        // the independent ledger writer services the read. No row is forged.
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap_or_else(|error| panic!("reader runtime: {error}"))
+                        .block_on(ledger::events(&daemon))
+                })
+                .join()
+                .unwrap_or_else(|error| panic!("reader thread: {error:?}"))
+        })
+    };
+    let (records, _) = tokio::join!(biased; monitor, daemon.reload());
     println!(
         "K26-WITHDRAWAL-INITIAL {}",
         serde_json::to_string(&records).unwrap_or_else(|error| panic!("{error}"))
