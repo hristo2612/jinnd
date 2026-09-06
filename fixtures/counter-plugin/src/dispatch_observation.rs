@@ -22,7 +22,11 @@ pub(super) fn emit(observed: bool) -> Result<(String, Answer), GuestFault> {
         CHANGED_TOPIC,
         DispatchMode::Serial,
         &Selector::All,
-        if observed { attempt.as_bytes() } else { b"changed" },
+        if observed {
+            attempt.as_bytes()
+        } else {
+            b"changed"
+        },
     );
     if observed {
         fs::write(&format!("/{attempt}-end"), b"end", "").map_err(fs_fault)?;
@@ -44,9 +48,10 @@ pub(super) fn control() -> Result<bool, GuestFault> {
 
 pub(super) fn received(payload: &[u8]) -> Result<(), GuestFault> {
     let attempt = String::from_utf8_lossy(payload);
-    if attempt.strip_prefix("dispatch-").is_some_and(|id| {
-        !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())
-    }) {
+    if attempt
+        .strip_prefix("dispatch-")
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+    {
         fs::write(&format!("/{attempt}-received"), b"notice", "").map_err(fs_fault)?;
     }
     Ok(())

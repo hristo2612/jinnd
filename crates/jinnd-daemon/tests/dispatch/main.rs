@@ -17,6 +17,7 @@
 //! discoverable only by stalling.
 
 mod harness;
+mod observation;
 
 use std::time::{Duration, Instant};
 
@@ -102,14 +103,6 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
         "and the incarnation being replaced: {refusal}"
     );
 
-    // Nothing landed in the doomed incarnation: the handler never ran.
-    let log = std::fs::read(paths.data.join("consumer.log")).unwrap_or_default();
-    assert!(
-        !String::from_utf8_lossy(&log).contains("notice"),
-        "the notice was never delivered: {:?}",
-        String::from_utf8_lossy(&log)
-    );
-
     // The pending restart was ASKABLE, from inside the window itself.
     let composition = json(
         &std::fs::read(paths.data.join("notify-introspect.json"))
@@ -125,12 +118,17 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
         "introspect names the pending transition in the refusal's own \
          vocabulary — a replacement IS scheduled here: {seen}"
     );
+    assert_eq!(seen["incarnation"], refusal["incarnation"]);
 
     let records = events(&daemon).await;
-    let refused = records
+    let attempt = observation::attempt(&paths.data, "dispatch-refused");
+    let walk = observation::walk(&records, &attempt);
+    let refusals: Vec<_> = walk
         .iter()
-        .find(|record| matches!(record.kind, LedgerEventKind::DispatchRefused { .. }))
-        .unwrap_or_else(|| panic!("the refusal is a ledger row: {records:?}"));
+        .filter(|record| matches!(record.kind, LedgerEventKind::DispatchRefused { .. }))
+        .collect();
+    assert_eq!(refusals.len(), 1, "one refusal for {attempt}: {walk:?}");
+    let refused = refusals[0];
     match &refused.kind {
         LedgerEventKind::DispatchRefused {
             topic,
@@ -142,7 +140,7 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
             assert_eq!(topic, "jinn:test/settings-changed");
             assert_eq!(*mode, DispatchMode::Serial);
             assert_eq!(target.0, "consumer", "the row names the target entry");
-            assert!(*incarnation > 0, "the row names the incarnation replaced");
+            assert_eq!(Some(*incarnation), refusal["incarnation"].as_u64());
             assert_eq!(
                 *owed,
                 Owed::Reload,
@@ -159,28 +157,38 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
     );
     // Law 2, told apart from a scope refusal by KIND, not by prose.
     assert!(
-        !records.iter().any(|record| matches!(
+        !walk.iter().any(|record| matches!(
             &record.kind,
             LedgerEventKind::GrantRefused { contract, .. }
                 if contract == "jinn:test/settings-changed"
         )),
         "a restart refusal is not a grant refusal: {records:?}"
     );
-    // The notice never dispatched to a live listener: every traced walk on
-    // this topic found nobody (the listener withdrawn between
-    // incarnations), and the one that DID select the replaced listener is
-    // the refusal above, which traced nothing because it dispatched
-    // nothing. The one-row-per-refused-walk invariant is pinned exactly in
-    // `jinnd-wasm`'s topic-registry tests, where the sink is the whole
-    // world; here the claim is the observable one.
-    assert!(
-        !records.iter().any(|record| matches!(
-            &record.kind,
-            LedgerEventKind::DispatchTrace { topic, listeners, .. }
-                if topic == "jinn:test/settings-changed" && *listeners > 0
-        )),
-        "the notice never dispatched to a live listener: {records:?}"
+    assert_eq!(
+        observation::no_delivery(&records, &paths.data, &attempt),
+        Ok(())
     );
+    assert_eq!(observation::no_trace(&walk), Ok(()));
+
+    // Negative controls use an ACTUAL earlier delivery, not fabricated log
+    // text. Each no-delivery check must reject it independently. The same
+    // observer accepts the later refusal without assuming different incarnations.
+    let control = observation::attempt(&paths.data, "dispatch-control");
+    assert_ne!(control, attempt);
+    let control_walk = observation::walk(&records, &control);
+    assert!(control_walk.last().unwrap().sequence < walk.first().unwrap().sequence);
+    assert_eq!(
+        observation::no_delivery(&records, &paths.data, &control),
+        Err("request reached a listener")
+    );
+    assert_eq!(
+        observation::no_trace(&control_walk),
+        Err("request dispatched a traced walk")
+    );
+    assert!(control_walk.iter().any(|record| matches!(&record.kind,
+        LedgerEventKind::DispatchTrace { topic, listeners, .. }
+            if topic == "jinn:test/settings-changed" && *listeners > 0
+    )));
     // R11: refusing cost nobody their fiber — the emitter was never held
     // to its deadline, and the target restarted cleanly.
     assert!(
@@ -197,7 +205,13 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
     loop {
         daemon.sync_transitions();
         let log = std::fs::read(paths.data.join("consumer.log")).unwrap_or_default();
-        if daemon.fiber_state(consumer) == Some(FiberState::Active) && log.len() > 4 {
+        if daemon.fiber_state(consumer) == Some(FiberState::Active)
+            && String::from_utf8_lossy(&log)
+                .lines()
+                .filter(|line| *line == "act")
+                .count()
+                >= 2
+        {
             break;
         }
         assert!(
@@ -218,4 +232,23 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+    let final_records = events(&daemon).await;
+    assert_eq!(
+        observation::no_delivery(&final_records, &paths.data, &attempt),
+        Ok(())
+    );
+    assert_eq!(
+        observation::no_trace(&observation::walk(&final_records, &attempt)),
+        Ok(())
+    );
+    assert!(
+        !final_records.iter().any(|record| matches!(&record.kind,
+            LedgerEventKind::FiberTransition(transition) if transition.to == FiberState::Failed
+        )),
+        "nothing failed through replacement and shutdown: {final_records:?}"
+    );
+    println!(
+        "request={attempt}, incarnation={}, control={control}: refusal identity, no delivery/trace, both real-delivery negative controls, replacement and liveness passed",
+        refusal["incarnation"]
+    );
 }
