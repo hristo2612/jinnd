@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+#[path = "m2_k26_restart_window/diagnostics.rs"]
+mod diagnostics;
 #[path = "../../crates/jinnd-daemon/tests/dispatch/harness.rs"]
 mod dispatch_harness;
 #[path = "../../crates/jinnd-daemon/tests/dispatch/observation.rs"]
@@ -139,8 +141,7 @@ async fn observed_restart(
     let home = dispatch::home(name);
     let paths = dispatch::paths(&home, notify_entries());
     let daemon = dispatch::booted(paths.clone()).await;
-    let outcome =
-        dispatch::wait_for(&paths.data.join("notify.out"), |bytes| !bytes.is_empty()).await;
+    let outcome = diagnostics::outcome(&daemon, &paths).await;
     let records = dispatch::events(&daemon).await;
     (home, daemon, paths, outcome, records)
 }
