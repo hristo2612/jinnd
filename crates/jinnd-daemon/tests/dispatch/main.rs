@@ -118,7 +118,9 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
         "introspect names the pending transition in the refusal's own \
          vocabulary — a replacement IS scheduled here: {seen}"
     );
-    assert_eq!(seen["incarnation"], refusal["incarnation"]);
+    // During Loading, introspect may have no installed incarnation yet;
+    // the selected tombstone's identity is in the typed refusal and row.
+    assert_eq!(seen["fiber"].as_u64(), Some(consumer.0));
 
     let records = events(&daemon).await;
     let attempt = observation::attempt(&paths.data, "dispatch-refused");
