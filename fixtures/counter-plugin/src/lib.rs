@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 mod dispatch_observation;
+mod deadline_witness;
 
 wit_bindgen::generate!({
     path: "../../wit",
@@ -1120,6 +1121,9 @@ impl Guest for Fixture {
         if mode.starts_with("lifecycle-") {
             return lifecycle_mode(mode);
         }
+        if mode == "emitter-deadline-witness" {
+            return deadline_witness::arm();
+        }
         match mode {
             "trap" => panic!("fixture trap mode"),
             "spin" => loop {
@@ -1545,6 +1549,9 @@ impl Guest for Fixture {
             }
             COUNTER.fetch_add(1, Ordering::SeqCst);
             let mode = MODE.lock().unwrap().clone();
+            if mode == "emitter-deadline-witness" {
+                return deadline_witness::run().map(|()| Vec::new());
+            }
             if mode.starts_with("net-echo") {
                 echo_tick()?;
             }

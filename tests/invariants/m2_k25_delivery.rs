@@ -62,35 +62,6 @@ fn trace(records: &[jinnd_api::LedgerRecord], entry: &str) -> Option<(u32, u32)>
     })
 }
 
-fn trace_timestamp(records: &[jinnd_api::LedgerRecord], entry: &str) -> u64 {
-    records
-        .iter()
-        .find(|record| {
-            record
-                .entry
-                .as_ref()
-                .is_some_and(|candidate| candidate.0 == entry)
-                && matches!(record.kind, LedgerEventKind::DispatchTrace { .. })
-        })
-        .map(|record| record.timestamp)
-        .unwrap_or_else(|| panic!("{entry} has a dispatch trace: {records:?}"))
-}
-
-fn failed_timestamp(records: &[jinnd_api::LedgerRecord], entry: &str) -> u64 {
-    records
-        .iter()
-        .find(|record| {
-            record
-                .entry
-                .as_ref()
-                .is_some_and(|candidate| candidate.0 == entry)
-                && matches!(&record.kind, LedgerEventKind::FiberTransition(transition)
-                    if transition.to == FiberState::Failed)
-        })
-        .map(|record| record.timestamp)
-        .unwrap_or_else(|| panic!("{entry} has a Failed row: {records:?}"))
-}
-
 fn failed_sequence(records: &[jinnd_api::LedgerRecord], entry: &str) -> u64 {
     records
         .iter()
@@ -243,10 +214,6 @@ async fn the_emitter_is_charged_nothing_for_a_walk() {
     assert!(
         errors(&records, "emitter").is_empty(),
         "activation-time death has no post-activation error row: {records:?}"
-    );
-    assert!(
-        failed_timestamp(&records, "emitter") - trace_timestamp(&records, "emitter") >= 4_500,
-        "the emitter's deadline resumed after the walk: {records:?}"
     );
     for index in 0..43 {
         assert_eq!(
