@@ -10,6 +10,9 @@ mod harness;
 #[path = "string_lane_injects/ledger.rs"]
 mod ledger;
 
+#[path = "m2_k25_delivery/clock_witness.rs"]
+mod clock_witness;
+
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
@@ -255,6 +258,7 @@ async fn the_emitter_is_charged_nothing_for_a_walk() {
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shutdown: {error:?}"));
+    clock_witness::prove().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
