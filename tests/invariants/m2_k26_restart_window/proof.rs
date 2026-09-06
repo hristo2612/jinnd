@@ -125,23 +125,37 @@ pub(super) async fn finish(daemon: &Daemon, paths: &DaemonPaths, attempt: &str) 
                     if transition.to == state && transition.cause == jinnd_api::TransitionCause::ConfigChanged
             )
     };
-    let start = records
+    let patch = records
         .iter()
         .rev()
         .find(|record| {
-            record.sequence < refused.sequence && transition_to(record, FiberState::Unloading)
+            record.sequence < refused.sequence && matches!(&record.kind,
+                LedgerEventKind::ProfilePatched { entry, by } if entry.0 == "consumer" && by.0 == "provider"
+            )
         })
-        .unwrap_or_else(|| panic!("the refusal follows suspension"));
+        .unwrap_or_else(|| panic!("the refusal follows the accepted config patch"));
+    // Restarting is also truthful while Unloading is owed but not yet
+    // committed. Do not require the refusal to follow that later transition.
+    let start = records
+        .iter()
+        .find(|record| {
+            record.sequence > patch.sequence && transition_to(record, FiberState::Unloading)
+        })
+        .unwrap_or_else(|| panic!("the patched consumer unloads"));
     let end = records
         .iter()
         .find(|record| {
-            record.sequence > refused.sequence && transition_to(record, FiberState::Active)
+            record.sequence > start.sequence && transition_to(record, FiberState::Active)
         })
         .unwrap_or_else(|| panic!("the refused replacement commits"));
+    assert!(
+        refused.sequence < end.sequence,
+        "refusal precedes replacement commit"
+    );
     // K26's no-empty-topic guarantee covers the restart window, including
     // attempts other than the selected refusal. Initial boot/control history
     // is outside this window; it may honestly have no listener yet.
-    assert!(!records.iter().any(|record| start.sequence < record.sequence && record.sequence < end.sequence
+    assert!(!records.iter().any(|record| patch.sequence < record.sequence && record.sequence < end.sequence
         && matches!(&record.kind, LedgerEventKind::DispatchTrace { topic, listeners: 0, .. } if topic == NOTICE)
     ), "no empty successful walk inside the restart: {records:?}");
     println!(
