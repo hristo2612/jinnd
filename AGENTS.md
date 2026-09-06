@@ -22,7 +22,8 @@ It is LAW; this file translates it into direct instructions for you.
    replacement, auto-retry of failed fibers against an unchanged environment.
 5. **R10 — Small and boring.** Kernel core ceiling 8k LOC. Before adding anything to
    the kernel ask: "could this be a plugin?" If yes, it is one. New files stay under
-   300 lines; split by responsibility.
+   300 lines; split by responsibility. Honor the named cohesion exceptions in
+   SOURCE-OF-TRUTH R10.
 6. **R11 — Failure is local.** No panic may cross the kernel boundary. Every
    plugin-facing entry point is panic-contained. A plugin's failure may affect only
    itself and its declared dependents.

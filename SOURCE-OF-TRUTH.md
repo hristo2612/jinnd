@@ -193,6 +193,15 @@ still a required fix: "soft" means the severity is lower, not that the split is
 optional. A test file with no natural seam stays whole and is named in the round's
 report.
 
+Named cohesion exception (COO, 2026-09-05):
+`crates/jinnd-wasm/src/topics.rs` may remain above 300 lines. Its listener
+registry, selection and dispatch share one `LocalTopics` boundary and private
+state; moving methods into another file would not deepen that interface. Keep
+this existing module coherent rather than splitting it solely for line count.
+Review an added responsibility against that rationale; the exception does not
+cover unrelated responsibilities or other files. The kernel-core ceiling and
+all behavioral, concurrency and invariant gates remain unchanged.
+
 **R11 — Failure is local.** A failing plugin deactivates itself and its dependents,
 cleanly, and touches nothing else. Panics never cross the kernel boundary. Sibling
 fibers never observe another's crash except through declared dependencies.
@@ -284,6 +293,13 @@ within a major version.
 - **M3 — Profiles & parity.** The `company` profile takes over slices of production
   one at a time; web UI runs against the kernel API. *Acceptance: an instance runs a
   full day on jinnd alone.*
+  **Current clarification (2026-09-05):** the discovery narrative below and its
+  dated M2-acceptance snapshot preserve historical states. M2-K23 and its
+  verifier lane have since landed at `f8b285b`; harness pin-bump 10 adopted them
+  at `3bb6e4e`, making profile administration available. Item 6's earlier
+  "nothing implemented" statement is historical, not a new dispatch instruction.
+  State-preserving plugin identity replacement remains the separate M2-K27
+  limitation; profile administration delivery does not close it.
   **Two structural blockers, discovered by the M2 port and recorded 2026-09-01 (see
   Decision Log). Both CLOSED 2026-09-02 — kept here as the record of what M3 needed
   and where each was delivered. A THIRD, discovered by the harness UI packet and
@@ -466,6 +482,16 @@ Ordering rule: never touch a layer until the layer above it is already useful.
 - No big-bang cutover. No production risk before M4.
 
 ## 9. Decision Log
+
+- **2026-09-05** — **Keep the coherent topics module; withdraw the R10 sweep.**
+  The first-principles audit traced `LocalTopics` registry, selection and dispatch
+  ownership. A file move would retain the same interface and coupling while
+  adding a quota gate to enforce the move. R10 now names the existing module's
+  cohesion exception; its behavioral obligations and the kernel-core ceiling
+  remain binding. The standalone R10-SWEEP card is superseded, with no new
+  LOC-meter, CI quota machinery or blanket test-suite split. The M3 narrative
+  also distinguishes historical K23 status from its delivered administration
+  capability and still-open K27 replacement limit. No Law or Invariant changes.
 
 - **2026-09-04** — **M2 ACCEPTED on the §7(b) soak audit; the soak now follows the
   harness pin (COO decision, option (c) of three; recorded by kernel-dev on the
