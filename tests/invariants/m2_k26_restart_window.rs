@@ -371,7 +371,7 @@ async fn a_failed_replacement_withdraws_its_tombstones_on_the_record() {
         )],
         &hash,
     );
-    daemon.reload().await;
+    let _ = daemon.reload().await;
     wait_for_state(&daemon, "consumer", FiberState::Failed).await;
     let records = ledger::events(&daemon).await;
     let fiber = daemon
