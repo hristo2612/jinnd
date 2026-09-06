@@ -156,3 +156,60 @@ async fn cancellation_drops_nested_parks_and_the_next_call_gets_its_own_budget()
         _ => panic!("the next call must end with the contained deadline cause"),
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn supervisor_and_caller_observers_keep_independent_baselines() {
+    let control = DeadlineControl::new();
+    let earlier = within(
+        Duration::from_secs(5),
+        &control,
+        std::future::pending::<()>(),
+    );
+    tokio::pin!(earlier);
+    assert!(poll_once(earlier.as_mut()).await.is_pending());
+    advance(Duration::from_secs(2)).await;
+    let later = within(
+        Duration::from_secs(5),
+        &control,
+        std::future::pending::<()>(),
+    );
+    tokio::pin!(later);
+    assert!(poll_once(later.as_mut()).await.is_pending());
+    advance(Duration::from_secs(1)).await;
+    let parked = control.park();
+    assert!(poll_once(earlier.as_mut()).await.is_pending());
+    advance(Duration::from_secs(6)).await;
+    drop(parked);
+    // Only the earlier observer saw the park; the later one missed it whole.
+    assert!(poll_once(earlier.as_mut()).await.is_pending());
+    assert!(poll_once(later.as_mut()).await.is_pending());
+    advance(Duration::from_secs(2)).await;
+    assert_eq!(
+        poll_once(earlier.as_mut()).await,
+        Poll::Ready(Err(super::DeadlineElapsed))
+    );
+    assert!(poll_once(later.as_mut()).await.is_pending());
+    advance(Duration::from_secs(2)).await;
+    assert_eq!(
+        poll_once(later.as_mut()).await,
+        Poll::Ready(Err(super::DeadlineElapsed))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn parking_cannot_restore_already_exhausted_active_time() {
+    let control = DeadlineControl::new();
+    let call = within(
+        Duration::from_secs(5),
+        &control,
+        std::future::pending::<()>(),
+    );
+    tokio::pin!(call);
+    assert!(poll_once(call.as_mut()).await.is_pending());
+    advance(Duration::from_secs(6)).await;
+    let _parked = control.park();
+    assert_eq!(
+        poll_once(call.as_mut()).await,
+        Poll::Ready(Err(super::DeadlineElapsed))
+    );
+}
