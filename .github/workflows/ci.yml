@@ -45,6 +45,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace --exclude jinnd-invariants
+      # The dispatch regression has a bounded Linux repetition requirement.
+      # Stop on the first failure; these are observations, never retries.
+      - name: dispatch attribution — three Linux observations
+        run: |
+          for observation in 1 2 3; do
+            echo "dispatch observation ${observation}/3"
+            cargo test -p jinnd-daemon --test dispatch -- --nocapture || exit "$?"
+          done
       - name: disk — after test, before locked build
         if: always()
         run: |
