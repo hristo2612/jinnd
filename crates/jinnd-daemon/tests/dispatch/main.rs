@@ -50,7 +50,7 @@ async fn a_serial_dispatch_to_a_restarting_fiber_refuses_typed_and_ledgered() {
                     "jinn:clock",
                     { "contract": "jinn:profile", "scope": ["consumer"] }
                 ]),
-                "notify-provider",
+                "notify-provider-observed",
             ),
             entry(
                 "consumer",
